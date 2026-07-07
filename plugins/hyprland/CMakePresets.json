@@ -1,0 +1,54 @@
+{
+  "version": 10,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base-v3",
+      "hidden": true,
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": {
+          "type": "STRING",
+          "value": "gcc"
+        },
+        "CMAKE_CXX_COMPILER": {
+          "type": "STRING",
+          "value": "g++"
+        },
+        "CMAKE_EXPORT_COMPILE_COMMANDS": {
+          "type": "BOOL",
+          "value": "ON"
+        }
+      }
+    },
+    {
+      "name": "linux-host",
+      "displayName": "Linux Host",
+      "inherits": "base-v3"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "base-build",
+      "hidden": true,
+      "jobs": 0
+    },
+    {
+      "name": "debug-host",
+      "configurePreset": "linux-host",
+      "inherits": "base-build",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-host",
+      "configurePreset": "linux-host",
+      "inherits": "base-build",
+      "configuration": "Release"
+    }
+  ]
+}

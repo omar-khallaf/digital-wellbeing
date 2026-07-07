@@ -1,0 +1,21 @@
+[package]
+name = "wellbeing-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wellbeing-core = { path = "../core" }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+zbus.workspace = true
+gpui = { git = "https://github.com/zed-industries/zed", optional = true }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
+
+[features]
+default = ["gui-gpui"]
+gui-gpui = ["dep:gpui", "dep:gpui-component"]

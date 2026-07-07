@@ -1,0 +1,14 @@
+[package]
+name = "wellbeing-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+zvariant = { version = "5", features = ["chrono"] }
+
+[lib]
+name = "wellbeing_core"
