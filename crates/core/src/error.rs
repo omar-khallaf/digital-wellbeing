@@ -10,10 +10,7 @@ pub enum Error {
     InvalidUid,
 
     #[error("access denied: caller uid {caller} cannot act on owner uid {owner}")]
-    AccessDenied {
-        caller: u32,
-        owner: u32,
-    },
+    AccessDenied { caller: u32, owner: u32 },
 
     #[error("policy not found: {0}")]
     PolicyNotFound(i64),
@@ -22,9 +19,7 @@ pub enum Error {
     InvalidPolicyKind,
 
     #[error("invalid policy: {reason}")]
-    InvalidPolicy {
-        reason: &'static str,
-    },
+    InvalidPolicy { reason: &'static str },
 
     #[error("category not found: {0}")]
     CategoryNotFound(i64),

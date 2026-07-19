@@ -7,16 +7,29 @@ use zvariant::Type;
 pub struct AppId(String);
 
 impl AppId {
-    pub fn new(s: &str) -> Result<Self, Error> { todo!() }
-    pub fn as_str(&self) -> &str { todo!() }
+    /// Validate and construct. Rejects empty strings.
+    pub fn new(s: &str) -> Result<Self, Error> {
+        if s.is_empty() {
+            return Err(Error::EmptyAppId);
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl AsRef<str> for AppId {
-    fn as_ref(&self) -> &str { todo!() }
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Display for AppId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { todo!() }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// Window title string.
@@ -25,8 +38,13 @@ impl std::fmt::Display for AppId {
 pub struct WindowTitle(String);
 
 impl WindowTitle {
-    pub fn new(s: &str) -> Self { todo!() }
-    pub fn as_str(&self) -> &str { todo!() }
+    pub fn new(s: &str) -> Self {
+        Self(s.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// Process ID.
@@ -50,7 +68,44 @@ pub struct CategoryId(pub i64);
 pub struct DurationSecs(pub i64);
 
 impl DurationSecs {
-    pub fn as_secs(&self) -> i64 { todo!() }
+    pub fn as_secs(&self) -> i64 {
+        self.0
+    }
+}
+
+/// Unix user ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[zvariant(signature = "u")]
+pub struct Uid(pub u32);
+
+/// Opaque plugin instance identifier (e.g. "<uid>@<session>").
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[zvariant(signature = "s")]
+pub struct PluginInstanceId(String);
+
+impl PluginInstanceId {
+    /// Build from uid and session identifier.
+    pub fn new(uid: u32, session: &str) -> Self {
+        Self(format!("{}@{}", uid, session))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for PluginInstanceId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Overlay action button shown on block overlay.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum OverlayAction {
+    Extra = 0,
+    Close = 1,
 }
 
 use crate::error::Error;

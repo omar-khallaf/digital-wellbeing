@@ -1,27 +1,28 @@
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
-use diesel::{Connection, sql_query};
-use diesel_async::pooled_connection::deadpool::{Pool, Object};
+use diesel::{Connection, RunQueryDsl, sql_query};
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::AsyncSqliteConnection;
+use diesel_async::pooled_connection::deadpool::{Object, Pool};
+use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
 use std::path::PathBuf;
 
-/// Type alias for a pooled async SQLite connection.
-pub type DbConn = Object<AsyncSqliteConnection>;
+pub type SqliteConn = SyncConnectionWrapper<SqliteConnection>;
+pub type DbConn = Object<SqliteConn>;
 
-/// Thread-safe connection pool to the daemon's SQLite database.
 #[derive(Clone)]
 pub struct DbPool {
-    inner: Pool<AsyncSqliteConnection>,
+    inner: Pool<SqliteConn>,
 }
 
 impl DbPool {
     pub async fn get(&self) -> Result<DbConn> {
-        self.inner.get().await.map_err(|e| anyhow::anyhow!("pool error: {}", e))
+        self.inner
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("pool error: {}", e))
     }
 }
 
-/// Builder for DbPool. Runs migrations before handing out connections.
 pub struct StoreBuilder {
     db_path: PathBuf,
 }
@@ -31,7 +32,6 @@ impl StoreBuilder {
         Self { db_path }
     }
 
-    /// Connect, run pending migrations, return ready-to-use pool.
     pub async fn build(self) -> Result<DbPool> {
         let db_path_str = self.db_path.to_string_lossy().to_string();
 
@@ -43,8 +43,7 @@ impl StoreBuilder {
             crate::store::migrations::run_migrations(&mut conn)?;
         }
 
-        // Build async pool via AsyncDieselConnectionManager
-        let mgr = AsyncDieselConnectionManager::<AsyncSqliteConnection>::new(db_path_str);
+        let mgr = AsyncDieselConnectionManager::<SqliteConn>::new(db_path_str);
         let pool = Pool::builder(mgr)
             .max_size(4)
             .build()

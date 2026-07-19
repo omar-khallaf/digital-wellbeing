@@ -6,8 +6,6 @@ use crate::valuetypes::*;
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-// ─── Policy Domain ───────────────────────────────────────────────
-
 /// Policy kind discriminant — maps to DB integer.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -42,6 +40,7 @@ pub struct Policy {
 }
 
 /// Input for creating/updating a policy.
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct PolicyInput {
     pub name: String,
@@ -55,8 +54,6 @@ pub struct PolicyInput {
     pub active: bool,
     pub owner_id: u32,
 }
-
-// ─── Usage Data ──────────────────────────────────────────────────
 
 /// One row of daily usage per app.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -76,8 +73,6 @@ pub struct DailySummary {
     pub entries: Vec<DailyUsageEntry>,
 }
 
-// ─── Category Domain ─────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct Category {
     pub id: CategoryId,
@@ -89,13 +84,12 @@ pub struct Category {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AppCategoryRow {
     pub app_id: String,
+    pub user_id: u32,
     pub category_id: i64,
     pub display_name: String,
     pub icon_path: String,
     pub ignore: bool,
 }
-
-// ─── Real-Time State (over D-Bus signals) ────────────────────────
 
 /// Current active window info.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -124,8 +118,6 @@ pub struct BlockStateInfo {
     pub blocked: bool,
     pub reason: BlockReason,
 }
-
-// ─── Plugin Interface Types ──────────────────────────────────────
 
 /// Window info emitted by plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

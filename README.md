@@ -19,17 +19,17 @@ on most components.
 | `plugins/hyprland/`         | C++ code exists, needs migration for system-bus IPC |
 | Docs & specs                | Complete — see [architecture/](docs/architecture/)  |
 
-See [01-roadmap.md](docs/planning/01-roadmap.md) for the phased
-implementation plan.
+See [01-roadmap.md](docs/planning/01-roadmap.md) for the phased implementation
+plan.
 
 ## Architecture
 
 The system is split into **two binaries communicating over D-Bus**, with an
 optional compositor plugin for overlay enforcement:
 
-- **`wellbeing-daemon`** — tokio async daemon (runs as root in **system mode** or
-  non-root in **session mode**; mode selected at startup by uid) that owns all
-  tracking, policy enforcement, and SQLite data. In system mode it claims
+- **`wellbeing-daemon`** — tokio async daemon (runs as root in **system mode**
+  or non-root in **session mode**; mode selected at startup by uid) that owns
+  all tracking, policy enforcement, and SQLite data. In system mode it claims
   `org.wellbeing.v1.Daemon` on the **system bus** and enforces per-user RBAC; in
   session mode it claims the name on the **session bus** and enforces a single
   user. Exposes policy CRUD and usage queries over D-Bus.
@@ -225,5 +225,4 @@ cargo clippy -- -D warnings
 
 ## Roadmap
 
-See [01-roadmap.md](docs/planning/01-roadmap.md) for the phased
-build plan covering v1 (Core Digital Wellbeing) through v6 (Integration API).
+See [01-roadmap.md](docs/planning/01-roadmap.md) for the phased build plan.

@@ -30,30 +30,32 @@ milestones that the phases deliver.
 - [x] Initial schema with `user_id` / `created_by` / `owner_id` columns (RBAC
       scoping — `architecture/07-rbac.md`).
 
-### Phase B — Daemon core · `In progress`
+### Phase B — Daemon core · `Done`
 
 - [x] `daemon/src/store/*`: `DbPool`, `StoreBuilder`, initial schema setup, WAL
       mode (`persistence/01-database.md`).
-- [ ] `daemon/src/platform/*`: `Platform` trait + `LinuxPlatform` +
+- [x] `daemon/src/platform/*`: `Platform` trait + `LinuxPlatform` +
       `ManagerClient` (system D-Bus, `NameOwnerChanged` discovery —
       `architecture/02-platform.md`, `architecture/04-plugin-ipc.md`).
-- [ ] `daemon/src/dbus/mod.rs`: `org.wellbeing.v1.Daemon` server + RBAC +
+- [x] `daemon/src/dbus/mod.rs`: `org.wellbeing.v1.Daemon` server + RBAC +
       `DaemonPublicKey` + `RegisterPlugin` (`architecture/06-daemon-dbus.md`,
       `architecture/05-daemon-auth.md`).
 
-### Phase C — Daemon actors · `Ready`
+### Phase C — Daemon actors · `Done`
 
-- [ ] `tracking/*`: `TrackerActor`, `HashMap<Uid, FocusState>`,
+- [x] `tracking/*`: `TrackerActor`, `HashMap<Uid, FocusState>`,
       `accumulate_interval()`.
-- [ ] `policy/*`: `PolicyEngine.evaluate()`, domain types, `TimeWindow`.
-- [ ] `categorization/*`: `Categorizer` + `AiClassifier` (v1 heuristic),
+- [x] `policy/*`: `PolicyConfig` enum (`Block`/`TimeLimit`/`Notify`),
+      `evaluate()`, `app_state()`, `TimeWindow`.
+- [x] `categorization/*`: `Categorizer` + `AiClassifier` (v1 heuristic),
       `app_categories` chain.
-- [ ] `blocking/*`: `EnforcerActor` gate-first pipeline, `BlockingState`,
+- [x] `blocking/*`: `EnforcerActor` gate-first pipeline, `BlockingState`,
       `OverlayConfig`, grant-extension, plugin disconnect/reconnect
       (`features/01-blocking.md`).
-- [ ] `reports/*`: aggregate queries for history/export.
-- [ ] `main.rs`: wire actors + D-Bus server + `ReactiveNotifier` +
-      `PowerStateWatcher` + SIGTERM/SIGHUP handler + startup reconciliation.
+- [x] `reports/*`: aggregate queries for history/export.
+- [x] `main.rs`: wire `TrackerActor` + `EnforcerActor` + event fan-out +
+      `ReactiveNotifier` + D-Bus server + `PowerStateWatcher` + SIGTERM/SIGINT
+      handler.
 
 ### Phase D — GUI · `Ready`
 
@@ -250,14 +252,10 @@ study notes/flashcards · cross-device sync · cloud backup · social features
 
 ## Suggested order of attack
 
-1. Finish **Phase B2–B3** (platform + D-Bus server) → unblocks all actors.
-2. **Phase C** in order: tracking → policy → categorization → blocking → reports
-   → main.rs wiring (incl. `PowerStateWatcher` + signals + startup
-   reconciliation).
-3. **Phase E** plugin system-bus + `CurrentSession` + signed overlays (security-
+1. **Phase E** plugin system-bus + `CurrentSession` + signed overlays (security-
    critical; pair with `architecture/05-daemon-auth.md` tests).
-4. **Phase D** GUI (dashboard → policies → reports stub).
-5. **Phase F** packaging + D-Bus policy + systemd.
-6. Resolve v1 **Open** items before tagging v1.
-7. v2+ compositor-by-compositor, then v3 analytics, v4 classification, v6 API;
+2. **Phase D** GUI (dashboard → policies → reports stub).
+3. **Phase F** packaging + D-Bus policy + systemd.
+4. Resolve v1 **Open** items before tagging v1.
+5. v2+ compositor-by-compositor, then v3 analytics, v4 classification, v6 API;
    v5 only on demand.

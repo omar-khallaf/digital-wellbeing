@@ -631,18 +631,24 @@ same rows — there is no separate "override" concept.
 
 ```sql
 CREATE TABLE app_categories (
-    app_id          TEXT PRIMARY KEY,
+    app_id          TEXT NOT NULL,
+    user_id         INTEGER NOT NULL DEFAULT 0,
     category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     display_name    TEXT,       -- overrides raw app_id for UI display
     icon_path       TEXT,       -- overrides default icon
     ignore          INTEGER NOT NULL DEFAULT 0 CHECK(ignore IN (0, 1)),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (app_id, user_id)
 );
 ```
 
 **Design:**
 
 - Every row is authoritative — whether seeded as a default or set by the user.
+- `user_id=0` represents system-global defaults (seeded at migration).
+- Per-user overrides use `user_id=N` (the caller's UID from D-Bus `SO_PEERCRED`).
+- Resolution: check `user_id=N` first; if no row exists, fall back to
+  `user_id=0`.
 - `category_id` is nullable: when NULL the categorizer falls through to AI
   classification → `Uncategorized`.
 - No FK to `events` because an `app_id` may appear in events before any
@@ -653,11 +659,11 @@ CREATE TABLE app_categories (
 **Resolution priority:**
 
 ```
-app_categories (DB, seeded + user edits) → AI classification → Uncategorized
+app_categories (user-specific) → app_categories (system-global, user_id=0) → AI classification → Uncategorized
 ```
 
 Query pattern:
-`LEFT JOIN app_categories ON events.app_id = app_categories.app_id`
+`LEFT JOIN app_categories ON events.app_id = app_categories.app_id AND app_categories.user_id = ?`
 
 ---
 

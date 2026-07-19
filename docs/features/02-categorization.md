@@ -14,12 +14,14 @@ there is no separate "override" concept, no external config files.
 
 ```sql
 CREATE TABLE app_categories (
-    app_id          TEXT PRIMARY KEY,
+    app_id          TEXT NOT NULL,
+    user_id         INTEGER NOT NULL DEFAULT 0,
     category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
     display_name    TEXT,
     icon_path       TEXT,
     ignore          INTEGER NOT NULL DEFAULT 0 CHECK(ignore IN (0, 1)),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (app_id, user_id)
 );
 ```
 
@@ -82,9 +84,10 @@ classification logic.
 ### Resolution Chain
 
 ```
-1. app_categories (DB) — seeded default or user edit
-2. AI classification — fallback for unmapped apps
-3. Uncategorized — always succeeds (never crashes)
+1. app_categories (user-specific, user_id=N) — per-user override
+2. app_categories (system-global, user_id=0) — seeded default
+3. AI classification — fallback for unmapped apps
+4. Uncategorized — always succeeds (never crashes)
 ```
 
 Each step is tried in order. The first match wins.

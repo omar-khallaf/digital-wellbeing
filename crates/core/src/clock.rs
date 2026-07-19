@@ -10,7 +10,9 @@ pub trait Clock: Send + Sync + 'static {
 pub struct SystemClock;
 
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> { todo!() }
+    fn now(&self) -> DateTime<Utc> {
+        Utc::now()
+    }
 }
 
 /// Virtual clock for testing — returns the configured time.
@@ -20,11 +22,21 @@ pub struct VirtualClock {
 }
 
 impl VirtualClock {
-    pub fn new(now: DateTime<Utc>) -> Self { todo!() }
-    pub fn advance(&mut self, delta: chrono::Duration) { todo!() }
-    pub fn set_time(&mut self, now: DateTime<Utc>) { todo!() }
+    pub fn new(now: DateTime<Utc>) -> Self {
+        Self { now }
+    }
+
+    pub fn advance(&mut self, delta: chrono::Duration) {
+        self.now += delta;
+    }
+
+    pub fn set_time(&mut self, now: DateTime<Utc>) {
+        self.now = now;
+    }
 }
 
 impl Clock for VirtualClock {
-    fn now(&self) -> DateTime<Utc> { todo!() }
+    fn now(&self) -> DateTime<Utc> {
+        self.now
+    }
 }

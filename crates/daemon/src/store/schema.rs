@@ -53,20 +53,13 @@ diesel::table! {
 }
 
 diesel::table! {
-    app_categories (app_id) {
+    app_categories (app_id, user_id) {
         app_id -> Text,
+        user_id -> Integer,
         category_id -> Nullable<Integer>,
         display_name -> Nullable<Text>,
         icon_path -> Nullable<Text>,
         ignore -> Bool,
         updated_at -> Text,
-    }
-}
-
-diesel::table! {
-    _focus_state (user_id) {
-        user_id -> Integer,
-        app_id -> Nullable<Text>,
-        started_at -> Nullable<Text>,
     }
 }
