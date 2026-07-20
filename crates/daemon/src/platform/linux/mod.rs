@@ -4,11 +4,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::Stream;
 use tokio::sync::RwLock;
-use wellbeing_core::AppId;
 use zbus::proxy;
 use zvariant::Value;
 
-use crate::platform::{OverlayConfig, Platform, PlatformEvent};
+use crate::platform::{Platform, PlatformEvent};
 use crate::store::DbPool;
 
 mod manager;
@@ -45,16 +44,6 @@ pub struct LinuxPlatform {
 
 impl Platform for LinuxPlatform {
     type EventStream = tokio_stream::wrappers::UnboundedReceiverStream<PlatformEvent>;
-
-    async fn show_overlay(&self, config: OverlayConfig, uid: wellbeing_core::Uid) -> Result<()> {
-        let registry = self.registry.read().await;
-        registry.show_overlay_for(&config, uid).await
-    }
-
-    async fn hide_overlay(&self, app_id: &AppId, uid: wellbeing_core::Uid) -> Result<()> {
-        let registry = self.registry.read().await;
-        registry.hide_overlay_for(app_id, uid).await
-    }
 
     async fn notify(&self, title: &str, body: &str) -> Result<()> {
         let proxy = NotificationsProxy::new(&self.session_conn).await?;

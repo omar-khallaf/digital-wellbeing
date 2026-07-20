@@ -23,9 +23,6 @@ zbus.workspace = true
 zvariant.workspace = true
 procfs = "0.18"
 nix = { version = "0.31", features = ["signal", "process", "user"] }
-ed25519-dalek = { version = "3", features = [ "default", "rand_core", "zeroize", ] }
-rand = "0.10"
-getrandom = "0.4"
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
 

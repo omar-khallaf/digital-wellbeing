@@ -373,13 +373,13 @@ the session-mode additions:
 
 ## Security Notes
 
-- **Signing unchanged.** The Ed25519 keypair and `DaemonPublicKey` property work
-  identically; the plugin fetches the public key from the **same bus** it
-  registered on ([05-daemon-auth.md](./05-daemon-auth.md)).
+- **No request signing needed.** The plugin reads block state from the daemon's
+  own D-Bus name (`org.wellbeing.v1.Daemon.ActiveBlocks`), which is protected by
+  the D-Bus daemon. The plugin never accepts commands, so there is no command
+  method to spoof. See [05-daemon-auth.md](./05-daemon-auth.md).
 - **Session bus is per-user.** On the session bus only the owning user can claim
   `org.wellbeing.v1.Manager.*` names, so the already-open `own` policy is
-  naturally tighter than on the system bus. Ed25519 still protects against
-  same-user impostors who might try to spoof `Overlay`.
+  naturally tighter than on the system bus.
 - **No cross-user enforcement in session mode — by design.** A session daemon
   cannot see or enforce other users; that capability is reserved for the system
   daemon (root).

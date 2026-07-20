@@ -1,5 +1,5 @@
 {
-  description = "Digital Wellbeing — Hyprland plugin superbuild";
+  description = "Digital Wellbeing";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/26.05";
@@ -28,10 +28,23 @@
           # ── Development shell ────────────────────────────────────────────────
           # Enter with:  nix develop
           # Then build:  cmake -S plugins/hyprland -B build && cmake --build build
-          devShells.default = pkgs.mkShell {
+          devShells.default = pkgs.mkShell rec {
             name = "digital-wellbeing-plugin";
 
             nativeBuildInputs = with pkgs; [
+              expat
+              fontconfig
+              freetype
+              freetype.dev
+              libGL
+              pkg-config
+              libX11
+              libXcursor
+              libXi
+              libXrandr
+              wayland
+              libxkbcommon
+
               # Build system
               cmake
               ninja
@@ -91,6 +104,10 @@
               # D-Bus — needed by sdbus-c++ static link
               systemd # libsystemd
             ];
+
+            LD_LIBRARY_PATH = builtins.foldl' (
+              a: b: "${a}:${b}/lib"
+            ) "${pkgs.vulkan-loader}/lib" nativeBuildInputs;
 
             # Ensure CMake's find_package can locate hyprwayland-scanner's config.
             # mkShell's setup-hooks propagate CMAKE_PREFIX_PATH automatically for

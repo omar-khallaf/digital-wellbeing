@@ -11,7 +11,8 @@ The OS-specific surface area is:
 
 1. **Window events** — how to discover and receive focus/close events from the
    compositor.
-2. **Overlay management** — how to show/hide a compositor-level overlay.
+2. **Block state exposure** — how the daemon publishes the set of currently
+   blocked apps for the plugin to consume.
 3. **App metadata** — how to resolve app_id to display name and icon.
 4. **Power state** — how to detect suspend/shutdown for flush.
 
@@ -49,9 +50,10 @@ See [02-platform.md](./02-platform.md) and
 The compositor plugin is discovered dynamically on the system bus, with no
 per-compositor feature gates or environment-variable detection:
 
-1. **Zero detection** — the daemon calls `Overlay(v)` on
-   `org.wellbeing.v1.Manager`. It never checks `$HYPRLAND_INSTANCE_SIGNATURE` or
-   any compositor-specific env var.
+1. **Zero detection** — the daemon publishes block state on its own D-Bus
+   interface (`org.wellbeing.v1.Daemon.ActiveBlocks`). The plugin reads state
+   from the daemon's well-known name. The daemon never probes
+   compositor-specific env vars or socket paths.
 2. **Single IPC contract** — all compositor plugins implement the same D-Bus
    interface. The daemon has one code path regardless of compositor.
 3. **No feature gates** — the daemon doesn't need `#[cfg(feature = "hyprland")]`
@@ -60,9 +62,9 @@ per-compositor feature gates or environment-variable detection:
    extension, both speak the same D-Bus API. The daemon is indifferent.
 5. **Graceful degradation** — if no plugin is registered on the bus at startup,
    the daemon logs a warning, shows a banner in the dashboard, and proceeds
-   without overlay. If the plugin appears later (user loads it), the dashboard
-   banner auto-dismisses. Discovery is a runtime availability concern, not a
-   startup gate.
+   without block enforcement. If the plugin appears later (user loads it), the
+   dashboard banner auto-dismisses. Block state accumulates regardless of
+   plugin connectivity — overlays appear on reconnect.
 
 **Mock testing** uses a `MockManagerClient` implementing the same interface — no
 `MockCompositor` needed, no env var stubs, no feature flags.

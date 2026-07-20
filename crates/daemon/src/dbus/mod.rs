@@ -7,8 +7,8 @@ use diesel_async::RunQueryDsl;
 use tokio::sync::{RwLock, mpsc::UnboundedSender};
 use tracing::{info, warn};
 use wellbeing_core::{
-    AppCategoryRow, Category, CategoryId, Clock, DailySummary, DailyUsageEntry, PluginInstanceId,
-    Policy, PolicyInput, Uid,
+    ActiveBlockEntry, AppCategoryRow, AppId, Category, CategoryId, Clock, DailySummary,
+    DailyUsageEntry, PluginInstanceId, Policy, PolicyInput, Uid,
 };
 use zbus::fdo;
 use zbus::interface;
@@ -26,6 +26,7 @@ pub struct DaemonInterface {
     event_tx: UnboundedSender<PlatformEvent>,
     plugin_reg_cooldown: RwLock<HashMap<u32, Instant>>,
     clock: Box<dyn Clock>,
+    active_blocks: Arc<RwLock<HashMap<Uid, HashMap<AppId, ActiveBlockEntry>>>>,
 }
 
 impl DaemonInterface {
@@ -34,6 +35,7 @@ impl DaemonInterface {
         registry: Arc<RwLock<PluginRegistry>>,
         event_tx: UnboundedSender<PlatformEvent>,
         clock: Box<dyn Clock>,
+        active_blocks: Arc<RwLock<HashMap<Uid, HashMap<AppId, ActiveBlockEntry>>>>,
     ) -> Self {
         Self {
             pool,
@@ -41,6 +43,7 @@ impl DaemonInterface {
             event_tx,
             plugin_reg_cooldown: RwLock::new(HashMap::new()),
             clock,
+            active_blocks,
         }
     }
 
@@ -349,21 +352,16 @@ impl DaemonInterface {
         info!(?uid, ?instance, "plugin registering");
 
         let well_known = format!("org.wellbeing.v1.Manager.{}", instance_id);
-        let builder = ManagerProxy::builder(conn);
-        let builder = match builder.destination(well_known) {
-            Ok(b) => b,
-            Err(e) => {
+        let builder = ManagerProxy::builder(conn)
+            .destination(well_known)
+            .map_err(|e| {
                 warn!(?uid, "failed to set destination: {e}");
-                return Err(fdo::Error::Failed("plugin proxy creation failed".into()));
-            }
-        };
-        let proxy = match builder.build().await {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(?uid, "failed to build plugin proxy: {e}");
-                return Err(fdo::Error::Failed("plugin proxy creation failed".into()));
-            }
-        };
+                fdo::Error::Failed("plugin proxy creation failed".into())
+            })?;
+        let proxy = builder.build().await.map_err(|e| {
+            warn!(?uid, "failed to build plugin proxy: {e}");
+            fdo::Error::Failed("plugin proxy creation failed".into())
+        })?;
 
         let instance_clone = instance.clone();
         {
@@ -395,9 +393,21 @@ impl DaemonInterface {
     }
 
     #[zbus(property)]
-    async fn daemon_public_key(&self) -> fdo::Result<(String, Vec<u8>)> {
-        let reg = self.registry.read().await;
-        Ok(reg.daemon_public_key())
+    async fn active_blocks(&self) -> fdo::Result<Vec<wellbeing_core::ActiveBlockEntry>> {
+        let blocks = self.active_blocks.read().await;
+        let mut result = Vec::new();
+        for uid_blocks in blocks.values() {
+            for entry in uid_blocks.values() {
+                result.push(wellbeing_core::ActiveBlockEntry {
+                    app_id: entry.app_id.clone(),
+                    policy_id: entry.policy_id,
+                    blocked_since: entry.blocked_since,
+                    reason: entry.reason,
+                    available_actions: entry.available_actions.clone(),
+                });
+            }
+        }
+        Ok(result)
     }
 
     async fn get_daily_usage(
@@ -658,4 +668,14 @@ impl DaemonInterface {
     /// A policy was created, updated, or deleted.
     #[zbus(signal)]
     async fn policy_mutated(emitter: SignalEmitter<'_>, uid: u32) -> zbus::Result<()>;
+
+    /// Block state changed for an app (shown / hidden).
+    #[zbus(signal)]
+    async fn block_state_changed(
+        emitter: SignalEmitter<'_>,
+        uid: u32,
+        app_id: String,
+        blocked: bool,
+        reason: u32,
+    ) -> zbus::Result<()>;
 }

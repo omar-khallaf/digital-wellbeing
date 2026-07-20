@@ -17,23 +17,14 @@ items state the chosen design.
    (tracking/enforcement disabled, UI read-only) rather than erroring out. This
    covers both the root-installed and user-only install cases.
 
-2. **Daemon crash recovery with active overlay.** The overlay is a plugin-owned
-   state — the daemon keeps no in-memory block state (no `active_blocks` map).
-   On restart the daemon's Ed25519 keypair is regenerated in memory and the new
-   public key is published via the `DaemonPublicKey` property (see
-   [05-daemon-auth.md](./05-daemon-auth.md)). The daemon queries
-   `CurrentSession`; for any window reported with `overlay_shown == true`, it
-   re-issues `Overlay(show)` wrapped in a freshly signed `SignedEnvelope`. The
-   plugin re-verifies against the new public key it reads on demand, and the
-   re-issued show also carries a fresh echo-back token. This refreshes both the
-   request signature and the token embedded in the plugin's already-rendered
-   overlay, so the user's next `UserAction` click validates against the new key
-   (the keypair regenerates each start, so pre-restart envelopes/tokens are
-   invalid and clicks during the gap are harmlessly dropped). When the user
-   clicks, `UserAction` carries `app_id` + `action` (plugin authority) +
-   `policy_id` + signature; the daemon verifies the Ed25519 signature and
-   re-derives the policy from `policy_id` in its own DB. No block state is
-   restored or persisted by the daemon.
+2. **Daemon crash recovery with active overlay.** Resolved by the declarative
+    architecture. The daemon exposes `ActiveBlocks` — the authoritative set of
+    currently blocked apps — as a readable D-Bus property. On restart, the
+    `EnforcerActor` re-evaluates active policies and populates `ActiveBlocks`
+    from its own policy state. The plugin detects the daemon's `NameOwnerChanged`,
+    reconnects, reads `ActiveBlocks`, and shows overlays for all currently
+    blocked apps. No crypto, no re-issued commands, no per-instance
+    reconciliation.
 
 3. **gpui-version compatibility**: The Cargo.toml references specific git
    branches of gpui/gpui-component/zeds-font-kit. These may have API changes.

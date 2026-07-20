@@ -1,12 +1,13 @@
 //! wellbeing-daemon — Digital Wellbeing system service.
 //! Starts the D-Bus server, platform layer, and background actors.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info};
 use wellbeing_core::{SystemClock, Uid};
 
@@ -124,11 +125,14 @@ async fn main() -> Result<()> {
     });
     info!("tracker actor ready");
 
+    let active_blocks = Arc::new(RwLock::new(HashMap::new()));
+
     let mut enforcer = wellbeing_daemon::blocking::EnforcerActor::new(
         pool.clone(),
         platform.clone(),
         Box::new(SystemClock),
         signal_tx.clone(),
+        active_blocks.clone(),
     );
     tokio::spawn(async move {
         while let Some(event) = enforcer_rx.recv().await {
@@ -229,6 +233,7 @@ async fn main() -> Result<()> {
         registry,
         platform.event_tx(),
         Box::new(SystemClock),
+        active_blocks,
     );
     tokio::spawn(async move {
         if let Err(e) = conn

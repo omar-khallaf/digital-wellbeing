@@ -4,7 +4,7 @@
 
 use crate::valuetypes::*;
 use serde::{Deserialize, Serialize};
-use zvariant::Type;
+use zvariant::{OwnedValue, Type, Value};
 
 /// Policy kind discriminant — maps to DB integer.
 #[repr(u8)]
@@ -117,6 +117,35 @@ pub struct BlockStateInfo {
     pub app_id: String,
     pub blocked: bool,
     pub reason: BlockReason,
+}
+
+/// Entry in the daemon's ActiveBlocks property.
+/// Consumed by the compositor plugin (reads on startup for crash recovery)
+/// and GUI (reads for dashboard display).
+///
+/// D-Bus wire order matches `a(s(tutau))`:
+///   s  = app_id
+///   t  = policy_id
+///   u  = reason
+///   t  = blocked_since
+///   au = available_actions
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Value)]
+pub struct ActiveBlockEntry {
+    pub app_id: String,
+    pub policy_id: u64,
+    pub reason: u32,
+    pub blocked_since: u64,
+    pub available_actions: Vec<u32>,
+}
+/// Wrapper for ActiveBlocks property return type.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ActiveBlocks(pub Vec<ActiveBlockEntry>);
+
+impl TryFrom<OwnedValue> for ActiveBlocks {
+    type Error = zvariant::Error;
+    fn try_from(value: OwnedValue) -> Result<Self, Self::Error> {
+        Vec::<ActiveBlockEntry>::try_from(value).map(Self)
+    }
 }
 
 /// Window info emitted by plugin.

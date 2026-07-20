@@ -2,24 +2,24 @@
 //!
 //! [`EnforcerActor`] is the core enforcement engine. It receives
 //! [`PlatformEvent`]s, evaluates policies **gate-first** (before any event
-//! is persisted), and manages overlays / limit-timers / notify-timers.
+//! is persisted), and manages overlay state declaratively.
 //!
 //! ## Gate-First Discipline
 //!
 //! On `WindowFocused`, the actor resolves categories & policies, calls
 //! [`evaluate`], and acts on the verdict **before** writing any event:
 //!
-//! - **Block** → show overlay, DON'T write `WindowFocused` for the app.
+//! - **Block** → record in active_blocks, DON'T write `WindowFocused` for the app.
 //!   The previous app's interval IS closed (`Unfocused` written).
 //! - **Notify** → write events normally, send notification, start repeat timer.
 //! - **Ok** → write events normally, start limit timer.
 //!
-//! ## Timer Architecture
+//! ## Declarative Block State
 //!
-//! Limit and notification timers are `tokio::spawn` tasks that send messages
-//! through an internal `mpsc` channel when they fire. The actor drains this
-//! channel at the start of every [`handle_event`] call, ensuring serial
-//! processing without `Arc<Mutex>` wrapping.
+//! Block state is maintained in `active_blocks` and exposed to the compositor
+//! plugin via the `BlockStateChanged` D-Bus signal. The daemon never commands
+//! the plugin directly — the plugin reads daemon state and manages its own
+//! overlays.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,11 +34,12 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::platform::{OverlayConfig, Platform, PlatformEvent};
+use crate::platform::{Platform, PlatformEvent};
 use crate::policy::*;
 use crate::signal::DaemonSignal;
 use crate::store::{DbPool, schema};
 use crate::tracking::FocusState;
+use wellbeing_core::ActiveBlockEntry;
 use wellbeing_core::*;
 
 const EVENT_WINDOW_FOCUSED: i32 = 0;
@@ -75,6 +76,7 @@ pub struct EnforcerActor<P: Platform> {
     limit_timers: HashMap<AppId, tokio::task::JoinHandle<()>>,
     notify_timers: HashMap<AppId, NotifyTimerState>,
     blocking_state: BlockingState,
+    active_blocks: Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppId, ActiveBlockEntry>>>>,
     internal_tx: mpsc::Sender<InternalEvent>,
     internal_rx: mpsc::Receiver<InternalEvent>,
     signal_tx: mpsc::UnboundedSender<DaemonSignal>,
@@ -87,6 +89,7 @@ impl<P: Platform> EnforcerActor<P> {
         platform: Arc<P>,
         clock: Box<dyn Clock>,
         signal_tx: mpsc::UnboundedSender<DaemonSignal>,
+        active_blocks: Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppId, ActiveBlockEntry>>>>,
     ) -> Self {
         let (internal_tx, internal_rx) = mpsc::channel::<InternalEvent>(32);
         Self {
@@ -97,6 +100,7 @@ impl<P: Platform> EnforcerActor<P> {
             limit_timers: HashMap::new(),
             notify_timers: HashMap::new(),
             blocking_state: BlockingState::Idle,
+            active_blocks,
             internal_tx,
             internal_rx,
             signal_tx,
@@ -141,7 +145,7 @@ impl<P: Platform> EnforcerActor<P> {
             PlatformEvent::UserAction {
                 app_id,
                 action,
-                policy_id,
+                uid,
             } => {
                 let act = match action {
                     0 => OverlayAction::Extra,
@@ -151,7 +155,7 @@ impl<P: Platform> EnforcerActor<P> {
                         return;
                     }
                 };
-                self.handle_user_action(app_id, act, policy_id).await;
+                self.handle_user_action(app_id, act, uid).await;
             }
         }
     }
@@ -326,18 +330,29 @@ impl<P: Platform> EnforcerActor<P> {
         debug!("Resumed — intervals resumed");
     }
 
-    pub async fn handle_user_action(
-        &mut self,
-        app_id: AppId,
-        action: OverlayAction,
-        policy_id: PolicyId,
-    ) {
+    pub async fn handle_user_action(&mut self, app_id: AppId, action: OverlayAction, uid: Uid) {
+        let policy_id = self
+            .active_blocks
+            .read()
+            .await
+            .get(&uid)
+            .and_then(|blocks| blocks.get(&app_id))
+            .map(|entry| PolicyId(entry.policy_id as i64))
+            .unwrap_or_else(|| {
+                warn!(%app_id, ?uid, "user_action: app not in active blocks");
+                PolicyId(0)
+            });
+
+        if policy_id.0 == 0 {
+            return;
+        }
+
         match action {
             OverlayAction::Extra => {
                 self.grant_extension(&app_id, policy_id).await;
             }
             OverlayAction::Close => {
-                self.hide_overlay_and_reset(&app_id).await;
+                self.unblock_app(&app_id, uid).await;
             }
         }
     }
@@ -390,7 +405,7 @@ impl<P: Platform> EnforcerActor<P> {
             }
         }
 
-        self.hide_overlay_and_reset(app_id).await;
+        self.unblock_app(app_id, uid).await;
 
         info!(%app_id, "Extension granted");
     }
@@ -747,16 +762,25 @@ impl<P: Platform> EnforcerActor<P> {
             blocked_since: SystemTime::from(self.clock.now()),
             uid,
         };
-        let config = OverlayConfig {
-            app_id: app_id.clone(),
-            policy_id,
-            reason,
-            blocked_since: SystemTime::from(self.clock.now()),
-            available_actions,
+
+        let entry = ActiveBlockEntry {
+            app_id: app_id.as_ref().to_string(),
+            policy_id: policy_id.0 as u64,
+            reason: reason as u32,
+            blocked_since: SystemTime::from(self.clock.now())
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("blocked_since after epoch")
+                .as_millis() as u64,
+            available_actions: available_actions.iter().map(|a| *a as u32).collect(),
         };
-        if let Err(e) = self.platform.show_overlay(config, uid).await {
-            warn!(%app_id, error = %e, "Failed to show overlay");
-        }
+
+        self.active_blocks
+            .write()
+            .await
+            .entry(uid)
+            .or_default()
+            .insert(app_id.clone(), entry);
+
         let _ = self.signal_tx.send(DaemonSignal::BlockStateChanged {
             uid: uid.0,
             app_id: app_id.clone(),
@@ -831,18 +855,14 @@ impl<P: Platform> EnforcerActor<P> {
         Ok(())
     }
 
-    async fn hide_overlay_and_reset(&mut self, app_id: &AppId) {
-        let uid = match &self.blocking_state {
-            BlockingState::OverlayShown { uid, .. } => *uid,
-            _ => {
-                warn!(%app_id, "hide_overlay_and_reset: no overlay shown");
-                return;
-            }
-        };
+    async fn unblock_app(&mut self, app_id: &AppId, uid: Uid) {
         self.blocking_state = BlockingState::Idle;
-        if let Err(e) = self.platform.hide_overlay(app_id, uid).await {
-            warn!(%app_id, error = %e, "Failed to hide overlay");
-        }
+        self.active_blocks
+            .write()
+            .await
+            .entry(uid)
+            .or_default()
+            .remove(app_id);
 
         let _ = self.signal_tx.send(DaemonSignal::BlockStateChanged {
             uid: uid.0,
