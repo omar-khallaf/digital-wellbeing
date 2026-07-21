@@ -7,13 +7,13 @@ reads all data through the daemon's D-Bus API.
 
 ## What Goes Where
 
-| Data                            | Storage (Owner)                                                                                        | GUI Access                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
-| Event log (focus, no-focus)     | Daemon → SQLite                                                                                        | D-Bus method `GetDailyUsage()`                     |
-| Policies & categories           | Daemon → SQLite                                                                                        | D-Bus method `ListPolicies()`, other CRUD methods  |
-| Daily usage (materialized view) | Daemon → SQLite                                                                                        | D-Bus method `GetDailyUsage()`                     |
-| Block state (per-app overlays)  | Plugin (overlay state); daemon emits signal at decision time; restores via `CurrentSession` on restart | D-Bus signal `BlockStateChanged`                   |
-| Cache control                   | Daemon → DB→signal                                                                                     | D-Bus signals `DailyUsageChanged`, `PolicyMutated` |
+| Data                            | Storage (Owner)                                                                                      | GUI Access                                         |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Event log (focus, no-focus)     | Daemon → SQLite                                                                                      | D-Bus method `GetUsageRange()`                     |
+| Policies & categories           | Daemon → SQLite                                                                                      | D-Bus method `ListPolicies()`, other CRUD methods  |
+| Daily usage (materialized view) | Daemon → SQLite                                                                                      | D-Bus method `GetUsageRange()`                     |
+| Block state (per-app overlays)  | Plugin (overlay state); daemon emits signal at decision time; restores via `CurrentFocus` on restart | D-Bus signal `BlockStateChanged`                   |
+| Cache control                   | Daemon → DB→signal                                                                                   | D-Bus signals `DailyUsageChanged`, `PolicyMutated` |
 
 ## GUI Cache Architecture
 
@@ -22,22 +22,26 @@ persistence). All data originates from the daemon.
 
 ```
 GUI startup:
-  1. Call GetDailyUsage(today) → fill aggregates cache
+  1. Call GetUsageRange(last_7_days) → fill range cache
   2. Call ListPolicies() → fill policies cache
   3. Subscribe to daemon signals: BlockStateChanged,
      DailyUsageChanged, PolicyMutated
 
-Render loop (every 16ms frame):
-  - On signal → invalidate relevant cache entry → schedule re-fetch
-  - On re-fetch result → update cache → render
-  - If no signal for 5s → background refresh for freshness
+User changes time range:
+  1. Update AppState.selected_range (DateRange)
+  2. Call GetUsageRange(start, end, uid) → store in range_cache
+  3. Rebuild DashboardViewModel + ReportsViewModel from range_cache
+
+Signal received (DailyUsageChanged):
+  1. Clear range_cache wholesale
+  2. Next render tick re-fetches current selected_range via GetUsageRange
 ```
 
 **Cache TTLs:**
 
 | Data         | TTL          | Stale-while-revalidate   |
 | ------------ | ------------ | ------------------------ |
-| Daily usage  | 500ms        | Serve stale + bg refresh |
+| Usage range  | 500ms        | Serve stale + bg refresh |
 | Policies     | 5s           | Serve stale + bg refresh |
 | Block states | signal-drive | Never stale (real-time)  |
 
@@ -54,7 +58,8 @@ Thread 1 (main): gpui::Application::run()
   │   └── On each update: invalidate stale cache, re-render
   │
   └── Sends commands via mpsc::UnboundedSender<GuiCommand> to tokio thread
-      └── e.g. CreatePolicy, DeletePolicy, GrantExtension
+      └── e.g. CreatePolicy, DeletePolicy, GrantExtension,
+            ChangeDateRange
 
 Thread 2: tokio runtime (single-threaded, or current-thread)
   │
@@ -62,19 +67,20 @@ Thread 2: tokio runtime (single-threaded, or current-thread)
   │
   ├── Subscribe to daemon signals:
   │   ├── BlockStateChanged  → notify gpui thread
-  │   ├── DailyUsageChanged  → invalidate usage cache → re-query
+  │   ├── DailyUsageChanged  → invalidate range cache → re-query
   │   └── PolicyMutated      → invalidate policy cache → re-query
   │
-
   ├── Periodic queries (every 1s when active):
-  │   ├── GetDailyUsage(today, my_uid)
-  │   └── Update usage cache
+  │   ├── GetUsageRange(selected_range.start, selected_range.end, my_uid)
+  │   └── Update range cache
   │
   └── Method calls from gpui thread:
       ├── CreatePolicy(input) → daemon
       ├── UpdatePolicy(id, input) → daemon
       ├── DeletePolicy(id) → daemon
-      └── GrantExtension(app_id) → daemon
+      ├── GrantExtension(app_id) → daemon
+      └── ChangeDateRange(start, end) → update AppState.selected_range
+          → re-fetch via GetUsageRange → rebuild ViewModels
 ```
 
 ### Thread Safety
@@ -89,6 +95,100 @@ gpui thread                       tokio thread
 
 All cross-thread communication uses `mpsc::UnboundedChannel` with
 `Send + 'static` messages. No `Arc<Mutex>` shared state between threads.
+
+## DateRange Type
+
+The GUI uses a `DateRange` newtype (defined in `wellbeing-core`) to represent
+the selected time window. `DateRange` carries `start: NaiveDate` and
+`end: NaiveDate` with validation that `start <= end`. This makes invalid ranges
+unrepresentable at compile time.
+
+Presets: 7 days, 30 days, 90 days (relative to today). Custom ranges are
+constructed from explicit start/end dates via the `DatePicker` component in
+range mode.
+
+## Signal-Driven Invalidation
+
+Three daemon→GUI signals carry cache-invalidation metadata. The notifier itself
+remains the internal actor-coordination mechanism (see
+[persistence/01-database.md](../persistence/01-database.md)):
+
+| Signal              | Payload                                                | Trigger                           |
+| ------------------- | ------------------------------------------------------ | --------------------------------- |
+| `BlockStateChanged` | `uid: u32, app_id: String, blocked: bool, reason: u32` | Block added/removed               |
+| `DailyUsageChanged` | `uid: u32`                                             | Event written → aggregate updated |
+| `PolicyMutated`     | `uid: u32`                                             | Policy created/updated/deleted    |
+
+Signals carry minimal metadata — just enough for the GUI to know which cache
+entry to invalidate. On `DailyUsageChanged` the GUI clears the entire
+`range_cache` (no per-range overlap calculation). The next render tick
+re-fetches the current `selected_range` via `GetUsageRange`.
+
+## GUI ViewModel Layer
+
+The ViewModel pattern is **retained** — the data source changes, but the
+separation between data transformation and gpui rendering remains critical.
+
+Each GUI screen under `gui/src/screens/<feature>/` defines **ViewModels** —
+plain `Send + 'static` structs holding a pre-computed snapshot of what the
+render function needs. Construction happens from the in-memory cache (not
+SQLite), keeping the pattern testable without gpui initialization.
+
+See
+[DashboardViewModel in 03-ui-design.md](../features/03-ui-design.md#dashboardviewmodel)
+for the canonical definition. The full struct carries date range, bar chart
+data, per-app and per-category pie slices, top-apps list, and block cards.
+
+**Rules:**
+
+- ViewModels are `Send + 'static` and contain **zero gpui types**.
+- Each GUI screen module defines its own ViewModels.
+- ViewModel construction is pure data transformation.
+- The render loop follows the three-phase cycle: **Collect** (cache or D-Bus →
+  raw data) → **Transform** (→ ViewModel) → **Render** (→ gpui).
+- ViewModels are rebuilt whenever `AppState.selected_range` changes.
+
+**Benefits:** Testable data logic without gpui initialization; swappable UI
+framework; no gpui imports outside `gui/src/screens/` and `gui/src/ui/`.
+
+The screen-specific view models (`DashboardViewModel`, `PoliciesViewModel`,
+`ReportsViewModel`) and the UI components that consume them are detailed in
+[ui-design.md](../features/03-ui-design.md).
+
+## Daemon Wiring
+
+The daemon's actor wiring:
+
+```rust
+// In daemon/main.rs:
+let pool = StoreBuilder::new(db_path).build().await.unwrap();
+let (notifier, notifier_rx) = ReactiveNotifier::new();
+
+// ReactiveNotifier now drives D-Bus signal emission instead of
+// in-process watch channel notifications.
+
+let (approved_events_tx, approved_events_rx) = mpsc::channel(32);
+
+let (platform, event_stream) = LinuxPlatformBuilder::new().build().await.unwrap();
+
+let tracker = TrackerActor::new(approved_events_rx, pool.clone(), notifier.clone());
+let enforcer = EnforcerActor::new(
+    event_stream, approved_events_tx,
+    pool.clone(), notifier.clone(),
+);
+
+// D-Bus server actor — exposes methods/signals to GUI, forwards
+// commands to enforcer.
+let dbus = DaemonDbusActor::new(
+    pool.clone(), notifier_rx,
+    enforcer.block_state_tx,
+);
+```
+
+The `ReactiveNotifier` emits three signals on the daemon's D-Bus API; a `watch`
+channel for `BlockState` drives `BlockStateChanged` emission. All data access
+goes through D-Bus method calls that query SQLite synchronously within the
+daemon process.
 
 ## Root vs User UI Adaptation
 
@@ -130,7 +230,7 @@ User launches wellbeing-gui
   ├── Subscribe to daemon signals: BlockStateChanged, DailyUsageChanged,
   │   PolicyMutated
   │
-  ├── Initial data fetch: ListPolicies(my_uid), GetDailyUsage(today, my_uid)
+  ├── Initial data fetch: ListPolicies(my_uid), GetUsageRange(last_7_days, my_uid)
   │
   └── Render dashboard
 ```
@@ -146,84 +246,3 @@ activation mechanism.
 | Daemon stops mid-session       | Show warning banner, grey out data, auto-reconnect on daemon reappearance                              |
 | Plugin not connected           | Show warning banner, tracking paused                                                                   |
 | D-Bus method call timeout (5s) | Show error toast, retry on next render cycle                                                           |
-
-## D-Bus Signals (Invalidation, Not Data Delivery)
-
-Three daemon→GUI signals carry the GUI cache-invalidation role. The notifier
-itself remains the internal actor-coordination mechanism (see
-[persistence/01-database.md](../persistence/01-database.md)):
-
-| Signal              | Payload                                                | Trigger                           |
-| ------------------- | ------------------------------------------------------ | --------------------------------- |
-| `BlockStateChanged` | `uid: u32, app_id: String, blocked: bool, reason: u32` | Block added/removed               |
-| `DailyUsageChanged` | `uid: u32`                                             | Event written → aggregate updated |
-| `PolicyMutated`     | `uid: u32`                                             | Policy created/updated/deleted    |
-
-Signals carry minimal metadata — just enough for the GUI to know which cache
-entry to invalidate. The GUI then re-fetches the full data via D-Bus method
-calls.
-
-## GUI ViewModel Layer
-
-The ViewModel pattern is **retained** — the data source changes, but the
-separation between data transformation and gpui rendering remains critical.
-
-Each GUI screen under `gui/src/screens/<feature>/` defines **ViewModels** —
-plain `Send + 'static` structs holding a pre-computed snapshot of what the
-render function needs. Construction happens from the in-memory cache (not
-SQLite), keeping the pattern testable without gpui initialization.
-
-See
-[DashboardViewModel in 03-ui-design.md](../features/03-ui-design.md#dashboardviewmodel)
-for the canonical definition. The full struct carries date range, bar chart
-data, per-app and per-category pie slices, top-apps list, and block cards.
-
-**Rules:**
-
-- ViewModels are `Send + 'static` and contain **zero gpui types**.
-- Each GUI screen module defines its own ViewModels.
-- ViewModel construction is pure data transformation.
-- The render loop follows the three-phase cycle: **Collect** (cache or D-Bus →
-  raw data) → **Transform** (→ ViewModel) → **Render** (→ gpui).
-
-**Benefits:** Testable data logic without gpui initialization; swappable UI
-framework; no gpui imports outside `gui/src/screens/` and `gui/src/ui/`.
-
-The screen-specific view models (`DashboardViewModel`, `PoliciesViewModel`) and
-the UI components that consume them are detailed in
-[ui-design.md](../features/03-ui-design.md).
-
-## Daemon Wiring
-
-The daemon's actor wiring:
-
-```rust
-// In daemon/main.rs:
-let pool = StoreBuilder::new(db_path).build().await.unwrap();
-let (notifier, notifier_rx) = ReactiveNotifier::new();
-
-// ReactiveNotifier now drives D-Bus signal emission instead of
-// in-process watch channel notifications.
-
-let (approved_events_tx, approved_events_rx) = mpsc::channel(32);
-
-let (platform, event_stream) = LinuxPlatformBuilder::new().build().await.unwrap();
-
-let tracker = TrackerActor::new(approved_events_rx, pool.clone(), notifier.clone());
-let enforcer = EnforcerActor::new(
-    event_stream, approved_events_tx,
-    pool.clone(), notifier.clone(),
-);
-
-// D-Bus server actor — exposes methods/signals to GUI, forwards
-// commands to enforcer.
-let dbus = DaemonDbusActor::new(
-    pool.clone(), notifier_rx,
-    enforcer.block_state_tx,
-);
-```
-
-The `ReactiveNotifier` emits three signals on the daemon's D-Bus API; a `watch`
-channel for `BlockState` drives `BlockStateChanged` emission. All data access
-goes through D-Bus method calls that query SQLite synchronously within the
-daemon process.

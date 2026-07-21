@@ -11,17 +11,6 @@ Inspired by Android's Digital Wellbeing, built for Linux desktop.
 D-Bus contracts, and module layout are specified; implementation has not started
 on most components.
 
-| Component                   | Status                                              |
-| --------------------------- | --------------------------------------------------- |
-| `wellbeing-core` (types)    | Scaffolded — valuetypes, errors, domain D-Bus types |
-| `wellbeing-daemon` (actors) | Only `store/` exists (pool, schema, migrations)     |
-| `wellbeing-gui`             | Stub (`main.rs` prints "not yet implemented")       |
-| `plugins/hyprland/`         | C++ code exists, needs migration for system-bus IPC |
-| Docs & specs                | Complete — see [architecture/](docs/architecture/)  |
-
-See [01-roadmap.md](docs/planning/01-roadmap.md) for the phased implementation
-plan.
-
 ## Architecture
 
 The system is split into **two binaries communicating over D-Bus**, with an
@@ -30,19 +19,20 @@ optional compositor plugin for overlay enforcement:
 - **`wellbeing-daemon`** — tokio async daemon (runs as root in **system mode**
   or non-root in **session mode**; mode selected at startup by uid) that owns
   all tracking, policy enforcement, and SQLite data. In system mode it claims
-  `org.wellbeing.v1.Daemon` on the **system bus** and enforces per-user RBAC; in
-  session mode it claims the name on the **session bus** and enforces a single
-  user. Exposes policy CRUD and usage queries over D-Bus.
+  `org.wellbeing.v1.Controller` on the **system bus** and enforces per-user
+  RBAC; in session mode it claims the name on the **session bus** and enforces a
+  single user. Exposes policy CRUD and usage queries over D-Bus.
 - **`wellbeing-gui`** — gpui desktop app that connects exclusively over D-Bus to
   the daemon. Never opens SQLite directly. Uses an in-memory
   stale-while-revalidate cache. **Resolves the daemon's bus at runtime** via a
   4-step algorithm (system present → session present → activate system →
   activate session), never hardcodes a bus.
 - **Compositor plugin** (`org.wellbeing.v1.Manager`) — renders block overlays
-  via OpenGL and emits `FocusChanged` / `ActivityChanged` signals. Runs in the
-  user's compositor session and resolves the daemon's bus using the **identical
-  4-step algorithm** as the GUI, so it always lands on the same daemon instance.
-  This guarantees exactly one enforcing daemon per user — no double overlay.
+  via OpenGL and emits `FocusChanged` / `ActivityChanged` (with
+  `FocusActivityTag` enum) signals. Runs in the user's compositor session and
+  resolves the daemon's bus using the **identical 4-step algorithm** as the GUI,
+  so it always lands on the same daemon instance. This guarantees exactly one
+  enforcing daemon per user — no double overlay.
 
 ```text
                      ┌──────────────────────────────────────────┐
@@ -61,7 +51,7 @@ optional compositor plugin for overlay enforcement:
                      │               ▼                          │
                      │  ┌────────────────────────────────────┐  │
                      │  │  D-Bus server                      │  │
-                     │  │  org.wellbeing.v1.Daemon           │  │
+                     │  │  org.wellbeing.v1.Controller       │  │
                      │  │  system bus (root) /               │  │
                      │  │  session bus (non-root)            │  │
                      │  │  Methods: ListPolicies,            │  │
@@ -91,7 +81,7 @@ optional compositor plugin for overlay enforcement:
                │  │  render loop     │  │    │                        │
                │  └────────┬─────────┘  │    │ Overlay(v)             │
                │           │ mpsc       │    │  FocusChanged [signal] │
-               │  ┌────────┴─────────┐  │    │  CurrentSession [prop] │
+               │  ┌────────┴─────────┐  │    │  CurrentFocus [prop]   │
                │  │ tokio (bg thr.)  │  │    └────────────────────────┘
                │  │  D-Bus client    │  │
                │  │  zbus stubs +    │  │
@@ -112,7 +102,7 @@ Full design reasoning, D-Bus contracts, and component specs in
 | [03-linux-platform.md](docs/architecture/03-linux-platform.md)           | Linux platform impl: metadata, power state            |
 | [04-plugin-ipc.md](docs/architecture/04-plugin-ipc.md)                   | Plugin D-Bus contract, signed overlay tokens          |
 | [05-daemon-auth.md](docs/architecture/05-daemon-auth.md)                 | Ed25519 signing, `DaemonPublicKey`, replay handling   |
-| [06-daemon-dbus.md](docs/architecture/06-daemon-dbus.md)                 | `org.wellbeing.v1.Daemon` server, error mapping       |
+| [06-daemon-dbus.md](docs/architecture/06-daemon-dbus.md)                 | `org.wellbeing.v1.Controller` server, error mapping   |
 | [07-rbac.md](docs/architecture/07-rbac.md)                               | Per-user RBAC, policy visibility per uid              |
 | [08-modules.md](docs/architecture/08-modules.md)                         | Feature-per-directory layout, dependency flow         |
 | [09-state-flow.md](docs/architecture/09-state-flow.md)                   | Daemon-authoritative state, GUI cache architecture    |
@@ -131,7 +121,7 @@ crates/
 │   ├── lib.rs          # Re-exports for integration tests
 │   ├── store/          # DbPool, migrations, schema
 │   ├── platform/       # Platform trait + LinuxPlatform + ManagerClient
-│   ├── dbus/           # org.wellbeing.v1.Daemon server + RBAC
+│   ├── dbus/           # org.wellbeing.v1.Controller server + RBAC
 │   ├── tracking/       # domain/ data/ core/ (TrackerActor)
 │   ├── policy/         # domain/ data/ core/ (PolicyEngine)
 │   ├── categorization/ # data/ core/ (Categorizer + AI fallback)

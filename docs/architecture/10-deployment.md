@@ -21,7 +21,7 @@ Requires=dbus.service
 
 [Service]
 Type=dbus
-BusName=org.wellbeing.v1.Daemon
+BusName=org.wellbeing.v1.Controller
 ExecStart=/usr/libexec/digital-wellbeing/wellbeing-daemon
 Restart=on-failure
 RestartSec=3
@@ -48,8 +48,8 @@ WantedBy=multi-user.target
 ```
 
 `Type=dbus` means systemd considers the service "ready" when
-`org.wellbeing.v1.Daemon` appears on the system bus. The daemon registers its
-well-known name in main.rs before entering the main loop.
+`org.wellbeing.v1.Controller` appears on the system bus. The daemon registers
+its well-known name in main.rs before entering the main loop.
 
 > This unit is the **system** mode only (`uid == 0`, claims the name on the
 > system bus). A non-root user runs the **session** daemon instead — see
@@ -57,9 +57,9 @@ well-known name in main.rs before entering the main loop.
 
 ## Session Daemon (non-root)
 
-When the daemon runs as a normal user it claims `org.wellbeing.v1.Daemon` on the
-**session bus** and stores its database under the user's data home. No root, no
-systemd system service, no system-bus policy file is required.
+When the daemon runs as a normal user it claims `org.wellbeing.v1.Controller` on
+the **session bus** and stores its database under the user's data home. No root,
+no systemd system service, no system-bus policy file is required.
 
 ### Session D-Bus service (for activation)
 
@@ -68,9 +68,9 @@ bus (step 4 of [13-deployment-modes.md](./13-deployment-modes.md)). Place under
 the session service dir (system-wide or per-user):
 
 ```ini
-# /usr/share/dbus-1/services/org.wellbeing.v1.Daemon.service
+# /usr/share/dbus-1/services/org.wellbeing.v1.Controller.service
 [D-BUS Service]
-Name=org.wellbeing.v1.Daemon
+Name=org.wellbeing.v1.Controller
 Exec=/usr/libexec/digital-wellbeing/wellbeing-daemon
 # No User= — runs as the session owner. systemd-service= optional for
 # user-service activation.
@@ -103,7 +103,7 @@ alone is sufficient.
 ### Daemon policy
 
 ```xml
-<!-- /usr/share/dbus-1/system.d/org.wellbeing.v1.Daemon.conf -->
+<!-- /usr/share/dbus-1/system.d/org.wellbeing.v1.Controller.conf -->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE busconfig PUBLIC
  "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
@@ -111,14 +111,14 @@ alone is sufficient.
 <busconfig>
   <!-- Root owns the daemon -->
   <policy user="root">
-    <allow own="org.wellbeing.v1.Daemon"/>
+    <allow own="org.wellbeing.v1.Controller"/>
   </policy>
 
   <!-- Any process can communicate with the daemon -->
   <policy context="default">
-    <allow send_destination="org.wellbeing.v1.Daemon"/>
-    <allow receive_sender="org.wellbeing.v1.Daemon"/>
-    <allow own="org.wellbeing.v1.Daemon"/>
+    <allow send_destination="org.wellbeing.v1.Controller"/>
+    <allow receive_sender="org.wellbeing.v1.Controller"/>
+    <allow own="org.wellbeing.v1.Controller"/>
   </policy>
 </busconfig>
 ```
@@ -166,14 +166,14 @@ $XDG_DATA_HOME/digital-wellbeing/ # State dir (SESSION mode), mode 700
 └── wellbeing-gui                 # GUI binary, mode 755 (optional, user installs)
 
 /usr/share/dbus-1/system.d/       # D-Bus policy (system bus)
-├── org.wellbeing.v1.Daemon.conf
+├── org.wellbeing.v1.Controller.conf
 └── org.wellbeing.v1.Manager.conf
 
 /usr/share/dbus-1/system-services/ # D-Bus activation, system daemon (optional)
-└── org.wellbeing.v1.Daemon.service
+└── org.wellbeing.v1.Controller.service
 
 /usr/share/dbus-1/services/        # D-Bus activation, session daemon (optional)
-└── org.wellbeing.v1.Daemon.service
+└── org.wellbeing.v1.Controller.service
 
 /etc/systemd/system/               # systemd unit (system daemon)
 └── digital-wellbeing-daemon.service
@@ -184,13 +184,13 @@ $XDG_DATA_HOME/digital-wellbeing/ # State dir (SESSION mode), mode 700
 
 ## D-Bus Activation (Optional)
 
-When the GUI tries to call a method on `org.wellbeing.v1.Daemon` and the name
-doesn't exist, systemd can auto-start the daemon:
+When the GUI tries to call a method on `org.wellbeing.v1.Controller` and the
+name doesn't exist, systemd can auto-start the daemon:
 
 ```ini
-# /usr/share/dbus-1/system-services/org.wellbeing.v1.Daemon.service
+# /usr/share/dbus-1/system-services/org.wellbeing.v1.Controller.service
 [D-BUS Service]
-Name=org.wellbeing.v1.Daemon
+Name=org.wellbeing.v1.Controller
 Exec=/usr/libexec/digital-wellbeing/wellbeing-daemon
 User=root
 systemd-service=digital-wellbeing-daemon.service

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,11 +39,10 @@ struct ActiveOverlay {
     AppId appId;
     uint64_t policyId = 0;
     uint64_t blockedSince = 0;
-    std::vector<uint8_t> signature;
     std::vector<ActionType> actions;
     BlockReason reason = BlockReason::AppTimeLimit;
     std::vector<ButtonRect> buttons;
-    std::vector<uint64_t> windowHandles; // all windows owned by this app (TODO)
+    std::vector<uint64_t> windowHandles; // all windows owned by this app, captured at showOverlay time
 };
 
 // ── Error ────────────────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ enum class LockManagerError : std::uint8_t {
 
 // ── WindowInfo ────────────────────────────────────────────────────────────────
 // Describes a focused window. Carried in FocusChanged signal variants and
-// returned by the CurrentSession D-Bus property.
+// returned by the CurrentFocus D-Bus property.
 // Uses AppId newtype for type safety.
 // See docs/architecture/04-plugin-ipc.md §D-Bus Interface.
 struct WindowInfo {
@@ -78,18 +78,21 @@ struct WindowInfo {
 // Drawing and input-trapping state lives here. Compositor hooks call
 // drawOverlay() / onMouseClick() / onKey() from listeners registered in
 // PLUGIN_INIT.
+//
+// Focus state single source of truth: LockManager queries current focus
+// from g_ctx->currentFocus via a getter; it does NOT receive duplicate
+// setFocusedApp calls from the focus hook.
 class LockManager {
   public:
     LockManager() = default;
 
     // ── Overlay lifecycle ──────────────────────────────────────────────────
 
-    /// Show overlay for `appId`. Stores every field of the daemon-issued show
-    /// command so they can be echoed back verbatim in the UserAction signal.
-    /// @param signature  The Ed25519-signed echo-back token (inner token,
-    ///                   NOT the outer envelope signature).
+    /// Show overlay for `appId`. All fields come from the daemon's
+    /// ActiveBlocks entry. Captures window geometry from compositor for
+    /// window-relative button positioning.
     void showOverlay(const AppId &appId, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
-                     const std::vector<ActionType> &actions, const std::vector<uint8_t> &signature);
+                     const std::vector<ActionType> &actions);
 
     /// Hide overlay for `appId`. Erases the stored ActiveOverlay.
     /// Returns AppIdMismatch if appId is not currently blocked.
@@ -97,9 +100,14 @@ class LockManager {
 
     // ── Focus gate ─────────────────────────────────────────────────────────
 
-    /// Set the currently-focused app. Keyboard and mouse events are only
-    /// swallowed when the focused app has an active overlay.
-    void setFocusedApp(const AppId &appId);
+    /// Set or clear the currently-focused app. Passing std::nullopt clears
+    /// the focused app (e.g. when focus moves to desktop).
+    /// LockManager queries g_ctx->currentFocus as the single source of truth;
+    /// this setter is used for initial sync and cleanup only.
+    void setFocusedApp(std::optional<AppId> appId);
+
+    /// Get the currently-focused app, if any.
+    [[nodiscard]] auto getFocusedApp() const -> const std::optional<AppId> & { return m_focusedApp; }
 
     // ── Compositor hooks (called from Event::bus() listeners) ──────────────
 
@@ -124,13 +132,6 @@ class LockManager {
     /// True when the given app_id currently has an active overlay.
     [[nodiscard]] auto isOverlayShown(const AppId &appId) const -> bool { return m_overlays.contains(appId); }
 
-    // ── Token accessors (used by WellbeingManager::emitUserAction) ─────────
-    // Callers MUST only invoke these for an appId present in m_overlays.
-
-    [[nodiscard]] auto activePolicyId(const AppId &appId) const -> uint64_t;
-    [[nodiscard]] auto blockedSince(const AppId &appId) const -> uint64_t;
-    [[nodiscard]] auto activeSignature(const AppId &appId) const -> const std::vector<uint8_t> &;
-
     // ── Callback wiring ────────────────────────────────────────────────────
 
     using UserActionCb = std::function<void(const AppId &appId, ActionType action)>;
@@ -143,9 +144,10 @@ class LockManager {
     // ── Per-app overlay storage ────────────────────────────────────────────
     std::unordered_map<AppId, ActiveOverlay> m_overlays;
 
-    /// AppId of the currently-focused window. Used to gate keyboard/mouse
-    /// input to the focused window's app only.
-    AppId m_focusedApp;
+    /// Optional AppId of the currently-focused window. Used to gate
+    /// keyboard/mouse input to the focused window's app only.
+    /// std::nullopt means desktop / no window focused.
+    std::optional<AppId> m_focusedApp;
 
     UserActionCb m_userActionCb;
 

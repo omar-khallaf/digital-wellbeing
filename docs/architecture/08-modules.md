@@ -113,7 +113,7 @@ digital-wellbeing/
 │   │       │   ├── mod.rs         #   Platform trait, PlatformEvent, OverlayConfig
 │   │       │   └── linux.rs       #   LinuxPlatform, ManagerClient (system D-Bus)
 │   │       ├── dbus/
-│   │       │   └── mod.rs         #   org.wellbeing.v1.Daemon server + RBAC
+│   │       │   └── mod.rs         #   org.wellbeing.v1.Controller server + RBAC
 │   │       ├── tracking/          #   domain, data, core
 │   │       ├── policy/            #   domain, data, core, engine.rs
 │   │       ├── categorization/    #   data, core
@@ -155,7 +155,7 @@ digital-wellbeing/
 │
 ├── deploy/
 │   ├── digital-wellbeing-daemon.service  # systemd unit
-│   ├── org.wellbeing.v1.Daemon.conf       # D-Bus system policy
+│   ├── org.wellbeing.v1.Controller.conf       # D-Bus system policy
 │   └── org.wellbeing.v1.Manager.conf      # D-Bus system policy
 │
 └── README.md

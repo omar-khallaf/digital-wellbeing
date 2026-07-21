@@ -20,34 +20,55 @@ The dashboard uses a TabBar to switch between three screens:
 │  │                                                     ││
 │  │             Screen content (varies by tab)          ││
 │  │                                                     ││
+│  │  [TimeRangeSelector: 7d | 30d | 90d | Custom]      ││
+│  │                                                     ││
 │  └─────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────┘
 ```
 
 ## Component Mapping
 
-| Screen    | Route            | Key Components                                  |
-| --------- | ---------------- | ----------------------------------------------- |
-| Dashboard | `Tab::Dashboard` | `BarChart`, `PieChart`, `AppList`, `BlockCard`  |
-| Policies  | `Tab::Policies`  | `AppSelector`, `PolicyEditor`, `CategoryEditor` |
-| Reports   | `Tab::Reports`   | `EventLog`, `ExportDialog`, `UsageTimeline`     |
+| Screen    | Route            | Key Components                                                      |
+| --------- | ---------------- | ------------------------------------------------------------------- |
+| Dashboard | `Tab::Dashboard` | `TimeRangeSelector`, `BarChart`, `PieChart`, `AppList`, `BlockCard` |
+| Policies  | `Tab::Policies`  | `AppSelector`, `PolicyEditor`, `CategoryEditor`                     |
+| Reports   | `Tab::Reports`   | `TimeRangeSelector`, `BarChart`, `PieChart`, `ExportDialog`         |
 
-## Dashboard Screen
+## TimeRangeSelector
 
-Tab 0 — Daily usage overview.
-
-### Time Range Selector
+Shared component used on Dashboard and Reports screens.
 
 ```rust
 struct TimeRangeSelector {
-    /// First day of the selected range.
-    start: NaiveDate,
-    /// Last day of the selected range (inclusive).
-    end: NaiveDate,
+    /// Currently selected range. Drives data fetch via GetUsageRange.
+    selected: DateRange,
+    /// Preset buttons shown as a button group.
+    presets: [DateRange; 3],
+    /// Optional DatePicker for custom range selection.
+    custom_picker: Option<DatePickerState>,
 }
 ```
 
-Default is today. User can select Yesterday, This Week, Custom Range.
+Renders as a row of preset buttons (`7d`, `30d`, `90d`) plus a `Custom` button
+that opens a `DatePicker` in range mode. Selecting any preset or confirming a
+custom range updates `AppState.selected_range`, which triggers a re-fetch via
+`GetUsageRange(start, end, uid)` and a ViewModel rebuild.
+
+The `DateRange` newtype is defined in `wellbeing-core`:
+
+```rust
+pub struct DateRange {
+    pub start: NaiveDate,
+    pub end: NaiveDate,
+}
+```
+
+`DateRange` validates `start <= end` at construction time. Presets are computed
+relative to today.
+
+## Dashboard Screen
+
+Tab 0 — Usage overview for the selected time range.
 
 ### Total Screen Time — BarChart
 
@@ -66,6 +87,7 @@ struct Bar {
 ```
 
 Renders as a simple column chart with day labels on X-axis and hours on Y-axis.
+Built from `DailySummary` groups returned by `GetUsageRange`.
 
 ### Per-App Screen Time — PieChart
 
@@ -201,6 +223,49 @@ Schedule:     [Every day] from [ 09:00 ] to [ 23:00 ]
 Active:       [on/off]
 ```
 
+## Reports Screen
+
+Tab 2 — Usage history and export for the selected time range.
+
+### TimeRangeSelector
+
+Same component as Dashboard. Controls which days are fetched via `GetUsageRange`
+and displayed in the report.
+
+### ReportBarChart
+
+```rust
+struct ReportBarChart {
+    bars: Vec<ReportBar>,
+    max_minutes: f64,
+}
+
+struct ReportBar {
+    date: NaiveDate,
+    total_minutes: f64,
+}
+```
+
+### ReportPieChart
+
+```rust
+struct ReportPieChart {
+    slices: Vec<ReportSlice>,
+}
+
+struct ReportSlice {
+    app_id: AppId,
+    display_name: String,
+    color: Color,
+    total_minutes: i64,
+    percentage: f64,
+}
+```
+
+### ExportDialog
+
+CSV and JSON export of the current range's `DailySummary` data.
+
 ## Responsive Layout Strategy
 
 ```rust
@@ -227,7 +292,7 @@ navigation bar; on `Medium` and `Wide`, it's a top tab bar.
 
 ```rust
 pub struct DashboardViewModel {
-    pub date_range: (NaiveDate, NaiveDate),
+    pub date_range: DateRange,
     pub bar_chart: Vec<Bar>,
     pub pie_app: Vec<Slice>,
     pub pie_category: Vec<Slice>,
@@ -235,6 +300,24 @@ pub struct DashboardViewModel {
     pub block_cards: Vec<BlockCard>,
 }
 ```
+
+Built from `&[DailySummary]` returned by `GetUsageRange`. The `date_range` field
+carries the explicit selected range (not inferred from data).
+
+### ReportsViewModel
+
+```rust
+pub struct ReportsViewModel {
+    pub date_range: DateRange,
+    pub bar_chart: Vec<ReportBar>,
+    pub pie_app: Vec<ReportSlice>,
+    pub total_minutes: i64,
+    pub top_app: String,
+}
+```
+
+Built from `&[DailySummary]` returned by `GetUsageRange`. The `date_range` field
+mirrors the selector state.
 
 ### PoliciesViewModel
 
@@ -259,9 +342,10 @@ pub enum PolicyTarget {
 
 See [persistence/01-database.md](../persistence/01-database.md) for schema
 details. The queries below are the read paths each screen's view model is built
-from.
+from. All queries are executed server-side by the daemon in response to
+`GetUsageRange(start, end, uid)`.
 
-### Dashboard — Daily Totals (same day range query)
+### Dashboard — Daily Totals (range query)
 
 ```sql
 -- Total screen time per day in the selected date range
@@ -336,7 +420,7 @@ directories** — gpui lives only in the `gui/` crate.
 
 - **Daemon side** (`daemon/src/reports/`): `domain/` (aggregates, filter state,
   time range), `data/` (SQLite queries for dashboard totals), `core/` (report
-  building). Results are exposed over D-Bus.
+  building). Results are exposed over D-Bus via `GetUsageRange`.
 - **GUI side** (`gui/src/screens/dashboard/`): `mod.rs` + `view.rs`. The screen
   defines its **ViewModels** (above) from the D-Bus client + cache and renders
   gpui components (`BarChart`, `PieChart`, `AppList`, `BlockCard`).
@@ -345,6 +429,10 @@ directories** — gpui lives only in the `gui/` crate.
 gui/src/screens/dashboard/
 ├── mod.rs          # Screen registration, Tab::Dashboard route
 └── view.rs         # DashboardViewModel + gpui component tree
+
+gui/src/screens/reports/
+├── mod.rs          # Screen registration, Tab::Reports route
+└── view.rs         # ReportsViewModel + gpui component tree
 ```
 
 ## Future UI Enhancements
@@ -356,7 +444,7 @@ by app/category. Mousedown+mousemove reveals per-strip detail:
 
 ```
 00:00 ████████████████████████████████████████████████████ 24:00
-      ^--- Firefox 34m ---^ ^-- Code 12m --^
+       ^--- Firefox 34m ---^ ^-- Code 12m --^
 ```
 
 Not in v1. Referenced here to inform the data model — the `daily_usage` table

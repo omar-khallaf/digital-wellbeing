@@ -18,13 +18,13 @@ items state the chosen design.
    covers both the root-installed and user-only install cases.
 
 2. **Daemon crash recovery with active overlay.** Resolved by the declarative
-    architecture. The daemon exposes `ActiveBlocks` — the authoritative set of
-    currently blocked apps — as a readable D-Bus property. On restart, the
-    `EnforcerActor` re-evaluates active policies and populates `ActiveBlocks`
-    from its own policy state. The plugin detects the daemon's `NameOwnerChanged`,
-    reconnects, reads `ActiveBlocks`, and shows overlays for all currently
-    blocked apps. No crypto, no re-issued commands, no per-instance
-    reconciliation.
+   architecture. The daemon exposes `ActiveBlocks` — the authoritative set of
+   currently blocked apps — as a readable D-Bus property. On restart, the
+   `EnforcerActor` re-evaluates active policies and populates `ActiveBlocks`
+   from its own policy state. The plugin detects the daemon's
+   `NameOwnerChanged`, reconnects, reads `ActiveBlocks`, and shows overlays for
+   all currently blocked apps. No crypto, no re-issued commands, no per-instance
+   reconciliation.
 
 3. **gpui-version compatibility**: The Cargo.toml references specific git
    branches of gpui/gpui-component/zeds-font-kit. These may have API changes.

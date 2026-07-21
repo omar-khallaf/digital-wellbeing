@@ -1,9 +1,12 @@
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, RunQueryDsl, sql_query};
-use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::pooled_connection::deadpool::{Object, Pool};
+use diesel_async::pooled_connection::{
+    AsyncDieselConnectionManager, ManagerConfig, RecyclingMethod,
+};
 use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
+use futures::future::FutureExt;
 use std::path::PathBuf;
 
 pub type SqliteConn = SyncConnectionWrapper<SqliteConnection>;
@@ -40,10 +43,33 @@ impl StoreBuilder {
             let mut conn = SqliteConnection::establish(&db_path_str)?;
             sql_query("PRAGMA journal_mode=WAL;").execute(&mut conn)?;
             sql_query("PRAGMA synchronous=NORMAL;").execute(&mut conn)?;
+            sql_query("PRAGMA busy_timeout = 5000;").execute(&mut conn)?;
             crate::store::migrations::run_migrations(&mut conn)?;
         }
 
-        let mgr = AsyncDieselConnectionManager::<SqliteConn>::new(db_path_str);
+        let mut config = ManagerConfig::default();
+        config.recycling_method = RecyclingMethod::Fast;
+        config.custom_setup = Box::new(move |url| {
+            let url = url.to_string();
+            async move {
+                let mut conn = SqliteConnection::establish(&url)?;
+                sql_query("PRAGMA journal_mode=WAL;")
+                    .execute(&mut conn)
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)?;
+                sql_query("PRAGMA synchronous=NORMAL;")
+                    .execute(&mut conn)
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)?;
+                sql_query("PRAGMA busy_timeout = 5000;")
+                    .execute(&mut conn)
+                    .map_err(diesel::ConnectionError::CouldntSetupConfiguration)?;
+                Ok(SyncConnectionWrapper::new(conn))
+            }
+            .boxed()
+        });
+        let mgr = AsyncDieselConnectionManager::<SqliteConn>::new_with_config(
+            db_path_str.clone(),
+            config,
+        );
         let pool = Pool::builder(mgr)
             .max_size(4)
             .build()

@@ -646,7 +646,8 @@ CREATE TABLE app_categories (
 
 - Every row is authoritative — whether seeded as a default or set by the user.
 - `user_id=0` represents system-global defaults (seeded at migration).
-- Per-user overrides use `user_id=N` (the caller's UID from D-Bus `SO_PEERCRED`).
+- Per-user overrides use `user_id=N` (the caller's UID from D-Bus
+  `SO_PEERCRED`).
 - Resolution: check `user_id=N` first; if no row exists, fall back to
   `user_id=0`.
 - `category_id` is nullable: when NULL the categorizer falls through to AI

@@ -1,5 +1,13 @@
 #include "lockdown.hpp"
 #include <algorithm>
+#include <cstdint>
+
+// Hyprland compositor API for window enumeration and geometry.
+// Guarded: test builds don't have Hyprland headers.
+#if __has_include(<hyprland/Compositor.hpp>)
+#include <hyprland/Compositor.hpp>
+#include <hyprland/desktop/view/Window.hpp>
+#endif
 
 using wellbeing::ActionType;
 using wellbeing::AppId;
@@ -9,41 +17,75 @@ using wellbeing::AppId;
 // =============================================================================
 
 void LockManager::showOverlay(const AppId &appId, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
-                              const std::vector<ActionType> &actions, const std::vector<uint8_t> &signature) {
+                              const std::vector<ActionType> &actions) {
     ActiveOverlay overlay;
     overlay.appId = appId;
     overlay.policyId = policyId;
     overlay.blockedSince = blockedSince;
-    overlay.signature = signature;
     overlay.actions = actions;
     overlay.reason = reason;
 
-    // TODO: capture target window geometry from compositor memory for each
-    //   window owned by this app and populate windowHandles.
-    //   PHLWINDOW target = g_pCompositor->m_pLastFocus.lock();
-    //   if (target) {
-    //       overlay.windowHandles.push_back(reinterpret_cast<uint64_t>(target.get()));
-    //   }
-    // Per-window trapping currently relies on m_focusedApp gating instead.
-
-    // Build button rects — preallocate to avoid reallocation in hot path.
-    // Two buttons: Extra (if available) then Close.
+    // ── Build button rects — preallocate to avoid reallocation ──────────
     overlay.buttons.reserve(actions.size());
 
-    // Centered layout: buttons side-by-side at the lower third of the window.
-    // Placeholder coords — replace with window-relative positioning once
-    // window geometry capture is implemented.
-    const int btnW = 140;
-    const int btnH = 40;
-    const int btnY = 350; // placeholder Y
-    const int stepX = 160;
+    // ── Capture window geometry from compositor ─────────────────────────
+    // Find all compositor windows whose initial class matches this appId.
+    // We use m_initialClass because m_class can change after window start.
+    // Window handles are stored as raw pointers for later compositor API use.
+#if __has_include(<hyprland/Compositor.hpp>)
+    {
+        const auto &windows = g_pCompositor->m_windows;
+        for (const auto &w : windows) {
+            if (w->m_initialClass == appId.value()) {
+                const auto handle = reinterpret_cast<uint64_t>(w.get());
+                overlay.windowHandles.push_back(handle);
+            }
+        }
+    }
+#endif
 
-    for (size_t i = 0; i < actions.size(); ++i) {
-        // TODO: position relative to target window:
-        //   const int btnX = winX + (winW / 2)
-        //       - static_cast<int>(actions.size() * stepX / 2) + i * stepX;
-        const int btnX = 200 + static_cast<int>(i * stepX);
-        overlay.buttons.push_back(ButtonRect{.x = btnX, .y = btnY, .w = btnW, .h = btnH, .actionId = actions[i]});
+    // ── Build button rects: window-relative positioning ─────────────────
+    // If we captured windows, center buttons at the lower third of the
+    // first captured window. Otherwise use fallback coordinates.
+    constexpr int btnW = 140;
+    constexpr int btnH = 40;
+    constexpr int stepX = 160;
+
+#if __has_include(<hyprland/Compositor.hpp>)
+    if (!overlay.windowHandles.empty()) {
+        // Find the window that matches our first handle.
+        const auto &windows = g_pCompositor->m_windows;
+        for (const auto &ww : windows) {
+            if (reinterpret_cast<uint64_t>(ww.get()) == overlay.windowHandles[0]) {
+                const auto box = ww->getWindowMainSurfaceBox();
+                const int winX = static_cast<int>(box.x);
+                const int winY = static_cast<int>(box.y);
+                const int winW = static_cast<int>(box.w);
+                const int winH = static_cast<int>(box.h);
+
+                // Buttons positioned at lower third of window, centered.
+                const int btnY = winY + (winH * 2 / 3);
+                const int totalWidth = static_cast<int>(actions.size() * stepX);
+                const int startX = winX + ((winW - totalWidth) / 2);
+
+                for (size_t i = 0; i < actions.size(); ++i) {
+                    const int btnX = startX + static_cast<int>(i * stepX);
+                    overlay.buttons.push_back(
+                        ButtonRect{.x = btnX, .y = btnY, .w = btnW, .h = btnH, .actionId = actions[i]});
+                }
+                break;
+            }
+        }
+    }
+#endif
+
+    // Fallback: hardcoded coords when no window geometry available.
+    if (overlay.buttons.empty()) {
+        constexpr int btnY = 350;
+        for (size_t i = 0; i < actions.size(); ++i) {
+            const int btnX = 200 + static_cast<int>(i * stepX);
+            overlay.buttons.push_back(ButtonRect{.x = btnX, .y = btnY, .w = btnW, .h = btnH, .actionId = actions[i]});
+        }
     }
 
     m_overlays.insert_or_assign(appId, std::move(overlay));
@@ -58,10 +100,10 @@ auto LockManager::hideOverlay(const AppId &appId) -> LockManagerError {
 }
 
 // =============================================================================
-// Focus gate
+// Focus gate — single source of truth is g_ctx->currentFocus
 // =============================================================================
 
-void LockManager::setFocusedApp(const AppId &appId) { m_focusedApp = appId; }
+void LockManager::setFocusedApp(std::optional<AppId> appId) { m_focusedApp = std::move(appId); }
 
 // =============================================================================
 // Compositor hooks
@@ -79,28 +121,6 @@ void LockManager::drawOverlay() {
             // TODO: draw backdrop over each blocked window using
             //   g_pHyprOpenGL->renderRect(...). When windowHandles is
             //   empty, draw a single placeholder backdrop per overlay.
-            //
-            //   const auto pos = target->m_vRealPosition.value();
-            //   const auto size = target->m_vRealSize.value();
-            //
-            //   // 1. 75 % opaque black backdrop over the entire blocked window.
-            //   g_pHyprOpenGL->renderRect(
-            //       CBox{pos.x, pos.y, size.x, size.y},
-            //       CColor{0.0, 0.0, 0.0, 0.75}
-            //   );
-            //
-            //   // 2. Centered prompt text.
-            //   // g_pHyprOpenGL->renderText(...) or a drawText helper.
-            //
-            //   // 3. Action buttons (filled rects + labels).
-            //   for (const auto& btn : overlay.buttons) {
-            //       // Button background
-            //       g_pHyprOpenGL->renderRect(
-            //           CBox{btn.x, btn.y, btn.w, btn.h},
-            //           CColor{0.2, 0.5, 0.8, 0.9}  // blue accent
-            //       );
-            //       // Label text centered on the button rect.
-            //   }
         }
 
         // Placeholder structure: when windowHandles is empty, draw a single
@@ -114,16 +134,16 @@ void LockManager::drawOverlay() {
 }
 
 auto LockManager::onMouseClick(double x, double y) -> bool {
-    if (m_focusedApp.empty() || !m_overlays.contains(m_focusedApp)) {
+    if (!m_focusedApp.has_value() || !m_overlays.contains(*m_focusedApp)) {
         return false;
     }
 
     // Hit-test action buttons for the focused app's overlay in order.
-    const auto &buttons = m_overlays.at(m_focusedApp).buttons;
+    const auto &buttons = m_overlays.at(*m_focusedApp).buttons;
     const bool buttonConsumed = std::ranges::any_of(buttons, [this, x, y](const auto &btn) -> auto {
         if (withinRect(btn, x, y)) {
             if (m_userActionCb) {
-                m_userActionCb(m_focusedApp, btn.actionId);
+                m_userActionCb(*m_focusedApp, btn.actionId);
             }
             return true;
         }
@@ -142,7 +162,7 @@ auto LockManager::onMouseClick(double x, double y) -> bool {
 
 auto LockManager::onKey() -> bool {
     // Swallow ALL keyboard input when the focused window's app is blocked.
-    return !m_focusedApp.empty() && m_overlays.contains(m_focusedApp);
+    return m_focusedApp.has_value() && m_overlays.contains(*m_focusedApp);
 }
 
 auto LockManager::isTarget(uint64_t windowHandle) const -> bool {
@@ -153,18 +173,6 @@ auto LockManager::isTarget(uint64_t windowHandle) const -> bool {
     //   geometry capture is implemented.
     (void)windowHandle;
     return false;
-}
-
-// =============================================================================
-// Token accessors — per-app
-// =============================================================================
-
-auto LockManager::activePolicyId(const AppId &appId) const -> uint64_t { return m_overlays.at(appId).policyId; }
-
-auto LockManager::blockedSince(const AppId &appId) const -> uint64_t { return m_overlays.at(appId).blockedSince; }
-
-auto LockManager::activeSignature(const AppId &appId) const -> const std::vector<uint8_t> & {
-    return m_overlays.at(appId).signature;
 }
 
 // =============================================================================

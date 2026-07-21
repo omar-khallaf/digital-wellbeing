@@ -6,6 +6,7 @@ use diesel::{ExpressionMethods, QueryDsl, delete, insert_into, update};
 use diesel_async::RunQueryDsl;
 use tokio::sync::{RwLock, mpsc::UnboundedSender};
 use tracing::{info, warn};
+use wellbeing_core::dbus_constants::DAEMON_OBJECT_PATH;
 use wellbeing_core::{
     ActiveBlockEntry, AppCategoryRow, AppId, Category, CategoryId, Clock, DailySummary,
     DailyUsageEntry, PluginInstanceId, Policy, PolicyInput, Uid,
@@ -80,7 +81,7 @@ impl DaemonInterface {
     }
 }
 
-#[interface(name = "org.wellbeing.v1.Daemon")]
+#[interface(name = "org.wellbeing.v1.Controller")]
 impl DaemonInterface {
     async fn list_policies(
         &self,
@@ -186,7 +187,7 @@ impl DaemonInterface {
                 fdo::Error::Failed("internal error".into())
             })?;
 
-        if let Ok(emitter) = SignalEmitter::new(conn, "/org/wellbeing/Daemon")
+        if let Ok(emitter) = SignalEmitter::new(conn, DAEMON_OBJECT_PATH)
             && let Err(e) = Self::policy_mutated(emitter, input.owner_id).await
         {
             tracing::error!(error = %e, "failed to emit policy_mutated signal");
@@ -273,7 +274,7 @@ impl DaemonInterface {
             return Err(fdo::Error::Failed("policy not found".into()));
         }
 
-        if let Ok(emitter) = SignalEmitter::new(conn, "/org/wellbeing/Daemon")
+        if let Ok(emitter) = SignalEmitter::new(conn, DAEMON_OBJECT_PATH)
             && let Err(e) = Self::policy_mutated(emitter, input.owner_id).await
         {
             tracing::error!(error = %e, "failed to emit policy_mutated signal");
@@ -321,7 +322,7 @@ impl DaemonInterface {
             return Err(fdo::Error::Failed("policy not found".into()));
         }
 
-        if let Ok(emitter) = SignalEmitter::new(conn, "/org/wellbeing/Daemon")
+        if let Ok(emitter) = SignalEmitter::new(conn, DAEMON_OBJECT_PATH)
             && let Err(e) = Self::policy_mutated(emitter, policy_owner as u32).await
         {
             tracing::error!(error = %e, "failed to emit policy_mutated signal");
@@ -331,13 +332,22 @@ impl DaemonInterface {
 
     async fn register_plugin(
         &self,
-        instance_id: String,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<()> {
+        // Extract sender unique bus name BEFORE authenticate consumes header.
+        let sender_str = header
+            .sender()
+            .ok_or_else(|| {
+                warn!("register_plugin: no sender in message header");
+                fdo::Error::Failed("internal error".into())
+            })?
+            .as_ref()
+            .to_owned();
+
         let caller_uid = Self::authenticate(conn, header).await?;
         let uid = Uid(caller_uid);
-        let instance = PluginInstanceId::new(caller_uid, &instance_id);
+        let instance = PluginInstanceId::new(&sender_str);
 
         {
             let cooldown = self.plugin_reg_cooldown.read().await;
@@ -351,9 +361,11 @@ impl DaemonInterface {
 
         info!(?uid, ?instance, "plugin registering");
 
-        let well_known = format!("org.wellbeing.v1.Manager.{}", instance_id);
+        // Use the unique bus name (":1.xxx") as proxy destination.
+        // Plugin no longer claims a well-known name — the daemon connects
+        // via the unique name assigned by the bus daemon.
         let builder = ManagerProxy::builder(conn)
-            .destination(well_known)
+            .destination(sender_str)
             .map_err(|e| {
                 warn!(?uid, "failed to set destination: {e}");
                 fdo::Error::Failed("plugin proxy creation failed".into())
@@ -656,7 +668,7 @@ impl DaemonInterface {
                 })?;
         }
 
-        if let Ok(emitter) = SignalEmitter::new(conn, "/org/wellbeing/Daemon")
+        if let Ok(emitter) = SignalEmitter::new(conn, DAEMON_OBJECT_PATH)
             && let Err(e) = Self::policy_mutated(emitter, caller).await
         {
             tracing::error!(error = %e, "failed to emit policy_mutated signal from set_app_category");
@@ -669,13 +681,14 @@ impl DaemonInterface {
     #[zbus(signal)]
     async fn policy_mutated(emitter: SignalEmitter<'_>, uid: u32) -> zbus::Result<()>;
 
+    /// Daily usage data mutated for a user.
+    #[zbus(signal)]
+    async fn daily_usage_changed(emitter: SignalEmitter<'_>, uid: u32) -> zbus::Result<()>;
+
     /// Block state changed for an app (shown / hidden).
     #[zbus(signal)]
     async fn block_state_changed(
         emitter: SignalEmitter<'_>,
-        uid: u32,
-        app_id: String,
-        blocked: bool,
-        reason: u32,
+        data: (u32, String, bool, u32),
     ) -> zbus::Result<()>;
 }

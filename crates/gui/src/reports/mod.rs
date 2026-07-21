@@ -4,7 +4,6 @@
 //! produce chart-ready data from the cached daily usage, then renders real
 //! `gpui_component::chart` components inside `Card` panels.
 
-use chrono::Utc;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::*;
@@ -12,9 +11,9 @@ use gpui_component::ActiveTheme;
 use gpui_component::button::Button;
 use gpui_component::chart::{BarChart, PieChart};
 use gpui_component::{h_flex, v_flex};
-use wellbeing_core::{AppCategoryRow, Category, DailyUsageEntry};
+use wellbeing_core::{AppCategoryRow, Category, DailySummary, DailyUsageEntry, DateRange};
 
-use crate::components::card;
+use crate::components::{card, time_range_selector};
 use crate::theme::{rad, resolve_color, sp};
 
 /// One bar in a time-series bar chart.
@@ -36,28 +35,28 @@ pub struct ReportSlice {
 /// ViewModel for the reports screen.
 #[derive(Debug, Clone)]
 pub struct ReportsViewModel {
-    pub range_label: String,
+    pub date_range: DateRange,
     pub bar_chart: Vec<ReportBar>,
     pub pie_app: Vec<ReportSlice>,
     pub total_minutes: i64,
     pub top_app: String,
 }
 
-/// Build a [`ReportsViewModel`] from cached usage data over the last
-/// `range_days` days (7 / 30).
+/// Build a [`ReportsViewModel`] from cached usage data over the given [`DateRange`].
 pub fn build_reports_viewmodel(
-    usage: &[DailyUsageEntry],
+    range: DateRange,
+    summaries: &[DailySummary],
     _categories: &[Category],
     app_categories: &[AppCategoryRow],
-    range_days: u32,
 ) -> ReportsViewModel {
-    let today = Utc::now().date_naive();
-    let start = today - chrono::Days::new(range_days as u64 - 1);
-    let range_label = format!("{} – {}", start.format("%b %d"), today.format("%b %d, %Y"),);
+    let usage: Vec<DailyUsageEntry> = summaries
+        .iter()
+        .flat_map(|s| s.entries.iter().cloned())
+        .collect();
 
     // Bars (reuse dashboard logic shape).
     let mut by_date: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
-    for entry in usage {
+    for entry in &usage {
         let minutes = entry.total_seconds as f64 / 60.0;
         *by_date.entry(entry.date.clone()).or_insert(0.0) += minutes;
     }
@@ -116,7 +115,7 @@ pub fn build_reports_viewmodel(
         .unwrap_or_else(|| "—".into());
 
     ReportsViewModel {
-        range_label,
+        date_range: range,
         bar_chart,
         pie_app,
         total_minutes,
@@ -140,7 +139,11 @@ fn format_duration(total_minutes: i64) -> String {
 }
 
 /// Render the reports view from a ViewModel.
-pub fn render_reports_view(cx: &App, vm: &ReportsViewModel) -> impl IntoElement {
+pub fn render_reports_view(
+    cx: &App,
+    vm: &ReportsViewModel,
+    on_range_change: impl Fn(DateRange) + 'static,
+) -> impl IntoElement {
     let accent = resolve_color("", "accent");
 
     v_flex()
@@ -149,6 +152,7 @@ pub fn render_reports_view(cx: &App, vm: &ReportsViewModel) -> impl IntoElement 
             h_flex()
                 .gap_3()
                 .items_center()
+                .child(time_range_selector(cx, vm.date_range, on_range_change))
                 .child(
                     div()
                         .text_xs()
@@ -157,7 +161,11 @@ pub fn render_reports_view(cx: &App, vm: &ReportsViewModel) -> impl IntoElement 
                         .rounded(rad::sm())
                         .bg(theme_accent(cx))
                         .text_color(cx.theme().accent_foreground)
-                        .child(vm.range_label.clone()),
+                        .child(format!(
+                            "{} – {}",
+                            vm.date_range.start.format("%b %d"),
+                            vm.date_range.end.format("%b %d, %Y"),
+                        )),
                 )
                 .child(
                     div()

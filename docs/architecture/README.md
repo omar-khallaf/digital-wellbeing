@@ -12,7 +12,7 @@ topics. Each concern lives in its own file (see the index below).
 | 03  | [03-linux-platform.md](./03-linux-platform.md)           | Linux `Platform` impl: app metadata resolution, power/session state handling, compositor support                               |
 | 04  | [04-plugin-ipc.md](./04-plugin-ipc.md)                   | `org.wellbeing.v1.Manager` D-Bus contract, declarative block state (`ActiveBlocks`), overlay lifecycle, multi-instance plugins |
 | 05  | [05-daemon-auth.md](./05-daemon-auth.md)                 | Daemon-plugin trust model: D-Bus name ownership, `SO_PEERCRED` authentication, no crypto                                       |
-| 06  | [06-daemon-dbus.md](./06-daemon-dbus.md)                 | `org.wellbeing.v1.Daemon` D-Bus server, error mapping, GUI D-Bus client architecture                                           |
+| 06  | [06-daemon-dbus.md](./06-daemon-dbus.md)                 | `org.wellbeing.v1.Controller` D-Bus server, error mapping, GUI D-Bus client architecture                                       |
 | 07  | [07-rbac.md](./07-rbac.md)                               | Per-user RBAC model, policy visibility, EnforcerActor per-user application, data-model changes                                 |
 | 08  | [08-modules.md](./08-modules.md)                         | Feature-per-directory layout, dependency flow, the `blocking/overlay/` boundary, workspace tree                                |
 | 09  | [09-state-flow.md](./09-state-flow.md)                   | Daemon-authoritative state, GUI cache architecture, runtime model, root/user UI, view models, daemon wiring                    |
@@ -79,7 +79,7 @@ the same bus as the daemon it registered with.
                      │               ▼                          │
                      │  ┌────────────────────────────────────┐  │
                      │  │  D-Bus server                      │  │
-                     │  │  org.wellbeing.v1.Daemon           │  │
+                     │  │  org.wellbeing.v1.Controller           │  │
                      │  │  daemon's bus (system/session)     │  │
                      │  │  Methods: ListPolicies,            │  │
                      │  │   CreatePolicy, GetDailyUsage,     │  │
@@ -108,7 +108,7 @@ the same bus as the daemon it registered with.
                │  │  render loop     │  │    │                        │
                │  └────────┬─────────┘  │    │ reads ActiveBlocks     │
                │           │ mpsc       │    │  FocusChanged [signal] │
-               │  ┌────────┴─────────┐  │    │  CurrentSession [prop] │
+               │  ┌────────┴─────────┐  │    │  CurrentFocus [prop] │
                │  │ tokio (bg thr.)  │  │    └────────────────────────┘
                │  │  D-Bus client    │  │
                │  │  zbus stubs +    │  │
@@ -131,10 +131,10 @@ the same bus as the daemon it registered with.
   See [13-deployment-modes.md](./13-deployment-modes.md).
 - **D-Bus for everything** — two well-known interfaces on the **daemon's bus**
   (system bus in system mode, session bus in session mode):
-  - `org.wellbeing.v1.Daemon` (daemon) — policy CRUD with RBAC, usage queries,
-    state change signals
+  - `org.wellbeing.v1.Controller` (daemon) — policy CRUD with RBAC, usage
+    queries, state change signals
   - `org.wellbeing.v1.Manager` (plugin) — focus events, user actions, current
-    session property. Plugin reads block state from daemon's `ActiveBlocks`
+    focus property. Plugin reads block state from daemon's `ActiveBlocks`
     property (see [04-plugin-ipc.md](./04-plugin-ipc.md))
 - **Per-user enforcement with RBAC** — the daemon authorizes every D-Bus method
   call by the caller's uid (kernel-authenticated via `SO_PEERCRED`). In system

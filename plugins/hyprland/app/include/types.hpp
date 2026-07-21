@@ -6,6 +6,40 @@
 
 namespace wellbeing {
 
+// =============================================================================
+// D-Bus constants
+// =============================================================================
+
+// Daemon (Controller) interface — the daemon's D-Bus API surface.
+inline constexpr auto DAEMON_INTERFACE = "org.wellbeing.v1.Controller";
+inline constexpr auto DAEMON_OBJECT_PATH = "/org/wellbeing/Controller";
+
+// Manager interface — the plugin's D-Bus API surface.
+inline constexpr auto MANAGER_INTERFACE = "org.wellbeing.v1.Manager";
+inline constexpr auto MANAGER_OBJECT_PATH = "/org/wellbeing/Manager";
+
+// Signal names (Manager → daemon/GUI)
+inline constexpr auto FOCUS_CHANGED_SIGNAL = "FocusChanged";
+inline constexpr auto ACTIVITY_CHANGED_SIGNAL = "ActivityChanged";
+inline constexpr auto USER_ACTION_SIGNAL = "UserAction";
+
+// Property name (Manager → daemon/GUI)
+inline constexpr auto CURRENT_FOCUS_PROPERTY = "CurrentFocus";
+
+// Daemon methods (Controller interface)
+inline constexpr auto REGISTER_PLUGIN_METHOD = "RegisterPlugin";
+
+// org.freedesktop.DBus.Properties
+inline constexpr auto GET_PROPERTY_METHOD = "Get";
+inline constexpr auto PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties";
+
+// org.freedesktop.DBus (well-known)
+inline constexpr auto DBUS_INTERFACE = "org.freedesktop.DBus";
+inline constexpr auto DBUS_OBJECT_PATH = "/org/freedesktop/DBus";
+inline constexpr auto NAME_HAS_OWNER_METHOD = "NameHasOwner";
+inline constexpr auto START_SERVICE_BY_NAME_METHOD = "StartServiceByName";
+inline constexpr auto NAME_OWNER_CHANGED_SIGNAL_NAME = "NameOwnerChanged";
+
 // ── AppId ─────────────────────────────────────────────────────────────────────
 // Validated non-empty identifier for an application (e.g. "firefox").
 // Validated at the D-Bus boundary; LockManager never sees an unvalidated value.
@@ -81,13 +115,19 @@ enum class BlockReason : uint8_t {
     return std::nullopt;
 }
 
-// ── FocusVariantTag ───────────────────────────────────────────────────────────
+// ── FocusVariantTag ──────────────────────────────────────────────────────────
 // D-Bus variant discriminator for FocusChanged signal (org.wellbeing.v1.Manager).
 enum class FocusVariantTag : uint8_t {
     Desktop = 1,
     App = 2,
 };
 
-// CurrentSession reuses FocusVariantTag (see above) — no separate SessionStateTag.
+// ── FocusActivityTag ───────────────────────────────────────────────────────────
+// Discriminator for ActivityChanged signal replacing the old bool encoding.
+// Idle=0 means user activity has stopped; Resumed=1 means activity resumed.
+enum class FocusActivityTag : uint8_t {
+    Idle = 0,
+    Resumed = 1,
+};
 
 } // namespace wellbeing

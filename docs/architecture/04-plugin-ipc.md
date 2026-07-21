@@ -19,39 +19,40 @@ No compositor detection, no socket path configuration, no feature gates.
 
 ## D-Bus Interface — `org.wellbeing.v1.Manager`
 
-The plugin exposes a single interface with signals and a property. It has
-**no method** for the daemon to call — the daemon never commands the plugin.
-The plugin is a pure producer of window-domain facts (focus, activity, user
-clicks) and a consumer of daemon block state.
+The plugin exposes a single interface with signals and a property. It has **no
+method** for the daemon to call — the daemon never commands the plugin. The
+plugin is a pure producer of window-domain facts (focus, activity, user clicks)
+and a consumer of daemon block state.
 
 **Signals (plugin → daemon):**
 
-| Signal | Payload | When |
-|--------|---------|------|
-| `FocusChanged` | `v` — variant: `1` (Desktop) or `2` + struct`{app_id, title, pid, uid, overlay_shown}` | On every compositor focus switch |
-| `ActivityChanged` | `bool idle` | User idle state changes |
-| `UserAction` | `{app_id: s, action: u}` | User presses a button on a block overlay |
+| Signal            | Payload                                                                                | When                                     |
+| ----------------- | -------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `FocusChanged`    | `v` — variant: `1` (Desktop) or `2` + struct`{app_id, title, pid, uid, overlay_shown}` | On every compositor focus switch         |
+| `ActivityChanged` | `FocusActivityTag tag` — `Idle=0`, `Resumed=1`                                         | User idle state changes                  |
+| `UserAction`      | `{app_id: s, action: u}`                                                               | User presses a button on a block overlay |
 
 **Property (readable):**
 
-| Property | Type | Returns |
-|----------|------|---------|
-| `CurrentSession` | `v` | Same FocusVariant as `FocusChanged` — queryable source of truth |
+| Property       | Type | Returns                                                         |
+| -------------- | ---- | --------------------------------------------------------------- |
+| `CurrentFocus` | `v`  | Same FocusVariant as `FocusChanged` — queryable source of truth |
 
 **`UserAction` simplified.** The daemon is the authority on which policy is
 blocking which app. When `UserAction` arrives, the daemon looks up the active
 block state for `app_id` and derives `policy_id` from its own records — the
 plugin does not echo back a signed token.
 
-### `CurrentSession` property
+### `CurrentFocus` property
 
 D-Bus signals are fire-and-forget — they do not persist their last value, so a
-GUI that subscribes after the fact misses the current state. `CurrentSession` is
-a readable D-Bus property that returns the **same FocusVariant** as the
+GUI that subscribes after the fact misses the current state. `CurrentFocus` is a
+readable D-Bus property that returns the **same FocusVariant** as the
 `FocusChanged` signal, giving clients a queryable, always-current source of
-truth on startup. The signal remains useful as a lightweight change notification.
+truth on startup. The signal remains useful as a lightweight change
+notification.
 
-## Declarative Block State — `org.wellbeing.v1.Daemon`
+## Declarative Block State — `org.wellbeing.v1.Controller`
 
 The daemon exposes the current set of blocked apps on its own interface. The
 plugin discovers this state by two complementary mechanisms:
@@ -61,9 +62,9 @@ plugin discovers this state by two complementary mechanisms:
    available_actions). The plugin reads this on startup, on reconnect, and
    periodically for reconciliation.
 
-2. **`BlockStateChanged` signal** — emitted whenever a block is added or
-   removed for an app. The plugin subscribes to this signal for low-latency
-   state updates without polling.
+2. **`BlockStateChanged` signal** — emitted whenever a block is added or removed
+   for an app. The plugin subscribes to this signal for low-latency state
+   updates without polling.
 
 **Discovery flow:**
 
@@ -100,10 +101,9 @@ unordered set of active overlays keyed by `app_id`, populated entirely from
 daemon state (not from commands).
 
 **Overlay lifetime:** An overlay persists until the daemon removes the app from
-`ActiveBlocks`. Focus state does not affect overlay visibility — a blocked
-app's overlay remains displayed even when another window is focused. This
-prevents race conditions where a focus change causes the overlay to flicker or
-disappear.
+`ActiveBlocks`. Focus state does not affect overlay visibility — a blocked app's
+overlay remains displayed even when another window is focused. This prevents
+race conditions where a focus change causes the overlay to flicker or disappear.
 
 ### Focus handling
 
@@ -111,10 +111,10 @@ The plugin's focus-change handler reconciles overlay state against the daemon's
 `ActiveBlocks`:
 
 - User focuses app X: check if X is in local overlay set (which mirrors
-  `ActiveBlocks`). If yes, the overlay is already rendered — nothing to do.
-  If no, ensure no stale overlay for X.
-- User focuses app Y (not blocked): no action needed. Overlays for other
-  blocked apps remain visible.
+  `ActiveBlocks`). If yes, the overlay is already rendered — nothing to do. If
+  no, ensure no stale overlay for X.
+- User focuses app Y (not blocked): no action needed. Overlays for other blocked
+  apps remain visible.
 - User focuses desktop (no window): all existing overlays remain visible.
 
 The plugin **never hides an overlay because focus moved away**. Only a daemon
@@ -125,9 +125,9 @@ triggers overlay removal.
 
 `Idle`/`Resumed` are produced by the compositor plugin, not logind. The plugin
 tracks user activity (keyboard, mouse, touchpad, and video-player playback) and
-exposes it via the `ActivityChanged` D-Bus signal on
-`org.wellbeing.v1.Manager`. The daemon subscribes and maps `idle=true` → `Idle`
-(pause), `idle=false` → `Resumed` (unpause) PlatformEvents.
+exposes it via the `ActivityChanged` D-Bus signal on `org.wellbeing.v1.Manager`.
+The daemon subscribes and maps `Idle` → `Idle` (pause), `Resumed` → `Resumed`
+(unpause) PlatformEvents.
 
 Key points:
 
@@ -141,29 +141,38 @@ Key points:
 
 ## Plugin Registration (Reverse Discovery)
 
-Each plugin instance calls `Daemon.RegisterPlugin(instance_id)` on startup.
-Because a D-Bus well-known name is unique per connection, each plugin instance
-claims a **unique** name (e.g. `org.wellbeing.v1.Manager.<uid>.<sess>`). The
-daemon learns the caller's real identity from `SO_PEERCRED` (kernel-authenticated
-uid) and its unique bus name.
+Each plugin instance calls `Controller.RegisterPlugin()` on startup. The plugin
+uses the **daemon's bus** (system or session, resolved via
+`resolve_daemon_bus()`). If the daemon is not reachable at startup, the plugin
+installs its compositor hooks (focus tracking, idle detection) without D-Bus and
+polls in the background until the daemon becomes available.
+
+The daemon identifies the plugin by the **unique bus name** (`header.sender()`,
+a `:1.xxx` name assigned by the bus daemon) rather than a well-known name.
+Plugins do not claim a well-known name — they connect anonymously.
+
+The daemon learns the caller's real identity from `SO_PEERCRED`
+(kernel-authenticated uid).
 
 **Registration flow:**
 
 ```
 Daemon starts
-  ├── Expose Daemon.RegisterPlugin(instance_id)
+  ├── Expose Controller.RegisterPlugin()
   ├── Expose ActiveBlocks property
   └── Expose BlockStateChanged signal
 
 Plugin appears (calls RegisterPlugin):
-  ├── Daemon reads caller's SO_PEERCRED uid
+  ├── Daemon reads caller's unique bus name from header.sender()
+  ├── Daemon reads SO_PEERCRED uid from connection credentials
+  ├── Daemon creates proxy to plugin via its unique bus name
   ├── Subscribes to FocusChanged + ActivityChanged + UserAction streams
   ├── Plugin reads ActiveBlocks property (initial state sync)
   ├── Plugin subscribes to BlockStateChanged signal (live updates)
   └── Plugin reconciles overlays: shows for any app in ActiveBlocks
 
-Plugin disconnects (NameOwnerChanged):
-  ├── Daemon drops signal subscriptions for that instance
+Plugin disconnects (connection drops):
+  ├── Daemon drops signal subscriptions for that unique bus name
   └── Policy enforcement for that uid pauses until reconnection
 ```
 
@@ -174,8 +183,10 @@ disappears with its compositor hooks). When the plugin reconnects, it reads
 ## Multi-Instance Plugin Support
 
 Each plugin instance reads the same `ActiveBlocks` property from the daemon.
-There is no per-instance command routing. The daemon's `ActiveBlocks` is a
-single source of truth consumed by all connected plugin instances.
+There is no per-instance command routing. The daemon tracks each connected
+plugin by its unique bus name, subscribes to its signals, and routes events into
+the platform event stream. When a plugin disconnects, its subscriptions are
+dropped and enforcement for that uid pauses until a new registration arrives.
 
 Each plugin instance is responsible for showing overlays only for apps owned by
 its user (the uid determined at registration via `SO_PEERCRED`). The daemon

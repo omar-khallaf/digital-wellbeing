@@ -17,7 +17,7 @@
 
 include(ExternalProject)
 
-set(HYPRLAND_VERSION "v0.55.0" CACHE STRING
+set(HYPRLAND_VERSION "v0.55.2" CACHE STRING
     "Hyprland git tag / branch to fetch headers from")
 
 # ── Generate hyprland.pc at configure time ────────────────────────────────────

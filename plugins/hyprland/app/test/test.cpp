@@ -23,7 +23,6 @@ class LockManagerTest : public ::testing::Test {
     const BlockReason kReason = BlockReason::AppTimeLimit;
     const uint64_t kBlockedSince = 1700000000000ULL;
     const std::vector<ActionType> kActions = {ActionType::Extra, ActionType::Close};
-    const std::vector<uint8_t> kSig = {0xde, 0xad, 0xbe, 0xef};
 };
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -31,78 +30,60 @@ class LockManagerTest : public ::testing::Test {
 TEST_F(LockManagerTest, InitiallyUnlocked) { EXPECT_FALSE(lm.isOverlayShown(kAppId)); }
 
 TEST_F(LockManagerTest, ShowOverlayThenIsLocked) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     EXPECT_TRUE(lm.isOverlayShown(kAppId));
     EXPECT_FALSE(lm.isOverlayShown(kOther));
 }
 
-TEST_F(LockManagerTest, ShowOverlayStoresToken) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
-    EXPECT_TRUE(lm.isOverlayShown(kAppId));
-    EXPECT_EQ(lm.activePolicyId(kAppId), kPolicy);
-    EXPECT_EQ(lm.blockedSince(kAppId), kBlockedSince);
-    EXPECT_EQ(lm.activeSignature(kAppId), kSig);
-}
-
 TEST_F(LockManagerTest, HideOverlayClearsState) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     EXPECT_EQ(lm.hideOverlay(kAppId), LockManagerError::None);
     EXPECT_FALSE(lm.isOverlayShown(kAppId));
 }
 
 TEST_F(LockManagerTest, HideOverlayWrongAppIdNoEffect) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     EXPECT_EQ(lm.hideOverlay(kOther), LockManagerError::AppIdMismatch);
     EXPECT_TRUE(lm.isOverlayShown(kAppId));
-    EXPECT_EQ(lm.activePolicyId(kAppId), kPolicy);
 }
 
 TEST_F(LockManagerTest, IsTargetReturnsFalseByDefault) {
     // Without captured compositor window handles, isTarget returns false.
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     EXPECT_FALSE(lm.isTarget(0));
     EXPECT_FALSE(lm.isTarget(12345));
 }
 
 TEST_F(LockManagerTest, ShowHideShowRoundtrip) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     lm.hideOverlay(kAppId);
 
     const AppId appId2 = AppId::from_unchecked("code");
     const uint64_t policy2 = 99;
-    const std::vector<uint8_t> sig2 = {0x01, 0x02, 0x03};
-    lm.showOverlay(appId2, policy2, kReason, kBlockedSince, {ActionType::Close}, sig2);
+    lm.showOverlay(appId2, policy2, kReason, kBlockedSince, {ActionType::Close});
 
     EXPECT_TRUE(lm.isOverlayShown(appId2));
     EXPECT_FALSE(lm.isOverlayShown(kAppId));
-    EXPECT_EQ(lm.activePolicyId(appId2), policy2);
-    EXPECT_EQ(lm.activeSignature(appId2), sig2);
 }
 
 TEST_F(LockManagerTest, MultipleAppsSimultaneously) {
-    // Show overlay for two distinct apps.
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     const AppId appId2 = AppId::from_unchecked("code");
     const uint64_t policy2 = 99;
-    const std::vector<uint8_t> sig2 = {0x01, 0x02, 0x03};
-    lm.showOverlay(appId2, policy2, kReason, kBlockedSince, {ActionType::Close}, sig2);
+    lm.showOverlay(appId2, policy2, kReason, kBlockedSince, {ActionType::Close});
 
     EXPECT_TRUE(lm.isOverlayShown(kAppId));
     EXPECT_TRUE(lm.isOverlayShown(appId2));
-    EXPECT_EQ(lm.activePolicyId(kAppId), kPolicy);
-    EXPECT_EQ(lm.activePolicyId(appId2), policy2);
 
     // Hide one app; the other remains.
     lm.hideOverlay(kAppId);
     EXPECT_FALSE(lm.isOverlayShown(kAppId));
     EXPECT_TRUE(lm.isOverlayShown(appId2));
-    EXPECT_EQ(lm.activePolicyId(appId2), policy2);
 }
 
 TEST_F(LockManagerTest, OverlayActionsListStored) {
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     // The buttons built from actions should be available for hit-testing.
-    // This tests that no crash occurs.
     lm.onMouseClick(0.0, 0.0); // no crash on empty callback (no focused app set)
 }
 
@@ -117,8 +98,8 @@ TEST_F(LockManagerTest, CallbackInvokedOnButtonHit) {
         calledAction = action;
     });
 
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
-    lm.setFocusedApp(kAppId); // gate: only focused app receives clicks
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
+    lm.setFocusedApp(std::optional<AppId>(kAppId));
 
     // Hit the first button (Extra, actionId=0) at its center.
     // ButtonRect{200, 350, 140, 40, 0}
@@ -132,20 +113,32 @@ TEST_F(LockManagerTest, ClickOutsideButtonReturnsFalse) {
     bool called = false;
     lm.setUserActionCallback([&](const AppId &, ActionType) -> void { called = true; });
 
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
-    lm.setFocusedApp(kAppId);
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
+    lm.setFocusedApp(std::optional<AppId>(kAppId));
 
-    // Click far outside all button rects.
     EXPECT_FALSE(lm.onMouseClick(0.0, 0.0));
     EXPECT_FALSE(called);
 }
 
 TEST_F(LockManagerTest, ClickWithoutFocusedAppReturnsFalse) {
-    // Even with an active overlay, onMouseClick returns false when
-    // no focused app is set (m_focusedApp gate).
-    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions, kSig);
-    // Deliberately do NOT set focused app.
+    lm.showOverlay(kAppId, kPolicy, kReason, kBlockedSince, kActions);
     EXPECT_FALSE(lm.onMouseClick(270.0, 370.0));
+}
+
+TEST_F(LockManagerTest, GetFocusedAppInitiallyNone) {
+    EXPECT_FALSE(lm.getFocusedApp().has_value());
+}
+
+TEST_F(LockManagerTest, SetFocusedAppThenGetReturnsIt) {
+    lm.setFocusedApp(std::optional<AppId>(kAppId));
+    EXPECT_TRUE(lm.getFocusedApp().has_value());
+    EXPECT_EQ(*lm.getFocusedApp(), kAppId);
+}
+
+TEST_F(LockManagerTest, SetFocusedAppNoneClears) {
+    lm.setFocusedApp(std::optional<AppId>(kAppId));
+    lm.setFocusedApp(std::nullopt);
+    EXPECT_FALSE(lm.getFocusedApp().has_value());
 }
 
 // =============================================================================

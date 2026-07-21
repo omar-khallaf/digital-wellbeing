@@ -18,6 +18,7 @@ use gpui::*;
 use gpui_component::ActiveTheme;
 use gpui_component::Disableable;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::input::{Input, NumberInput};
 use gpui_component::{h_flex, v_flex};
 use wellbeing_core::{Category, CategoryId, Policy, PolicyKind};
 
@@ -70,6 +71,8 @@ pub struct PolicyConfigForm {
     pub schedule_json: String,
     /// Whether this policy is currently active / enforced.
     pub active: bool,
+    /// Target app id (window class for Hyprland). Empty = no app target.
+    pub app_id: String,
 }
 
 impl Default for PolicyConfigForm {
@@ -80,6 +83,7 @@ impl Default for PolicyConfigForm {
             extra_seconds: 0,
             schedule_json: "{}".into(),
             active: true,
+            app_id: String::new(),
         }
     }
 }
@@ -223,6 +227,7 @@ impl GuiApp {
                                         extra_seconds: extra,
                                         schedule_json: schedule.clone(),
                                         active,
+                                        app_id: app_id.clone(),
                                     },
                                 ));
                                 cx2.notify();
@@ -277,9 +282,9 @@ impl GuiApp {
         entity: Entity<Self>,
         client: DaemonClient,
     ) -> AnyElement {
-        let (target_label, form) = match &self.policy_edit {
-            Some((target, form)) => {
-                let label = match target {
+        let (target, target_label, form) = match &self.policy_edit {
+            Some((t, f)) => {
+                let label = match t {
                     PolicyTarget::App(id) => {
                         if id.is_empty() {
                             "New policy — pick an app".to_string()
@@ -297,7 +302,7 @@ impl GuiApp {
                         format!("Editing category: {}", cat_name)
                     }
                 };
-                (label, form)
+                (t, label, f)
             }
             None => {
                 return card(
@@ -314,57 +319,8 @@ impl GuiApp {
         let show_time_limit = form.kind == "TimeLimit";
         let kinds = ["Block", "TimeLimit", "Notify"];
         let kind = form.kind.clone();
-        let time_limit = form.time_limit_minutes;
-        let extra = form.extra_seconds;
         let active = form.active;
-
-        // A stepper row that mutates `this.policy_edit` via the captured entity.
-        let stepper = |label: &'static str,
-                       value: i64,
-                       step: i64,
-                       entity: Entity<Self>,
-                       field: fn(&mut PolicyConfigForm, i64)| {
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_secondary(&*cx))
-                        .child(label.to_string()),
-                )
-                .child(Button::new(format!("dec-{}", label)).label("−").on_click({
-                    let entity = entity.clone();
-                    move |_, _window, app| {
-                        entity.update(app, |this, cx2| {
-                            if let Some((_, f)) = this.policy_edit.as_mut() {
-                                field(f, (value - step).max(0));
-                            }
-                            cx2.notify();
-                        });
-                    }
-                }))
-                .child(
-                    div()
-                        .min_w(px(48.0))
-                        .text_center()
-                        .text_sm()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::text_primary(&*cx))
-                        .child(value.to_string()),
-                )
-                .child(Button::new(format!("inc-{}", label)).label("+").on_click({
-                    let entity = entity.clone();
-                    move |_, _window, app| {
-                        entity.update(app, |this, cx2| {
-                            if let Some((_, f)) = this.policy_edit.as_mut() {
-                                field(f, value + step);
-                            }
-                            cx2.notify();
-                        });
-                    }
-                }))
-        };
+        let is_app_target = matches!(target, PolicyTarget::App(_));
 
         let editor = v_flex()
             .gap_3()
@@ -382,7 +338,7 @@ impl GuiApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme::text_secondary(&*cx))
+                            .text_color(theme::text_primary(&*cx))
                             .child("Kind:"),
                     )
                     .children(kinds.iter().map(|k| {
@@ -404,25 +360,77 @@ impl GuiApp {
                             })
                     })),
             )
-            // Time limit stepper
-            .child(
-                stepper(
-                    "Time limit (min)",
-                    time_limit,
-                    15,
-                    entity.clone(),
-                    |f, v| f.time_limit_minutes = v,
+            // AppId text input (only for App-targeted policies)
+            .when(is_app_target, |el| {
+                el.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_primary(&*cx))
+                                .child("App ID (window class):"),
+                        )
+                        .child(
+                            div().flex_1().child(
+                                Input::new(
+                                    self.app_id_input
+                                        .as_ref()
+                                        .expect("app_id_input not initialized"),
+                                )
+                                .cleanable(true),
+                            ),
+                        ),
                 )
-                .when(!show_time_limit, |el| el.opacity(0.4)),
+            })
+            // Time limit — NumberInput with direct typing
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_primary(&*cx))
+                            .child("Time limit (min):"),
+                    )
+                    .child(
+                        div().w(px(140.0)).child(
+                            NumberInput::new(
+                                self.time_limit_input
+                                    .as_ref()
+                                    .expect("time_limit_input not initialized"),
+                            )
+                            .appearance(true)
+                            .disabled(false),
+                        ),
+                    )
+                    .when(!show_time_limit, |el| el.opacity(0.4)),
             )
-            // Extra seconds stepper
-            .child(stepper(
-                "Extra time (sec)",
-                extra,
-                60,
-                entity.clone(),
-                |f, v| f.extra_seconds = v,
-            ))
+            // Extra seconds — NumberInput with direct typing
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_primary(&*cx))
+                            .child("Extra time (sec):"),
+                    )
+                    .child(
+                        div().w(px(140.0)).child(
+                            NumberInput::new(
+                                self.extra_secs_input
+                                    .as_ref()
+                                    .expect("extra_secs_input not initialized"),
+                            )
+                            .appearance(true)
+                            .disabled(false),
+                        ),
+                    ),
+            )
             // Active toggle
             .child(
                 h_flex().gap_2().items_center().child(
@@ -454,8 +462,42 @@ impl GuiApp {
                                 let entity = entity.clone();
                                 let client = client.clone();
                                 move |_, _window, app| {
+                                    // Snapshot InputState values before entity.update borrows app.
+                                    let (tl, es, ai) = {
+                                        let me = entity.read(app);
+                                        if me.policy_edit.is_none() {
+                                            (0i64, 0i64, String::new())
+                                        } else {
+                                            let tl = me
+                                                .time_limit_input
+                                                .as_ref()
+                                                .and_then(|e| {
+                                                    e.read(app).value().parse::<i64>().ok()
+                                                })
+                                                .unwrap_or(0);
+                                            let es = me
+                                                .extra_secs_input
+                                                .as_ref()
+                                                .and_then(|e| {
+                                                    e.read(app).value().parse::<i64>().ok()
+                                                })
+                                                .unwrap_or(0);
+                                            let ai = me
+                                                .app_id_input
+                                                .as_ref()
+                                                .map(|e| e.read(app).value().to_string())
+                                                .unwrap_or_default();
+                                            (tl, es, ai)
+                                        }
+                                    };
                                     let client = client.clone();
                                     entity.update(app, |this, cx2| {
+                                        // Sync InputState values into form before save.
+                                        if let Some((_, ref mut form)) = this.policy_edit {
+                                            form.time_limit_minutes = tl;
+                                            form.extra_seconds = es;
+                                            form.app_id = ai;
+                                        }
                                         if let Some((target, form)) = this.policy_edit.clone() {
                                             let uid =
                                                 this.state.try_lock().map(|s| s.uid).unwrap_or(0);
@@ -463,7 +505,7 @@ impl GuiApp {
                                             let edit_id = this.policy_edit_id;
                                             let state = this.state.clone();
                                             let client = client.clone();
-                                            cx2.spawn(async move |this2, cx3| {
+                                            std::mem::drop(cx2.spawn(async move |this2, cx3| {
                                                 let res = match edit_id {
                                                     Some(id) => {
                                                         client.update_policy(id, input).await
@@ -481,7 +523,7 @@ impl GuiApp {
                                                         cx4.notify();
                                                     });
                                                 }
-                                            });
+                                            }));
                                         }
                                         cx2.notify();
                                     });
@@ -502,15 +544,15 @@ impl GuiApp {
                                         if let Some(id) = this.policy_edit_id {
                                             let state = this.state.clone();
                                             let client = client.clone();
-                                            cx2.spawn(async move |this2, cx3| {
+                                            std::mem::drop(cx2.spawn(async move |this2, cx3| {
                                                 let _ = client.delete_policy(id).await;
                                                 let _ = state;
-                                                this2.update(cx3, |this3, cx4| {
+                                                let _ = this2.update(cx3, |this3, cx4| {
                                                     this3.policy_edit = None;
                                                     this3.policy_edit_id = None;
                                                     cx4.notify();
                                                 });
-                                            });
+                                            }));
                                         }
                                         cx2.notify();
                                     });
@@ -580,14 +622,15 @@ fn policy_input_from(
         "Notify" => PolicyKind::Notify,
         _ => PolicyKind::Block,
     };
+    // Use the form's app_id (from text input) when targeting an app.
     let (app_id, category_id) = match target {
-        PolicyTarget::App(id) => (id, 0),
+        PolicyTarget::App(_) => (form.app_id.clone(), 0),
         PolicyTarget::Category(id) => (String::new(), id),
     };
     wellbeing_core::PolicyInput {
         name: format!("policy-{}", app_cat_label(category_id, &app_id)),
         kind,
-        app_id,
+        app_id: app_id.clone(),
         category_id,
         time_limit_seconds: form.time_limit_minutes * 60,
         extra_seconds: form.extra_seconds,

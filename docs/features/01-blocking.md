@@ -928,12 +928,11 @@ auto LockManager::onMouseClick(double x, double y) -> bool {
 The plugin and Rust daemon communicate over the **daemon's bus** (system bus in
 system mode, session bus in session mode). The plugin registers itself with the
 daemon via **reverse discovery**: at startup it calls
-`Daemon.RegisterPlugin(instance_id)`, claiming a **unique** well-known bus name
-(e.g. `org.wellbeing.v1.Manager.<uid>.<sess>`) — a D-Bus well-known name is
-unique per connection. The daemon learns the caller's real `uid` via
-`SO_PEERCRED` and tracks the instance in `PluginRegistry`, watching
-`NameOwnerChanged` for `org.wellbeing.v1.Manager.*` to detect connect/disconnect
-(see
+`Controller.RegisterPlugin()`. The plugin connects anonymously and the bus
+daemon assigns it a unique bus name (`:1.xxx`). The daemon learns the caller's
+real `uid` via `SO_PEERCRED` and unique bus name (from `header.sender()`), and
+tracks the instance in `PluginRegistry`, watching the plugin's connection for
+connect/disconnect. (see
 [04-plugin-ipc.md](../architecture/04-plugin-ipc.md#multi-instance-plugin-support)).
 
 **D-Bus Interface:**
@@ -944,7 +943,7 @@ unique per connection. The daemon learns the caller's real `uid` via
 
     <!-- Overlay command wrapped in a SignedEnvelope the daemon signs with its
          Ed25519 private key; the plugin verifies it against the public key from
-         org.wellbeing.v1.Daemon.DaemonPublicKey. See ../architecture/05-daemon-auth.md.
+         org.wellbeing.v1.Controller.DaemonPublicKey. See ../architecture/05-daemon-auth.md.
          ShowOverlayCmd { app_id: s, policy_id: t, reason: u, blocked_since: t, available_actions: au, signature: ay }
          HideOverlayCmd { app_id: s } -->
     <method name="Overlay">
@@ -972,20 +971,20 @@ unique per connection. The daemon learns the caller's real `uid` via
       <arg name="window" type="v"/>
     </signal>
 
-    <!-- User idle state changed. `idle=true` → emit `Idle` (pause interval);
-         `idle=false` → emit `Resumed` (unpause). The plugin tracks
+    <!-- User idle state changed. `Idle=0` → emit `Idle` (pause interval);
+         `Resumed=1` → emit `Resumed` (unpause). The plugin tracks
          keyboard/mouse/touchpad/video-player activity. -->
     <signal name="ActivityChanged">
-      <arg name="idle" type="b"/>
+      <arg name="tag" type="u"/>
     </signal>
 
-    <!-- Readable property: current session state.
+    <!-- Readable property: current focus state.
          Returns the SAME FocusVariant as the FocusChanged signal:
            1 = Desktop, 2 = App {app_id, title, pid, uid, overlay_shown}
          The signal is fire-and-forget and does not persist its value, so this
          property is the canonical, queryable source of truth (GUI reads it on
          startup; daemon uses it for crash recovery). -->
-    <property name="CurrentSession" type="v" access="read"/>
+    <property name="CurrentFocus" type="v" access="read"/>
 
   </interface>
 </node>
@@ -1100,7 +1099,7 @@ signed-token contract in
 Rust daemon side (zbus):
 
 The `WindowInfo` struct, `UserActionEvent`, and the `#[proxy] trait Manager`
-(the zbus proxy for `org.wellbeing.v1.Manager` — `overlay()`, `current_session`
+(the zbus proxy for `org.wellbeing.v1.Manager` — `overlay()`, `current_focus`
 property, `user_action` signal) are defined **once, canonically**, in
 [`../architecture/04-plugin-ipc.md`](../architecture/04-plugin-ipc.md) (§Rust
 Side). They are not repeated here to avoid a second source of truth.
@@ -1114,7 +1113,7 @@ Side). They are not repeated here to avoid a second source of truth.
 enum class FocusVariantTag : uint32_t {
     Desktop = 1, App = 2,
 };
-// CurrentSession reuses FocusVariantTag (see above) — no separate SessionStateTag.
+// CurrentFocus reuses FocusVariantTag (see above) — no separate SessionStateTag.
 
 // ── Variant encoding helpers ─────────────────────────────────────────────
 
@@ -1127,7 +1126,7 @@ auto windowInfoToVariant(const std::optional<WindowInfo>& info) -> sdbus::Varian
     }};
 }
 
-/// CurrentSession returns the SAME FocusVariant as the FocusChanged signal, so a
+/// CurrentFocus returns the SAME FocusVariant as the FocusChanged signal, so a
 /// late-joining client can read identical state from the readable property (the
 /// signal is ephemeral). Both call windowInfoToVariant(currentFocus).
 auto buildSessionVariant(const std::optional<WindowInfo>& currentFocus,
@@ -1156,7 +1155,7 @@ public:
                 [this](sdbus::Variant envelope) -> bool {
                     return handleOverlay(envelope);
                 }),
-            sdbus::registerProperty("CurrentSession").withGetter([]() {
+            sdbus::registerProperty("CurrentFocus").withGetter([]() {
                 return buildSessionVariant(
                     /* currentFocus from global */,
                     /* lockManager from global */);
@@ -1169,7 +1168,7 @@ public:
             sdbus::registerSignal("FocusChanged")
                 .withParameters<sdbus::Variant>({"window"}),
             sdbus::registerSignal("ActivityChanged")
-                .withParameters<bool>({"idle"}))
+                .withParameters<uint32_t>({"tag"})
         .forInterface("org.wellbeing.v1.Manager");
 
         m_lockManager.setUserActionCallback(
@@ -1182,10 +1181,10 @@ public:
 
     void registerWithDaemon() {
         auto daemon = sdbus::createProxy(
-            m_conn, sdbus::ServiceName{"org.wellbeing.v1.Daemon"},
+            m_conn, sdbus::ServiceName{"org.wellbeing.v1.Controller"},
             sdbus::ObjectPath{"/org/wellbeing/Daemon"});
         daemon->callMethod("RegisterPlugin")
-            .onInterface("org.wellbeing.v1.Daemon")
+            .onInterface("org.wellbeing.v1.Controller")
             .withArguments(instanceId());
     }
 
@@ -1203,10 +1202,10 @@ public:
             .withArguments(windowInfoToVariant(info));
     }
 
-    void emitActivityChanged(bool idle) {
+    void emitActivityChanged(uint32_t tag) {
         m_object->emitSignal("ActivityChanged")
             .onInterface("org.wellbeing.v1.Manager")
-            .withArguments(idle);
+            .withArguments(tag);
     }
 
 private:
@@ -1264,13 +1263,13 @@ bool verifyEnvelope(sdbus::IConnection& conn, const sdbus::Variant& payload,
 ```
 
 > **Key differences from the old scaffold:** sdbus-c++ v2 uses `addVTable()`
-> with a single `.forInterface()`. The `CurrentSession` property,
-> `FocusChanged`, and `ActivityChanged` signals are registered in the vtable.
-> The daemon-issued token (`policy_id`, `blocked_since`, `signature`) is owned
-> by `LockManager`, not the `WellbeingManager` itself. The overlay handler
-> parses the envelope as a `tuple<variant, uint64_t, vector<uint8_t>>` and
-> dispatches via try/catch variant probing. See
-> `plugins/hyprland/app/src/main.cpp` for the authoritative implementation.
+> with a single `.forInterface()`. The `CurrentFocus` property, `FocusChanged`,
+> and `ActivityChanged` signals are registered in the vtable. The daemon-issued
+> token (`policy_id`, `blocked_since`, `signature`) is owned by `LockManager`,
+> not the `WellbeingManager` itself. The overlay handler parses the envelope as
+> a `tuple<variant, uint64_t, vector<uint8_t>>` and dispatches via try/catch
+> variant probing. See `plugins/hyprland/app/src/main.cpp` for the authoritative
+> implementation.
 
 ### Overlay Lifecycle
 

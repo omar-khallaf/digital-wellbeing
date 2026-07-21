@@ -51,8 +51,8 @@ The compositor plugin is discovered dynamically on the system bus, with no
 per-compositor feature gates or environment-variable detection:
 
 1. **Zero detection** — the daemon publishes block state on its own D-Bus
-   interface (`org.wellbeing.v1.Daemon.ActiveBlocks`). The plugin reads state
-   from the daemon's well-known name. The daemon never probes
+   interface (`org.wellbeing.v1.Controller.ActiveBlocks`). The plugin reads
+   state from the daemon's well-known name. The daemon never probes
    compositor-specific env vars or socket paths.
 2. **Single IPC contract** — all compositor plugins implement the same D-Bus
    interface. The daemon has one code path regardless of compositor.
@@ -63,8 +63,8 @@ per-compositor feature gates or environment-variable detection:
 5. **Graceful degradation** — if no plugin is registered on the bus at startup,
    the daemon logs a warning, shows a banner in the dashboard, and proceeds
    without block enforcement. If the plugin appears later (user loads it), the
-   dashboard banner auto-dismisses. Block state accumulates regardless of
-   plugin connectivity — overlays appear on reconnect.
+   dashboard banner auto-dismisses. Block state accumulates regardless of plugin
+   connectivity — overlays appear on reconnect.
 
 **Mock testing** uses a `MockManagerClient` implementing the same interface — no
 `MockCompositor` needed, no env var stubs, no feature flags.

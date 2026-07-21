@@ -47,8 +47,6 @@ D-Bus integration with systemd-logind (`platform/linux/suspend.rs`). It emits
 interval (minus any enclosed idle) via `accumulate_interval` and clear the
 in-memory `FocusState`. They carry no `app_id`.
 
-
-
 Flow (suspend/shutdown example; lock/logout are analogous):
 
 ```
@@ -90,11 +88,11 @@ power state change is not.
 
 All compositors implement the same `org.wellbeing.v1.Manager` D-Bus
 **interface** at the same object path (`/org/wellbeing/Manager`), but each
-plugin instance claims a **unique well-known bus name** — e.g.
-`org.wellbeing.v1.Manager.<uid>.<sess>` — because a D-Bus well-known name is
-unique per connection. Discovery is **reverse**: at startup each plugin calls
-`Daemon.RegisterPlugin(instance_id)`, so the daemon learns the caller's real
-`uid` (via `SO_PEERCRED`) and unique bus name. The daemon does **not** probe a
-single `org.wellbeing.v1.Manager` name; it watches `NameOwnerChanged` for
-`org.wellbeing.v1.Manager.*` to detect connect/disconnect (see
+plugin instance connects anonymously — the bus daemon assigns a unique bus name
+(`:1.xxx`). Discovery is **reverse**: at startup each plugin calls
+`Controller.RegisterPlugin()`, so the daemon learns the caller's real `uid` (via
+`SO_PEERCRED`) and unique bus name (from `header.sender()`). The daemon does
+**not** probe a single `org.wellbeing.v1.Manager` name; it watches
+`NameOwnerChanged` for each registered plugin's unique bus name to detect
+connect/disconnect (see
 [04-plugin-ipc.md](./04-plugin-ipc.md#multi-instance-plugin-support)).

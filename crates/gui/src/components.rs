@@ -8,6 +8,7 @@ use gpui::prelude::*;
 use gpui::px;
 use gpui::*;
 use gpui_component::{button::Button, button::ButtonVariants, h_flex, v_flex};
+use wellbeing_core::DateRange;
 
 use crate::theme::*;
 
@@ -102,7 +103,7 @@ pub fn section_title(cx: &App, title: &str) -> AnyElement {
     div()
         .text_sm()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(text_secondary(cx))
+        .text_color(text_primary(cx))
         .child(title.to_string())
         .into_any_element()
 }
@@ -120,4 +121,61 @@ pub fn default_button(id: impl Into<ElementId>, label: &str) -> Button {
 /// A destructive button.
 pub fn danger_button(id: impl Into<ElementId>, label: &str) -> Button {
     Button::new(id).label(label).danger()
+}
+
+/// Time range selector with preset buttons (7d, 30d, 90d) and current range label.
+///
+/// Renders three preset buttons and a label showing the selected date range.
+/// The active preset is highlighted with `.primary()` styling.
+/// Clicking a preset calls `on_change` with the corresponding `DateRange`.
+pub fn time_range_selector(
+    cx: &App,
+    selected: DateRange,
+    on_change: impl Fn(DateRange) + 'static,
+) -> AnyElement {
+    let on_change = std::sync::Arc::new(on_change);
+
+    let start_str = selected.start.format("%b %d").to_string();
+    let end_str = selected.end.format("%b %d, %Y").to_string();
+    let range_label = SharedString::from(format!("{start_str} — {end_str}"));
+
+    let btn_7d = {
+        let oc = on_change.clone();
+        let mut btn = Button::new("7d").label("7d");
+        if selected == DateRange::last_n_days(7) {
+            btn = btn.primary();
+        }
+        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(7)))
+    };
+
+    let btn_30d = {
+        let oc = on_change.clone();
+        let mut btn = Button::new("30d").label("30d");
+        if selected == DateRange::last_n_days(30) {
+            btn = btn.primary();
+        }
+        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(30)))
+    };
+
+    let btn_90d = {
+        let oc = on_change.clone();
+        let mut btn = Button::new("90d").label("90d");
+        if selected == DateRange::last_n_days(90) {
+            btn = btn.primary();
+        }
+        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(90)))
+    };
+
+    h_flex()
+        .gap_2()
+        .child(btn_7d)
+        .child(btn_30d)
+        .child(btn_90d)
+        .child(
+            div()
+                .text_sm()
+                .text_color(text_muted(cx))
+                .child(range_label),
+        )
+        .into_any_element()
 }

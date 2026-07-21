@@ -334,7 +334,7 @@ fn any_policy() -> impl Strategy<Value = Policy> {
 
 ## Integration Tests for D-Bus Server
 
-The D-Bus daemon interface (`org.wellbeing.v1.Daemon`) is the primary API
+The D-Bus daemon interface (`org.wellbeing.v1.Controller`) is the primary API
 contract and MUST be tested with a real zbus connection in loopback mode.
 
 ### Pattern
@@ -421,7 +421,7 @@ async fn daemon_restart_preserves_block_state() {
     ];
     let (platform, stream) = MockPlatform::from_events(events);
 
-    // WHEN: new daemon instance starts, reads CurrentSession,
+    // WHEN: new daemon instance starts, reads CurrentFocus,
     //      plugin reports overlay_shown=true
     let mut enforcer = EnforcerActor::new(platform, pool.clone(), clock.clone());
     enforcer.reconcile_on_startup().await;

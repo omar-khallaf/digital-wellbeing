@@ -10,13 +10,13 @@ the degraded-mode behavior. The D-Bus interface itself is unchanged
 
 ## Modes
 
-| Mode        | Selected when | Bus for `org.wellbeing.v1.Daemon` | Database path                                | Scope       | RBAC                        |
-| ----------- | ------------- | --------------------------------- | -------------------------------------------- | ----------- | --------------------------- |
-| **System**  | `uid == 0`    | **system** bus                    | `/var/lib/digital-wellbeing/db.sqlite` (600) | Multi-user  | Full root-vs-user matrix    |
-| **Session** | `uid > 0`     | **session** bus                   | `$XDG_DATA_HOME/digital-wellbeing/db.sqlite` | Single-user | Pass-through (own uid only) |
+| Mode        | Selected when | Bus for `org.wellbeing.v1.Controller` | Database path                                | Scope       | RBAC                        |
+| ----------- | ------------- | ------------------------------------- | -------------------------------------------- | ----------- | --------------------------- |
+| **System**  | `uid == 0`    | **system** bus                        | `/var/lib/digital-wellbeing/db.sqlite` (600) | Multi-user  | Full root-vs-user matrix    |
+| **Session** | `uid > 0`     | **session** bus                       | `$XDG_DATA_HOME/digital-wellbeing/db.sqlite` | Single-user | Pass-through (own uid only) |
 
-Both modes expose the **identical** `org.wellbeing.v1.Daemon` interface and the
-same `org.wellbeing.v1.Manager` plugin contract. Clients and plugins are
+Both modes expose the **identical** `org.wellbeing.v1.Controller` interface and
+the same `org.wellbeing.v1.Manager` plugin contract. Clients and plugins are
 bus-agnostic: they resolve _which_ bus the daemon is on at runtime (below),
 never hardcode it.
 
@@ -77,10 +77,10 @@ A session-mode daemon still needs power/session state (`Slept`/`ShutDown`/
 reachable by any user, so `PowerStateWatcher`
 ([03-linux-platform.md](./03-linux-platform.md)) always connects to the system
 bus regardless of daemon mode. Only the daemon's **own**
-`org.wellbeing.v1.Daemon` name and the plugin `RegisterPlugin` target move to
-the session bus. A session-mode daemon therefore holds **two** connections:
+`org.wellbeing.v1.Controller` name and the plugin `RegisterPlugin` target move
+to the session bus. A session-mode daemon therefore holds **two** connections:
 
-- **session bus** — owns `org.wellbeing.v1.Daemon`, talks to the plugin.
+- **session bus** — owns `org.wellbeing.v1.Controller`, talks to the plugin.
 - **system bus** — logind only.
 
 ## Daemon Scope (RBAC)
@@ -115,7 +115,7 @@ activated by `org.freedesktop.DBus.StartServiceByName` only when no daemon is
 already present:
 
 ```rust
-/// Returns the bus connection that hosts org.wellbeing.v1.Daemon, or None if
+/// Returns the bus connection that hosts org.wellbeing.v1.Controller, or None if
 /// no daemon can be reached after activation attempts.
 async fn resolve_daemon_bus() -> Option<zbus::Connection> {
     let sys = zbus::Connection::system().await.ok();
@@ -123,28 +123,28 @@ async fn resolve_daemon_bus() -> Option<zbus::Connection> {
 
     // 1. System bus already has the daemon? (root/system service running)
     if let Some(c) = &sys {
-        if name_owner_present(c, "org.wellbeing.v1.Daemon").await {
+        if name_owner_present(c, "org.wellbeing.v1.Controller").await {
             return Some(c.clone());
         }
     }
     // 2. Session bus already has the daemon? (user session daemon running)
     if let Some(c) = &sess {
-        if name_owner_present(c, "org.wellbeing.v1.Daemon").await {
+        if name_owner_present(c, "org.wellbeing.v1.Controller").await {
             return Some(c.clone());
         }
     }
     // 3. Activate the SYSTEM daemon (root systemd service).
     if let Some(c) = &sys {
-        if start_service(c, "org.wellbeing.v1.Daemon").await
-            && name_owner_present(c, "org.wellbeing.v1.Daemon").await
+        if start_service(c, "org.wellbeing.v1.Controller").await
+            && name_owner_present(c, "org.wellbeing.v1.Controller").await
         {
             return Some(c.clone());
         }
     }
     // 4. Activate the SESSION daemon (user service).
     if let Some(c) = &sess {
-        if start_service(c, "org.wellbeing.v1.Daemon").await
-            && name_owner_present(c, "org.wellbeing.v1.Daemon").await
+        if start_service(c, "org.wellbeing.v1.Controller").await
+            && name_owner_present(c, "org.wellbeing.v1.Controller").await
         {
             return Some(c.clone());
         }
@@ -157,8 +157,8 @@ async fn resolve_daemon_bus() -> Option<zbus::Connection> {
 calls `org.freedesktop.DBus.StartServiceByName` (which triggers D-Bus activation
 — see [10-deployment.md](./10-deployment.md)). The proxy is then built against
 whichever connection resolved. The reverse-registration pattern is
-**unchanged**: the plugin still calls `Daemon.RegisterPlugin` — it just does so
-on the resolved bus (next section).
+**unchanged**: the plugin still calls `Controller.RegisterPlugin` — it just does
+so on the resolved bus (next section).
 
 ### Degraded mode
 
@@ -177,16 +177,16 @@ This resolves
 The compositor plugin runs inside the user's session. It resolves the daemon by
 running the **identical** `resolve_daemon_bus()` algorithm the GUI uses (above):
 
-1. system bus has `org.wellbeing.v1.Daemon`? → use it;
+1. system bus has `org.wellbeing.v1.Controller`? → use it;
 2. else session bus has it? → use it;
 3. else `StartServiceByName` on the **system** bus (activate root daemon) → use
    it;
 4. else `StartServiceByName` on the **session** bus (activate user daemon) → use
    it.
 
-The plugin then calls `Daemon.RegisterPlugin(instance_id)` on the **resolved**
-bus. It does **not** pick a bus by a simpler "prefer system / fall back session"
-rule and does **not** register on both buses — it reuses the exact same
+The plugin then calls `Controller.RegisterPlugin()` on the **resolved** bus. It
+does **not** pick a bus by a simpler "prefer system / fall back session" rule
+and does **not** register on both buses — it reuses the exact same
 `NameHasOwner` / `StartServiceByName` 4-step resolution, so it always lands on
 the same daemon the GUI did.
 
@@ -198,13 +198,13 @@ enforcement would draw conflicting overlays for the same user.
 
 If neither daemon is present at plugin start, the plugin logs a warning and
 **re-runs the 4-step resolution** on the next `NameOwnerChanged` for
-`org.wellbeing.v1.Daemon` and on the next focus change, then (re-)calls
+`org.wellbeing.v1.Controller` and on the next focus change, then (re-)calls
 `RegisterPlugin` on the resolved bus. No plugin-side bus caching is needed.
 
 ### C++ Side: `resolveDaemonBus()`
 
 The plugin (Hyprland, sdbus-c++) implements resolution as a static free function
-that returns the connection to the bus hosting `org.wellbeing.v1.Daemon`:
+that returns the connection to the bus hosting `org.wellbeing.v1.Controller`:
 
 ````cpp
 #include <sdbus-c++/sdbus-c++.h>
@@ -250,7 +250,7 @@ static auto startServiceByName(sdbus::IConnection &conn, const std::string &name
 
 The plugin (Hyprland, sdbus-c++) implements resolution as a static free function
 that probes both buses ephemerally and returns a new connection to the bus that
-hosts `org.wellbeing.v1.Daemon`:
+hosts `org.wellbeing.v1.Controller`:
 
 ```cpp
 #include <sdbus-c++/sdbus-c++.h>
@@ -306,13 +306,13 @@ static auto createProbeConnection(bool system) -> std::shared_ptr<sdbus::IConnec
 /// 4-step daemon bus resolution (identical algorithm to the GUI Rust side).
 ///
 /// Returns BusVariant::System or BusVariant::Session for the bus hosting
-/// org.wellbeing.v1.Daemon, or std::nullopt if no daemon can be reached.
+/// org.wellbeing.v1.Controller, or std::nullopt if no daemon can be reached.
 ///
 /// The probe connections are discarded after resolution. The caller MUST then
-/// create a NEW named connection against the resolved bus type, claiming
-/// org.wellbeing.v1.Manager.*.
+/// create a NEW anonymous connection against the resolved bus type — the bus
+/// daemon assigns a unique name (`:1.xxx`) automatically.
 static auto resolveDaemonBus() -> std::optional<WellbeingManager::BusVariant> {
-    constexpr auto DAEMON_NAME = "org.wellbeing.v1.Daemon";
+    constexpr auto DAEMON_NAME = "org.wellbeing.v1.Controller";
 
     // Probe connection for the system bus.
     auto sysConn = createProbeConnection(true);
@@ -344,12 +344,12 @@ The plugin's `PLUGIN_INIT` replaces the current hardcoded
 `sdbus::createSystemBusConnection(name)` with:
 
 1. Call `resolveDaemonBus()` to determine which bus hosts the daemon.
-2. If resolution succeeds, create a **single** named connection against the
-   resolved bus type, claiming `org.wellbeing.v1.Manager.<uid>.<session>`.
-3. If resolution returns `std::nullopt`, the plugin logs a warning, opens a
-   system bus connection as fallback, and runs degraded (no overlay enforcement
-   until the daemon appears). Retry is triggered on `NameOwnerChanged` + focus
-   switch.
+2. If resolution succeeds, create a **single** anonymous connection against the
+   resolved bus type. The plugin does not claim a well-known name.
+3. If resolution returns `std::nullopt`, the plugin logs a warning and starts a
+   background retry loop (polling `resolveDaemonBus()` every 5s) until the
+   daemon appears. It connects on whichever bus the daemon is found, ensuring
+   the plugin's D-Bus interface is always co-located with the daemon.
 
 The probe connections from `resolveDaemonBus()` are **discarded** after
 resolution — they exist only to run `NameHasOwner` / `StartServiceByName` calls.
@@ -360,26 +360,26 @@ The plugin holds exactly **one** D-Bus connection at a time.
 See [10-deployment.md](./10-deployment.md) for the full file tree. Summary of
 the session-mode additions:
 
-| Artifact                                        | Mode    | Notes                                                                                                                            |
-| ----------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `digital-wellbeing-daemon.service` (systemd)    | System  | `User=root`, `BusName=org.wellbeing.v1.Daemon` (unchanged).                                                                      |
-| `dbus-1/system-services/...Daemon.service`      | System  | `User=root`, activates the system daemon.                                                                                        |
-| `dbus-1/system.d/org.wellbeing.v1.Daemon.conf`  | System  | Root `own`; `default` send/receive (unchanged).                                                                                  |
-| `dbus-1/services/...Daemon.service`             | Session | Session activation; `User` omitted (current user).                                                                               |
-| `~/.config/systemd/user/...daemon.service`      | Session | Optional user systemd unit for autostart.                                                                                        |
-| `dbus-1/session.d/org.wellbeing.v1.Daemon.conf` | Session | Usually **unnecessary** — the session bus lets the owning user `own` any name by default. Add only if stricter policy is wanted. |
-| `/var/lib/digital-wellbeing/db.sqlite`          | System  | mode 600, root-owned (unchanged).                                                                                                |
-| `$XDG_DATA_HOME/digital-wellbeing/db.sqlite`    | Session | mode 600, user-owned.                                                                                                            |
+| Artifact                                            | Mode    | Notes                                                                                                                            |
+| --------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `digital-wellbeing-daemon.service` (systemd)        | System  | `User=root`, `BusName=org.wellbeing.v1.Controller` (unchanged).                                                                  |
+| `dbus-1/system-services/...Controller.service`      | System  | `User=root`, activates the system daemon.                                                                                        |
+| `dbus-1/system.d/org.wellbeing.v1.Controller.conf`  | System  | Root `own`; `default` send/receive (unchanged).                                                                                  |
+| `dbus-1/services/...Controller.service`             | Session | Session activation; `User` omitted (current user).                                                                               |
+| `~/.config/systemd/user/...daemon.service`          | Session | Optional user systemd unit for autostart.                                                                                        |
+| `dbus-1/session.d/org.wellbeing.v1.Controller.conf` | Session | Usually **unnecessary** — the session bus lets the owning user `own` any name by default. Add only if stricter policy is wanted. |
+| `/var/lib/digital-wellbeing/db.sqlite`              | System  | mode 600, root-owned (unchanged).                                                                                                |
+| `$XDG_DATA_HOME/digital-wellbeing/db.sqlite`        | Session | mode 600, user-owned.                                                                                                            |
 
 ## Security Notes
 
 - **No request signing needed.** The plugin reads block state from the daemon's
-  own D-Bus name (`org.wellbeing.v1.Daemon.ActiveBlocks`), which is protected by
-  the D-Bus daemon. The plugin never accepts commands, so there is no command
-  method to spoof. See [05-daemon-auth.md](./05-daemon-auth.md).
+  own D-Bus name (`org.wellbeing.v1.Controller.ActiveBlocks`), which is
+  protected by the D-Bus daemon. The plugin never accepts commands, so there is
+  no command method to spoof. See [05-daemon-auth.md](./05-daemon-auth.md).
 - **Session bus is per-user.** On the session bus only the owning user can claim
-  `org.wellbeing.v1.Manager.*` names, so the already-open `own` policy is
-  naturally tighter than on the system bus.
+  names, so the already-open `own` policy is naturally tighter than on the
+  system bus.
 - **No cross-user enforcement in session mode — by design.** A session daemon
   cannot see or enforce other users; that capability is reserved for the system
   daemon (root).

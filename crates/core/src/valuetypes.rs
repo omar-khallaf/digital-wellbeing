@@ -54,17 +54,17 @@ pub struct Pid(pub u32);
 
 /// Policy identifier (SQLite row id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[zvariant(signature = "u")]
+#[zvariant(signature = "t")]
 pub struct PolicyId(pub i64);
 
 /// Category identifier (SQLite row id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
-#[zvariant(signature = "u")]
+#[zvariant(signature = "t")]
 pub struct CategoryId(pub i64);
 
 /// Duration in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
-#[zvariant(signature = "u")]
+#[zvariant(signature = "t")]
 pub struct DurationSecs(pub i64);
 
 impl DurationSecs {
@@ -78,15 +78,59 @@ impl DurationSecs {
 #[zvariant(signature = "u")]
 pub struct Uid(pub u32);
 
-/// Opaque plugin instance identifier (e.g. "<uid>@<session>").
+/// Inclusive date range for usage queries.
+///
+/// `start` and `end` are calendar dates (no time component). The range is
+/// validated at construction time so `start > end` is impossible at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DateRange {
+    pub start: chrono::NaiveDate,
+    pub end: chrono::NaiveDate,
+}
+
+impl DateRange {
+    /// Last N days including today.
+    pub fn last_n_days(n: u32) -> Self {
+        let today = chrono::Utc::now().date_naive();
+        let start = today - chrono::Days::new((n - 1) as u64);
+        Self { start, end: today }
+    }
+
+    /// Validate that start <= end.
+    pub fn validate(self) -> Result<(), Error> {
+        if self.start > self.end {
+            return Err(Error::InvalidArgument("DateRange start must be <= end"));
+        }
+        Ok(())
+    }
+
+    /// Preset ranges: 7, 30, 90 days.
+    pub fn presets() -> [Self; 3] {
+        [
+            Self::last_n_days(7),
+            Self::last_n_days(30),
+            Self::last_n_days(90),
+        ]
+    }
+
+    /// Format as `%Y-%m-%d` for D-Bus / SQL queries.
+    pub fn start_str(&self) -> String {
+        self.start.format("%Y-%m-%d").to_string()
+    }
+    pub fn end_str(&self) -> String {
+        self.end.format("%Y-%m-%d").to_string()
+    }
+}
+
+/// Opaque plugin instance identifier (unique D-Bus bus name, e.g. ":1.123").
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[zvariant(signature = "s")]
 pub struct PluginInstanceId(String);
 
 impl PluginInstanceId {
-    /// Build from uid and session identifier.
-    pub fn new(uid: u32, session: &str) -> Self {
-        Self(format!("{}@{}", uid, session))
+    /// Build from the plugin's unique D-Bus bus name (`header.sender()`).
+    pub fn new(bus_name: &str) -> Self {
+        Self(bus_name.to_owned())
     }
 
     pub fn as_str(&self) -> &str {

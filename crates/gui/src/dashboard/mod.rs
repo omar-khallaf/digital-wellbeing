@@ -13,9 +13,9 @@ use gpui::px;
 use gpui::*;
 use gpui_component::chart::{BarChart, PieChart};
 use gpui_component::{h_flex, v_flex};
-use wellbeing_core::{AppCategoryRow, Category, DailyUsageEntry};
+use wellbeing_core::{AppCategoryRow, Category, DailySummary, DailyUsageEntry, DateRange};
 
-use crate::components::{card, stat_card};
+use crate::components::{card, stat_card, time_range_selector};
 use crate::theme::{self, rad, resolve_color, sp};
 use gpui::Hsla;
 use gpui_component::ActiveTheme;
@@ -71,7 +71,7 @@ pub struct BlockCardInfo {
 #[derive(Debug, Clone)]
 pub struct DashboardViewModel {
     /// Inclusive date range for the current view.
-    pub date_range: (NaiveDate, NaiveDate),
+    pub date_range: DateRange,
     /// Per-day total screen time (bar chart data).
     pub bar_chart: Vec<Bar>,
     /// Per-app usage breakdown (pie chart data).
@@ -90,50 +90,28 @@ pub struct DashboardViewModel {
 
 /// Transform D-Bus cache data into a `DashboardViewModel`.
 pub fn build_dashboard_viewmodel(
-    usage: &[DailyUsageEntry],
+    range: DateRange,
+    summaries: &[DailySummary],
     categories: &[Category],
     app_categories: &[AppCategoryRow],
 ) -> DashboardViewModel {
-    let (start, end) = date_range_from_usage(usage);
-    let bar_chart = build_bars(usage);
-    let pie_app = build_app_slices(usage);
-    let pie_category = build_category_slices(usage, categories, app_categories);
-    let top_apps = build_top_apps(usage, app_categories);
+    let usage: Vec<DailyUsageEntry> = summaries
+        .iter()
+        .flat_map(|s| s.entries.iter().cloned())
+        .collect();
+
+    let bar_chart = build_bars(&usage);
+    let pie_app = build_app_slices(&usage);
+    let pie_category = build_category_slices(&usage, categories, app_categories);
+    let top_apps = build_top_apps(&usage, app_categories);
 
     DashboardViewModel {
-        date_range: (start, end),
+        date_range: range,
         bar_chart,
         pie_app,
         pie_category,
         top_apps,
         block_cards: Vec::new(),
-    }
-}
-
-/// Determine the inclusive date range from usage entries (defaults to today).
-fn date_range_from_usage(usage: &[DailyUsageEntry]) -> (NaiveDate, NaiveDate) {
-    let today = Utc::now().date_naive();
-    if usage.is_empty() {
-        return (today, today);
-    }
-
-    let mut min = NaiveDate::MAX;
-    let mut max = NaiveDate::MIN;
-    for entry in usage {
-        if let Ok(d) = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d") {
-            if d < min {
-                min = d;
-            }
-            if d > max {
-                max = d;
-            }
-        }
-    }
-
-    if min > max {
-        (today, today)
-    } else {
-        (min, max)
     }
 }
 
@@ -353,29 +331,38 @@ fn compute_kpis(vm: &DashboardViewModel) -> Kpis {
 }
 
 /// Render the complete dashboard view from a ViewModel.
-pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElement {
+pub fn render_dashboard_view(
+    cx: &App,
+    vm: &DashboardViewModel,
+    on_range_change: impl Fn(DateRange) + 'static,
+) -> impl IntoElement {
     let date_range_text = format!(
         "{} — {}",
-        vm.date_range.0.format("%b %d"),
-        vm.date_range.1.format("%b %d, %Y"),
+        vm.date_range.start.format("%b %d"),
+        vm.date_range.end.format("%b %d, %Y"),
     );
+    let range = vm.date_range;
 
     let kpis = compute_kpis(vm);
 
     v_flex()
         .gap_4()
         .child(
-            // Sub-header: date range
-            h_flex().gap_3().items_center().child(
-                div()
-                    .text_xs()
-                    .px(sp::XS)
-                    .py(px(2.0))
-                    .rounded(rad::sm())
-                    .bg(theme::accent(cx))
-                    .text_color(cx.theme().accent_foreground)
-                    .child(date_range_text),
-            ),
+            // Sub-header: date range selector + range badge
+            h_flex()
+                .gap_3()
+                .items_center()
+                .child(time_range_selector(cx, range, on_range_change))
+                .child(
+                    div()
+                        .text_xs()
+                        .px(sp::XS)
+                        .py(px(2.0))
+                        .rounded(rad::sm())
+                        .bg(theme::accent(cx))
+                        .text_color(cx.theme().accent_foreground)
+                        .child(date_range_text),
+                ),
         )
         // KPI stat row
         .child(

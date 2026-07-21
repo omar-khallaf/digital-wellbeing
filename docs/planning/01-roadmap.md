@@ -37,7 +37,7 @@ milestones that the phases deliver.
 - [x] `daemon/src/platform/*`: `Platform` trait + `LinuxPlatform` +
       `ManagerClient` (system D-Bus, `NameOwnerChanged` discovery —
       `architecture/02-platform.md`, `architecture/04-plugin-ipc.md`).
-- [x] `daemon/src/dbus/mod.rs`: `org.wellbeing.v1.Daemon` server + RBAC +
+- [x] `daemon/src/dbus/mod.rs`: `org.wellbeing.v1.Controller` server + RBAC +
       `DaemonPublicKey` + `RegisterPlugin` (`architecture/06-daemon-dbus.md`,
       `architecture/05-daemon-auth.md`).
 
@@ -59,25 +59,33 @@ milestones that the phases deliver.
 
 ### Phase D — GUI · `Ready`
 
+- [ ] `core/src/valuetypes.rs`: `DateRange` newtype with `start <= end`
+      validation
 - [ ] `dbus/mod.rs`: `DaemonClient` zbus proxy + `SignalCoalescer`, error
-      mapping, subscribe to daemon signals (`architecture/06-daemon-dbus.md`,
+      mapping, subscribe to daemon signals, `range_cache` keyed by
+      `"range:{start}:{end}:{uid}"` (`architecture/06-daemon-dbus.md`,
       `architecture/09-state-flow.md`).
 - [ ] `cache/mod.rs`: `ClientCache<K,V>` stale-while-revalidate, cache
-      invalidation from daemon signals (`architecture/09-state-flow.md`).
+      invalidation from daemon signals — wholesale clear on `DailyUsageChanged`
+      (`architecture/09-state-flow.md`).
 - [ ] `main.rs`: `gpui::run` + background tokio thread + D-Bus activation
-      fallback.
+      fallback. `refresh_all_data` calls `GetUsageRange(selected_range, uid)`
+      instead of `GetDailyUsage`.
 - [ ] `app.rs`: app shell (TitleBar, TabBar, tray, Admin/User mode via
-      `getuid()`).
-- [ ] `screens/dashboard/`: `DashboardViewModel`, `BarChart`, `PieChart`×2,
-      `AppList`, `BlockCard` (`features/03-ui-design.md`).
+      `getuid()`). `AppState` carries `selected_range: DateRange` +
+      `range_cache: Vec<DailySummary>`.
+- [ ] `screens/dashboard/`: `DashboardViewModel` built from `&[DailySummary]`,
+      `TimeRangeSelector` wired to header (`features/03-ui-design.md`).
 - [ ] `screens/policies/`: `PoliciesViewModel`, `AppSelector`, `PolicyEditor`,
       `CategoryEditor` (RBAC-aware).
-- [ ] `screens/reports/`: history + export (stub now, built out in v3).
+- [ ] `screens/reports/`: `ReportsViewModel` built from `&[DailySummary]`,
+      `TimeRangeSelector` wired to header, export stub
+      (`features/03-ui-design.md`).
 
 ### Phase E — Plugin migration · `Ready`
 
-- [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentSession`;
-      `RegisterPlugin(instance_id)` reverse discovery; `ActivityChanged` idle
+- [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentFocus`;
+      `RegisterPlugin()` reverse discovery; `ActivityChanged` (FocusActivityTag)
       signal; verify `SignedEnvelope` (read `DaemonPublicKey`, ±30s skew —
       `features/01-blocking.md`, `architecture/05-daemon-auth.md`).
 - [ ] `deploy/*.conf`: D-Bus system policy files for both interfaces
@@ -105,8 +113,8 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 2. **Event-driven usage** — `TrackerActor` writes one append-only `events` row
    per `WindowFocused`/`Unfocused`; `accumulate_interval()` updates
    `daily_usage` in the same transaction (`persistence/01-database.md`).
-3. **Idle/Resume + power/session closes** — `ActivityChanged` →
-   `Idle`/`Resumed`; `PowerStateWatcher` (logind) → real
+3. **Idle/Resume + power/session closes** — `ActivityChanged` (FocusActivityTag)
+   → `Idle`/`Resumed`; `PowerStateWatcher` (logind) → real
    `Slept`/`ShutDown`/`Locked`/`LoggedOut`; SIGTERM/SIGINT → `LoggedOut`
    (`architecture/03-linux-platform.md`).
 
@@ -129,8 +137,8 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 
 1. **Settings panel** — `Policies` tab: `AppSelector`, `PolicyEditor`,
    `CategoryEditor`, RBAC read-only badges (`features/03-ui-design.md`).
-2. **Dashboard** — `Dashboard` tab: `BarChart`, `PieChart`×2, `AppList` top-10,
-   `BlockCard` (`features/03-ui-design.md`).
+2. **Dashboard** — `Dashboard` tab: `TimeRangeSelector`, `BarChart`,
+   `PieChart`×2, `AppList` top-10, `BlockCard` (`features/03-ui-design.md`).
 
 ### Persistence & state · `Ready`
 
@@ -152,10 +160,12 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 
 ### Real-time UI plumbing · `Ready`
 
-1. **Minimal watch channels** — block state (`BlockStateChanged`) and
-   invalidation signals (`DailyUsageChanged`, `PolicyMutated`); `ClientCache`
-   TTLs: signal-drive for block states, 500ms usage, 5s policies
+1. **Signal-driven cache invalidation** — `DailyUsageChanged` / `PolicyMutated`
+   / `BlockStateChanged`; `ClientCache` keyed by `"range:{start}:{end}:{uid}"`,
+   wholesale clear on signal, TTL 500ms usage, 5s policies
    (`architecture/09-state-flow.md`).
+2. **ChangeDateRange command** — user selects new range → `GetUsageRange` →
+   `range_cache` update → ViewModel rebuild (`features/03-ui-design.md`).
 
 ### v1 hardening · `Open`
 
@@ -192,14 +202,18 @@ build.
 
 ## v3 — Statistics & History · `Ready`
 
-1. **Reports panel** — daily/weekly/monthly via `GetUsageRange` + time-range
-   selector (`features/03-ui-design.md`, `architecture/06-daemon-dbus.md`).
-2. **Usage trends** — hours-per-category over time.
-3. **24h timeline strip** — custom gpui element (no built-in timeline); respects
+1. **TimeRangeSelector** — `DateRange` newtype, preset buttons (7d/30d/90d),
+   `DatePicker` range mode for custom selection. Shared across Dashboard and
+   Reports (`features/03-ui-design.md`).
+2. **Reports panel** — daily/weekly/monthly via `GetUsageRange` +
+   TimeRangeSelector (`features/03-ui-design.md`,
+   `architecture/06-daemon-dbus.md`).
+3. **Usage trends** — hours-per-category over time.
+4. **24h timeline strip** — custom gpui element (no built-in timeline); respects
    `EVENTS_RETENTION_DAYS` (`features/03-ui-design.md`,
    `persistence/01-database.md`).
-4. **Export CSV/JSON** — `reports/` core + `ExportDialog`.
-5. **Drill-down** — per-app within category via `NavigationEvent`
+5. **Export CSV/JSON** — `reports/` core + `ExportDialog`.
+6. **Drill-down** — per-app within category via `NavigationEvent`
    (`features/03-ui-design.md`).
 
 ---
@@ -230,11 +244,11 @@ External apps query daemon state over the existing system D-Bus interface; no
 separate transport is added.
 
 1. **Read-only query API** — current usage / policies / history exposed via the
-   `org.wellbeing.v1.Daemon` method set (mirrors `GetDailyUsage` /
+   `org.wellbeing.v1.Controller` method set (mirrors `GetDailyUsage` /
    `GetUsageRange` / `ListPolicies`); no writes.
 2. **Command API** — `toggle block`, `grant extension` as new D-Bus methods on
-   `org.wellbeing.v1.Daemon` (same RBAC + `SO_PEERCRED` uid check as existing
-   methods; reuses `EnforcerActor` path).
+   `org.wellbeing.v1.Controller` (same RBAC + `SO_PEERCRED` uid check as
+   existing methods; reuses `EnforcerActor` path).
 
 Constraint: D-Bus is the single integration surface — external apps own their
 own sync/CRDT/event-sourcing layer; the daemon never exposes a second transport
@@ -252,7 +266,7 @@ study notes/flashcards · cross-device sync · cloud backup · social features
 
 ## Suggested order of attack
 
-1. **Phase E** plugin system-bus + `CurrentSession` + signed overlays (security-
+1. **Phase E** plugin system-bus + `CurrentFocus` + signed overlays (security-
    critical; pair with `architecture/05-daemon-auth.md` tests).
 2. **Phase D** GUI (dashboard → policies → reports stub).
 3. **Phase F** packaging + D-Bus policy + systemd.

@@ -36,8 +36,8 @@ its own builder or factory function with its required parameters encoded in
 platform.
 
 **LinuxPlatformBuilder** has no compositor-specific state — the daemon
-communicates with whatever compositor plugin is registered on the daemon's
-D-Bus bus. No detection, no feature gates for compositor variants. The builder
+communicates with whatever compositor plugin is registered on the daemon's D-Bus
+bus. No detection, no feature gates for compositor variants. The builder
 connects to D-Bus and returns the platform with an event stream; the plugin is
 discovered asynchronously via `NameOwnerChanged`.
 
@@ -56,22 +56,22 @@ mutability. The `Platform` impl is concrete and known at compile time — actors
 are generic over `P: Platform`.
 
 Block state management flows through the daemon's `ActiveBlocks` state (exposed
-on the D-Bus `org.wellbeing.v1.Daemon` interface), not through Platform.
-The EnforcerActor writes block state via an internal channel or shared state;
-the plugin reads the D-Bus property independently.
+on the D-Bus `org.wellbeing.v1.Controller` interface), not through Platform. The
+EnforcerActor writes block state via an internal channel or shared state; the
+plugin reads the D-Bus property independently.
 
 ### Event Model
 
 Platform events are the sole input to the system state machine. No platform
 knowledge leaks beyond `PlatformEvent`.
 
-| Event | Fields | Source | Consumer |
-|-------|--------|--------|----------|
-| `WindowFocused` | `{app_id, title, pid, uid, overlay_shown}` | Plugin `FocusChanged` signal | EnforcerActor (policy evaluation), TrackerActor (session timing) |
-| `Unfocused` | — | Plugin `FocusChanged` signal (Desktop variant) | EnforcerActor (close interval) |
-| `Idle` | — | Plugin `ActivityChanged` signal (idle=true) | EnforcerActor (pause interval) |
-| `Resumed` | — | Plugin `ActivityChanged` signal (idle=false) | EnforcerActor (resume interval) |
-| `UserAction` | `{app_id, action}` | Plugin `UserAction` signal | EnforcerActor (grant extension / close overlay) |
+| Event           | Fields                                     | Source                                                      | Consumer                                                         |
+| --------------- | ------------------------------------------ | ----------------------------------------------------------- | ---------------------------------------------------------------- |
+| `WindowFocused` | `{app_id, title, pid, uid, overlay_shown}` | Plugin `FocusChanged` signal                                | EnforcerActor (policy evaluation), TrackerActor (session timing) |
+| `Unfocused`     | —                                          | Plugin `FocusChanged` signal (Desktop variant)              | EnforcerActor (close interval)                                   |
+| `Idle`          | —                                          | Plugin `ActivityChanged` signal (FocusActivityTag::Idle)    | EnforcerActor (pause interval)                                   |
+| `Resumed`       | —                                          | Plugin `ActivityChanged` signal (FocusActivityTag::Resumed) | EnforcerActor (resume interval)                                  |
+| `UserAction`    | `{app_id, action}`                         | Plugin `UserAction` signal                                  | EnforcerActor (grant extension / close overlay)                  |
 
 `Locked`, `LoggedOut`, `Slept`, and `ShutDown` are NOT `PlatformEvent` variants.
 They are emitted directly into the event log by the session / power watcher
@@ -94,6 +94,8 @@ reflect actual post-grant usage.
 
 ## References
 
-- [04-plugin-ipc.md](./04-plugin-ipc.md) — declarative plugin IPC, `ActiveBlocks`
+- [04-plugin-ipc.md](./04-plugin-ipc.md) — declarative plugin IPC,
+  `ActiveBlocks`
 - [03-linux-platform.md](./03-linux-platform.md) — Linux Platform impl
-- [06-daemon-dbus.md](./06-daemon-dbus.md) — `ActiveBlocks` property on daemon interface
+- [06-daemon-dbus.md](./06-daemon-dbus.md) — `ActiveBlocks` property on daemon
+  interface

@@ -19,7 +19,7 @@ Status: **DONE** (A1–A3 completed in initial workspace restructuring)
 | ---- | ------------------------ | -------------------------------------------- |
 | B1   | `daemon/src/store/*`     | DbPool, StoreBuilder, migrations, schema.rs  |
 | B2   | `daemon/src/platform/*`  | Platform trait, LinuxPlatform, ManagerClient |
-| B3   | `daemon/src/dbus/mod.rs` | org.wellbeing.v1.Daemon server + RBAC        |
+| B3   | `daemon/src/dbus/mod.rs` | org.wellbeing.v1.Controller server + RBAC    |
 
 Status: **B1 done** (store), B2–B3 **in progress**.
 
@@ -51,7 +51,7 @@ Status: **B1 done** (store), B2–B3 **in progress**.
 | Step | File(s)                  | What                            |
 | ---- | ------------------------ | ------------------------------- |
 | E1   | `plugins/hyprland/src/*` | Change session bus → system bus |
-| E2   | `plugins/hyprland/src/*` | Add CurrentSession property     |
+| E2   | `plugins/hyprland/src/*` | Add CurrentFocus property       |
 | E3   | `deploy/*.conf`          | D-Bus system policy files       |
 
 ## Phase F: Deployment

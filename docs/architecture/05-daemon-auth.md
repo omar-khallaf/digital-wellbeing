@@ -6,8 +6,8 @@ derives from D-Bus name ownership and kernel-authenticated credentials.
 **The plugin never accepts commands.** The daemon only writes state to its own
 D-Bus interface (`ActiveBlocks` property, `BlockStateChanged` signal). The
 plugin reads state from the daemon's well-known D-Bus name
-(`org.wellbeing.v1.Daemon`). Only the daemon process can own that name, so reads
-are authenticated by the D-Bus daemon itself.
+(`org.wellbeing.v1.Controller`). Only the daemon process can own that name, so
+reads are authenticated by the D-Bus daemon itself.
 
 **`UserAction` carries no daemon-owned data.** The plugin sends `app_id` +
 `action` (its window-domain assertion). The daemon looks up the corresponding
