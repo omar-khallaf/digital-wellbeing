@@ -1,169 +1,116 @@
 # App Categorization
 
-Categorization is an **extra feature** layered on top of core app tracking. The
-core function tracks **apps** — which apps you use and for how long. Categories
-are a derived view: a grouping mechanism for policies and statistics.
+Categorization is an extra feature layered on top of core app tracking. The core
+function tracks apps — which apps you use and for how long. Categories are a
+derived view: a grouping mechanism for policies and statistics.
 
 ## Data Sources
 
-### 1. `app_categories` Table (Primary)
+### 1. app_categories Table (Primary)
 
 The single source of truth for app-to-category mappings. Built-in defaults are
 seeded at migration time. Users modify entries via the UI settings screen —
 there is no separate "override" concept, no external config files.
 
-```sql
-CREATE TABLE app_categories (
-    app_id          TEXT NOT NULL,
-    user_id         INTEGER NOT NULL DEFAULT 0,
-    category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-    display_name    TEXT,
-    icon_path       TEXT,
-    ignore          INTEGER NOT NULL DEFAULT 0 CHECK(ignore IN (0, 1)),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    PRIMARY KEY (app_id, user_id)
-);
-```
+The table stores one row per app per user. Each row carries the app identifier,
+a user_id (0 for system-global defaults, the caller's UID for per-user
+overrides), a nullable category_id that references the categories table (null
+means the categorizer falls through to AI classification then Uncategorized), an
+optional display name for UI presentation, an optional icon path, an ignore flag
+that excludes the app from tracking and reports when set, and an updated_at
+timestamp.
 
-- `category_id` **nullable**: when NULL, the categorizer falls through to AI
-  classification → `Uncategorized`.
-- `display_name` / `icon_path`: optional overrides for UI presentation. Default
-  is to show `app_id` as the display name with no icon.
-- `ignore`: when set, the app is excluded from tracking and reports.
+The primary key is (app_id, user_id), which allows each user to override their
+own mappings while falling through to the system-global row at user_id=0.
 
-**Seeded defaults** (from the initial migration):
+Seeded defaults (from the initial migration) assign common apps to built-in
+categories: terminal emulators and tmux to Productivity; editors and IDEs to
+Development; browsers to Social. Other built-in categories include
+Communication, Entertainment, and Utilities, with Uncategorized as the default
+bucket. The complete set of built-in categories is seeded at migration time.
 
-| Category     | App IDs                                                                                                                                   |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Productivity | Alacritty, kitty, foot, wezterm, gnome-terminal, konsole, terminator, tmux                                                                |
-| Development  | Code, code-oss, zed, jetbrains-idea, nvim, emacs, Atom, Sublime_text                                                                      |
-| Social       | firefox, firefoxdeveloperedition, Google-chrome, chromium-browser, brave-browser, zen-browser, org.mozilla.firefox, org.chromium.Chromium |
-
-These are representative seed mappings. The complete set of built-in categories
-seeded at migration is: Productivity, Communication, Entertainment, Social,
-Development, Utilities, and Uncategorized (see Category System below).
-
-New defaults are added via future migrations using `INSERT OR IGNORE` to
-preserve user edits.
+New defaults are added via future migrations using INSERT OR IGNORE to preserve
+user edits.
 
 ### 2. AI Classification (Fallback)
 
-For apps not found in `app_categories`, the categorizer invokes a local AI
-classification service. The classifier receives:
+For apps not found in app_categories, the categorizer invokes a local AI
+classification service. The classifier receives the app_id (e.g., "Slack",
+"obsidian", "org.gimp.GIMP") and window title text when available (often
+contains app name). It returns a (WindowCategory, confidence) pair.
 
-- `app_id` (e.g., `"Slack"`, `"obsidian"`, `"org.gimp.GIMP"`)
-- Window `title` text when available (often contains app name)
+The classification logic is expressed as a single async method: classify, which
+accepts an AppId and an optional window title, and returns
+Option<WindowCategory>. It returns None when confidence falls below the default
+threshold of 0.6.
 
-And returns a `(WindowCategory, confidence)` pair.
+Implementation paths:
 
-**Integration boundary:**
+- v1: simple heuristic — keyword matching on app_id against category names
+- v2: ONNX local model — ort crate with a small distilled BERT model
 
-```rust
-pub trait AiClassifier: Send + Sync + 'static {
-    /// Classify an app by app_id and optional window title.
-    /// Returns None when confidence is below threshold (0.6 default).
-    async fn classify(&self, app_id: &AppId, title: Option<&str>) -> Option<WindowCategory>;
-}
-```
-
-**Implementation paths (v1 → v2):**
-
-| Phase | Approach         | Details                                             |
-| ----- | ---------------- | --------------------------------------------------- |
-| v1    | Simple heuristic | Keyword matching on `app_id` against category names |
-| v2    | ONNX local model | `ort` crate with a small distilled BERT model       |
-
-The `AiClassifier` trait is **not** a `Platform` method — it lives in the
-`categorization/` feature module alongside the `Categorizer` actor. This keeps
+The AiClassifier trait is not a Platform method — it lives in the
+categorization/ feature module alongside the Categorizer actor. This keeps
 OS-specific concerns (D-Bus, plugin, metadata) fully isolated from the
 classification logic.
 
-**Cache:** Classification results are cached in an LRU
-`HashMap<AppId, (WindowCategory, Instant)>` with a 60-second TTL.
+Cache: classification results are cached in an LRU HashMap<AppId,
+(WindowCategory, Instant)> with a 60-second TTL.
 
 ### Resolution Chain
 
-```
+The categorizer tries each step in order; the first match wins:
+
 1. app_categories (user-specific, user_id=N) — per-user override
 2. app_categories (system-global, user_id=0) — seeded default
 3. AI classification — fallback for unmapped apps
 4. Uncategorized — always succeeds (never crashes)
-```
 
-Each step is tried in order. The first match wins.
+The categorizer tracks which source produced each result via a CategorySource
+enum with three variants:
 
-```rust
-#[derive(Debug, Clone)]
-pub enum CategorySource {
-    AppCategory { app_id: AppId, category: WindowCategory },  // from DB
-    AiClassified { app_id: AppId, category: WindowCategory },
-    Uncategorized,
-}
+- AppCategory — the result came from the app_categories DB table, carrying the
+  app_id and resolved WindowCategory
+- AiClassified — the result came from AI classification, carrying the app_id and
+  WindowCategory
+- Uncategorized — no mapping was found; the fallback bucket
 
-pub struct Categorizer<C: AiClassifier> {
-    db: DbPool,
-    ai: Arc<C>,
-    cache: Mutex<LruCache<AppId, WindowCategory>>,
-}
+Internally, the categorizer holds a reference to the database pool and a
+thread-safe LRU cache keyed by AppId. When categorize(app_id, title) is called,
+it performs this sequence:
 
-impl<C: AiClassifier> Categorizer<C> {
-    pub async fn categorize(&self, app_id: &AppId, title: Option<&str>) -> CategorySource {
-        // 1. DB lookup
-        if let Some(cat) = self.lookup_db(app_id).await {
-            return CategorySource::AppCategory { app_id: app_id.clone(), category: cat };
-        }
+1. DB lookup queries app_categories joined with categories. If a matching row
+   has a non-null category_id, the resolved category is returned immediately as
+   AppCategory.
+2. Cache check — if the cache already holds a result for this app_id, it is
+   returned as AiClassified without invoking the AI model again.
+3. AI classification calls the AiClassifier. If the model returns a category
+   above the confidence threshold, the result is cached and returned as
+   AiClassified.
+4. Uncategorized — if all prior steps yield nothing, the result is
+   Uncategorized.
 
-        // 1b. Check cache (avoids repeated AI calls for same app)
-        if let Some(cat) = self.cache.lock().get(app_id) {
-            return CategorySource::AiClassified { app_id: app_id.clone(), category: *cat };
-        }
-
-        // 2. AI classification
-        if let Some(cat) = self.ai.classify(app_id, title).await {
-            self.cache.lock().put(app_id.clone(), cat);
-            return CategorySource::AiClassified { app_id: app_id.clone(), category: cat };
-        }
-
-        // 3. Uncategorized
-        CategorySource::Uncategorized
-    }
-
-    async fn lookup_db(&self, app_id: &AppId) -> Option<WindowCategory> {
-        use diesel::prelude::*;
-        app_categories::table
-            .find(app_id.as_ref())
-            .inner_join(categories::table)
-            .select(categories::name)
-            .first(&mut self.db.get().await.ok()?)
-            .await
-            .ok()
-    }
-}
-```
+The DB lookup performs a parameterized query using app_id as the key with an
+INNER JOIN on categories. It tries the caller's user_id first, then falls
+through to user_id=0 for the system-wide default. If neither row exists or both
+have category_id IS NULL, the lookup returns none and the categorizer advances
+to the next step.
 
 ## Cache Strategy
 
 - DB lookups are fast (PK point query) — no separate cache needed.
-- AI results cached in `LruCache<AppId, WindowCategory>` with 60-second TTL.
-- Cache is invalidated on `app_categories` INSERT/UPDATE/DELETE via
-  `ReactiveNotifier::PolicyMutated`.
+- AI results cached in LruCache<AppId, WindowCategory> with 60-second TTL.
+- Cache is invalidated on app_categories INSERT/UPDATE/DELETE via
+  ReactiveNotifier::PolicyMutated.
 - At startup, the cache is empty — AI classifies apps lazily on first focus.
 
 ### Cache Invalidation
 
 When the user modifies an app's category in the UI, the change is written to
-`app_categories` in the DB. The `ReactiveNotifier` broadcasts `PolicyMutated`,
-which prompts the `Categorizer` to evict the cached entry for that `app_id`:
-
-```rust
-impl<C: AiClassifier> Categorizer<C> {
-    /// Called when a PolicyMutated notification arrives.
-    /// Removes the cached classification for the given app_id (if any).
-    pub fn invalidate(&self, app_id: &AppId) {
-        self.cache.lock().pop(app_id);
-    }
-}
-```
+app_categories in the DB. The ReactiveNotifier broadcasts PolicyMutated, which
+prompts the Categorizer to evict the cached entry for that app_id. The
+categorizer exposes a public invalidate(app_id) method that removes the matching
+key from the LRU cache if present — a no-op for unknown app_ids.
 
 ## Category System
 
@@ -180,70 +127,61 @@ Categories are a secondary index. The system comes with built-in categories:
 | Uncategorized | Default bucket                            |
 
 Built-in categories and default mappings are seeded in the migration (see
-`migrations/`). Users can create custom categories via the settings UI.
+migrations/). Users can create custom categories via the settings UI.
 
 ### App-First, Categories-Second
 
-```rust
-/// Tracking is per-app. Categories are derived.
-pub struct UsageRecord {
-    pub app_id: AppId,
-    pub duration: DurationSecs,
-    pub category: Option<CategoryId>, // populated lazily
-}
-```
+Tracking is always per-app; categories are derived metadata. The UsageRecord
+type stores an app_id, a duration in seconds, and an optional category_id that
+is populated lazily — the category is resolved at query time, not at write time.
 
 ### Policy Domain Enum
 
 The data layer constructs one of these per active policy row — domain logic
-never sees raw `app_id`/`category_id` columns:
+never sees raw app_id/category_id columns:
 
-```rust
-/// A policy targets exactly one scope. Enum variants encode the target
-/// so the domain evaluator can pattern-match without peeking at Option fields.
-pub enum Policy {
-    App { id: PolicyId, name: String, config: PolicyConfig, app_id: AppId },
-    Category { id: PolicyId, name: String, config: PolicyConfig, category_id: CategoryId },
-}
-```
+- Policy::App — targets a specific app by app_id
+- Policy::Category — targets all apps in a category_id
 
-If a policy targets a category, it applies to all apps in that category. The
-evaluator (`evaluate()` in `policy/core/`) receives a `&[Policy]` pre-filtered
-by the app's `app_id` and resolved `category_id`s — the DB query does the join,
-not the domain.
+A policy always targets exactly one scope. The enum variants encode the target
+so the domain evaluator can pattern-match without peeking at Option fields. If a
+policy targets a category, it applies to all apps in that category. The
+evaluator (evaluate() in policy/core/) receives a &[Policy] pre-filtered by the
+app's app_id and resolved category_id s — the DB query does the join, not the
+domain.
 
 Tracking data is always stored per-app — categories are computed at query time
-via the `app_categories` table.
+via the app_categories table.
 
 ## Browser Tab Detection
 
-Browser windows are a single `app_id` containing multiple "logical apps" (tabs).
+Browser windows are a single app_id containing multiple "logical apps" (tabs).
 Detected via window title patterns:
 
-| Browser        | Pattern                     | Notes                                     |
-| -------------- | --------------------------- | ----------------------------------------- |
-| Firefox        | `^(.*) — .* Firefox$`       | Firefox uses em-dash (U+2014) globally    |
-| Chromium       | `^(.*) - .* Google Chrome$` | Chromium uses regular hyphen, not em-dash |
-| Chromium-based | `^(.*) - .* Chromium$`      | Same hyphen separator                     |
+| Browser        | Pattern                   | Notes                                     |
+| -------------- | ------------------------- | ----------------------------------------- |
+| Firefox        | ^(._) - ._ Firefox$       | Firefox uses em-dash (U+2014) globally    |
+| Chromium       | ^(._) - ._ Google Chrome$ | Chromium uses regular hyphen, not em-dash |
+| Chromium-based | ^(._) - ._ Chromium$      | Same hyphen separator                     |
 
-**Known locale sensitivity:** Firefox's title format is
-`"<page> — Mozilla Firefox"` in all locales (the app name is not localized).
-Chromium uses `"<page> - Google Chrome"` (regular hyphen, not em-dash). These
-patterns are compiled statically with `Lazy<Regex>`. Brave, Edge, Vivaldi, and
-Opera each have their own window title format and are not matched — they appear
-as their base `app_id` (e.g., `brave-browser`). An `app_categories` entry is the
-preferred classification path for less common browsers.
+Known locale sensitivity: Firefox's title format is "<page> — Mozilla Firefox"
+in all locales (the app name is not localized). Chromium uses "<page> - Google
+Chrome" (regular hyphen, not em-dash). These patterns are compiled statically
+with Lazy<Regex>. Brave, Edge, Vivaldi, and Opera each have their own window
+title format and are not matched — they appear as their base app_id (e.g.,
+brave-browser). An app_categories entry is the preferred classification path for
+less common browsers.
 
 The captured group is the page title. URL detection is more invasive
 (accessibility API), deferred until v2.
 
 ## Future: Machine Learning Classification
 
-If manual categorization becomes a pain point, a local ML model (e.g., `ort` /
+If manual categorization becomes a pain point, a local ML model (e.g., ort /
 ONNX Runtime) could classify apps based on:
 
-- `app_id` and window title patterns
+- app_id and window title patterns
 - Usage time patterns (gaming = evening, work = morning)
 
-The `AiClassifier` trait is designed for this — the v1 heuristic impl can be
+The AiClassifier trait is designed for this — the v1 heuristic impl can be
 swapped for an ONNX-based impl behind the same trait boundary.

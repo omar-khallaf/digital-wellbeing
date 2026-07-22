@@ -117,17 +117,65 @@ enum class BlockReason : uint8_t {
 
 // ── FocusVariantTag ──────────────────────────────────────────────────────────
 // D-Bus variant discriminator for FocusChanged signal (org.wellbeing.v1.Manager).
+/// Must match Rust handler in daemon/src/platform/linux/manager.rs (Value::U32(0)
+/// for desktop, Value::U32(1) as first struct field for app).
+/// Zero-based: no desktop tag collision, Rust side checks for U32(0).
+///
+/// Cross-reference: Rust FOCUS_TAG_DESKTOP / FOCUS_TAG_APP in
+/// crates/core/src/dbus_constants.rs.
 enum class FocusVariantTag : uint8_t {
-    Desktop = 1,
-    App = 2,
+    Desktop = 0,
+    App = 1,
 };
 
 // ── FocusActivityTag ───────────────────────────────────────────────────────────
 // Discriminator for ActivityChanged signal replacing the old bool encoding.
 // Idle=0 means user activity has stopped; Resumed=1 means activity resumed.
+///
+/// Cross-reference: Rust ACTIVITY_TAG_IDLE / ACTIVITY_TAG_RESUMED in
+/// crates/core/src/dbus_constants.rs.
 enum class FocusActivityTag : uint8_t {
     Idle = 0,
     Resumed = 1,
 };
+
+// ── FocusChanged app-struct field indices ─────────────────────────────────────
+// When the FocusChanged variant carries an app window (FocusVariantTag::App),
+// the inner struct fields are accessed by these indices on the Rust side.
+//
+// Cross-reference: Rust FOCUS_FIELD_TAG … FOCUS_FIELD_OVERLAY in
+// crates/core/src/dbus_constants.rs.
+// =============================================================================
+
+/// Index of the variant-tag field.
+inline constexpr size_t FOCUS_FIELD_TAG = 0;
+/// Index of the app_id field.
+inline constexpr size_t FOCUS_FIELD_APP_ID = 1;
+/// Index of the window-title field.
+inline constexpr size_t FOCUS_FIELD_TITLE = 2;
+/// Index of the PID field.
+inline constexpr size_t FOCUS_FIELD_PID = 3;
+/// Index of the UID field.
+inline constexpr size_t FOCUS_FIELD_UID = 4;
+/// Index of the overlay-shown field.
+inline constexpr size_t FOCUS_FIELD_OVERLAY = 5;
+/// Total number of fields in the FocusChanged app struct.
+inline constexpr size_t FOCUS_STRUCT_FIELD_COUNT = 6;
+
+// ── D-Bus type signatures (cross-language contract) ───────────────────────────
+// These strings pin the D-Bus wire signatures that both Rust (zvariant) and C++
+// (sdbus-c++) must agree on. Change with extreme care — mismatches cause
+// "Failed to enter a container" or "Failed to open a variant" serialization
+// errors.
+//
+// Cross-reference: Rust ACTIVE_BLOCK_SIGNATURE / FOCUS_STRUCT_SIGNATURE in
+// crates/core/src/dbus_constants.rs.
+// =============================================================================
+
+/// D-Bus struct signature for ActiveBlockEntry: (string, uint64, uint32, uint64, array<uint32>).
+inline constexpr auto ACTIVE_BLOCK_SIGNATURE = "(stutau)";
+
+/// D-Bus struct signature for FocusChanged app variant: (uint32, string, string, uint32, uint32, bool).
+inline constexpr auto FOCUS_STRUCT_SIGNATURE = "(ussuub)";
 
 } // namespace wellbeing

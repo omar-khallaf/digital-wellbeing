@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.wellbeing.v1.Controller
+Exec=/usr/libexec/digital-wellbeing/wellbeing-daemon
+User=root
+systemd-service=digital-wellbeing-daemon.service

@@ -32,7 +32,7 @@ CREATE TABLE daily_usage (
     date           TEXT NOT NULL,
     user_id        INTEGER NOT NULL,
     app_id         TEXT NOT NULL,
-    total_seconds  INTEGER NOT NULL DEFAULT 0 CHECK(total_seconds >= 0),
+    total_minutes  INTEGER NOT NULL DEFAULT 0 CHECK(total_minutes >= 0),
     extended       INTEGER NOT NULL DEFAULT 0 CHECK(extended IN (0, 1)),
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (date, user_id, app_id)
@@ -49,29 +49,36 @@ CREATE TABLE categories (
 CREATE TABLE policies (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
-    kind        INTEGER NOT NULL CHECK(kind IN (0, 1, 2)),
+    action      INTEGER NOT NULL CHECK(action IN (0, 1, 2)),
     category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
     app_id      TEXT,
     created_by  INTEGER NOT NULL DEFAULT 0,
     owner_id    INTEGER NOT NULL DEFAULT 0,
-    time_limit_seconds            INTEGER,
-    extra_seconds                 INTEGER NOT NULL DEFAULT 600 CHECK(extra_seconds >= 0),
-    notification_repeat_interval_seconds INTEGER,
-    schedule_json                 TEXT NOT NULL DEFAULT '{}',
-    active      INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    time_limit_minutes            INTEGER,
+    extra_minutes                 INTEGER NOT NULL DEFAULT 10 CHECK(extra_minutes >= 0),
+    notification_repeat_interval_minutes INTEGER,
+    schedule_start_hour           INTEGER CHECK (schedule_start_hour BETWEEN 0 AND 23),
+    schedule_end_hour             INTEGER CHECK (schedule_end_hour BETWEEN 0 AND 23),
+    schedule_days                 TEXT NOT NULL DEFAULT '[]',
+    active                        INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+    created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 
     CHECK (
         (category_id IS NOT NULL AND app_id IS NULL)
         OR (category_id IS NULL AND app_id IS NOT NULL)
     ),
-    CHECK (NOT (kind = 0 AND time_limit_seconds IS NOT NULL)),
-    CHECK (NOT (kind IN (1, 2) AND time_limit_seconds IS NULL)),
-    CHECK (time_limit_seconds IS NULL OR time_limit_seconds > 0),
-    CHECK (notification_repeat_interval_seconds IS NULL
-        OR (kind = 2 AND notification_repeat_interval_seconds > 0)),
-    CHECK (json_type(schedule_json) IS 'object')
+    CHECK (NOT (action = 0 AND time_limit_minutes IS NOT NULL)),
+    CHECK (NOT (action IN (1, 2) AND time_limit_minutes IS NULL)),
+    CHECK (time_limit_minutes IS NULL OR time_limit_minutes > 0),
+    CHECK (notification_repeat_interval_minutes IS NULL
+        OR (action = 2 AND notification_repeat_interval_minutes > 0)),
+    CHECK (NOT (schedule_start_hour IS NOT NULL AND schedule_end_hour IS NULL)
+          AND NOT (schedule_start_hour IS NULL AND schedule_end_hour IS NOT NULL)),
+    CHECK (
+        schedule_days IS NULL
+        OR json_type(schedule_days) IS 'array'
+    )
 );
 
 CREATE INDEX idx_policies_active ON policies(active) WHERE active = 1;

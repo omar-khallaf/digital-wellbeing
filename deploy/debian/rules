@@ -1,0 +1,42 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+# debian/rules for digital-wellbeing
+#
+# Builds Rust workspace binaries + Hyprland C++ plugin,
+# then installs them into per-binary-package staging dirs.
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@ --buildsystem=cargo
+
+override_dh_auto_build:
+	cargo build --release -p wellbeing-daemon -p wellbeing-gui --workspace
+	cd plugins/hyprland/app && \
+		cmake -B build -G Ninja \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_INSTALL_PREFIX=$${DESTDIR}/usr && \
+		cmake --build build
+
+override_dh_auto_install:
+	# Rust binaries
+	install -Dm755 target/release/wellbeing-daemon debian/wellbeing-daemon/usr/bin/wellbeing-daemon
+	install -Dm755 target/release/wellbeing-gui debian/wellbeing-gui/usr/bin/wellbeing-gui
+
+	# Hyprland plugin
+	cd plugins/hyprland/app/build && \
+		install -Dm755 wellbeing_manager.so debian/wellbeing-hyprland-plugin/usr/lib/hyprland-plugins/wellbeing_manager.so
+
+	# Common D-Bus policy (shared by all components)
+	install -Dm644 deploy/dbus/org.wellbeing.v1.Controller.conf \
+		debian/wellbeing-common/usr/share/dbus-1/system.d/org.wellbeing.v1.Controller.conf
+	install -Dm644 deploy/dbus/org.wellbeing.v1.Manager.conf \
+		debian/wellbeing-common/usr/share/dbus-1/system.d/org.wellbeing.v1.Manager.conf
+
+	# Systemd unit (system daemon)
+	install -Dm644 deploy/systemd/digital-wellbeing-daemon.service \
+		debian/wellbeing-common/usr/lib/systemd/system/digital-wellbeing-daemon.service
+
+	# D-Bus activation file (system service)
+	install -Dm644 deploy/system-services/org.wellbeing.v1.Controller.service \
+		debian/wellbeing-common/usr/share/dbus-1/system-services/org.wellbeing.v1.Controller.service

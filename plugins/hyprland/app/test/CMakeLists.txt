@@ -15,17 +15,50 @@ fetchcontent_declare(
 
 fetchcontent_makeavailable(googletest)
 
-# lockdown.cpp is standalone (types.hpp + std only; Hyprland/sdbus live in
-# main.cpp, which is intentionally excluded from the unit-test build).
-add_executable(${PROJECT_NAME} test.cpp ../src/lockdown.cpp)
+fetchcontent_declare(
+    sdbus-cpp
+    GIT_REPOSITORY https://github.com/Kistler-Group/sdbus-cpp.git
+    GIT_TAG v2.3.1
+    GIT_SHALLOW True
+    GIT_PROGRESS True
+    CMAKE_ARGS
+        -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
+        -DBUILD_SHARED_LIBS:BOOL=OFF
+        -DSDBUSCPP_BUILD_DOCS:BOOL=OFF
+        -DSDBUSCPP_BUILD_CODEGEN:BOOL=OFF
+        -DSDBUSCPP_BUILD_TESTS:BOOL=OFF
+        -DSDBUSCPP_BUILD_LIBSYSTEMD:BOOL=OFF
+)
+fetchcontent_makeavailable(sdbus-cpp)
+
+# LockManager tests — standalone (types.hpp + std only; no D-Bus).
+add_executable(${PROJECT_NAME}
+    test.cpp
+    ../src/lockdown.cpp
+)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../include
-  ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest)
+target_link_libraries(${PROJECT_NAME} PRIVATE sdbus-c++)
 
-# Register the executable with CTest. `enable_testing()` is called in the parent
-# (app/) CMakeLists, so this test is discoverable by the superbuild's delegated
-# CTest invocation (`ctest --preset test-host`).
-add_test(NAME ${PROJECT_NAME} COMMAND ${PROJECT_NAME})
+# ── D-Bus serialization contract tests ──────────────────────────────────────
+# sdbus-c++ target is available from the parent's FetchContent (v2.3.1, static).
+add_executable(wellbeing-lockdown-dbus-test
+    dbus_serialization_test.cpp
+)
+
+target_include_directories(wellbeing-lockdown-dbus-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
+target_link_libraries(wellbeing-lockdown-dbus-test
+    PRIVATE
+        GTest::gtest
+        sdbus-c++
+)
+
+# Register both tests with CTest.
+add_test(NAME wellbeing-lockdown-test COMMAND ${PROJECT_NAME})
+add_test(NAME wellbeing-lockdown-dbus-test COMMAND wellbeing-lockdown-dbus-test)

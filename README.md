@@ -7,9 +7,9 @@ Inspired by Android's Digital Wellbeing, built for Linux desktop.
 
 ## Project Status
 
-**Design / Specification Phase — partially scaffolded.** The full architecture,
-D-Bus contracts, and module layout are specified; implementation has not started
-on most components.
+**MVP — architecture in place.** The system tracks activity on hyprland, but
+still missing proper implementation for policies, categorization, authenticated
+dbus access to the daemon, RBAC, and other rough edges.
 
 ## Architecture
 

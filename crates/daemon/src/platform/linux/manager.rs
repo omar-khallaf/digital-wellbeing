@@ -3,7 +3,14 @@ use std::collections::HashMap;
 use futures::StreamExt;
 
 use tracing::{error, info, warn};
-use wellbeing_core::{AppId, PluginInstanceId, Uid};
+use wellbeing_core::{
+    AppId, PluginInstanceId, Uid,
+    dbus_constants::{
+        ACTIVITY_TAG_IDLE, FOCUS_FIELD_APP_ID, FOCUS_FIELD_OVERLAY, FOCUS_FIELD_PID,
+        FOCUS_FIELD_TAG, FOCUS_FIELD_TITLE, FOCUS_FIELD_UID, FOCUS_STRUCT_FIELD_COUNT,
+        FOCUS_TAG_APP, FOCUS_TAG_DESKTOP,
+    },
+};
 use zbus::proxy;
 use zvariant::OwnedValue;
 
@@ -24,7 +31,7 @@ pub trait Manager {
     fn focus_changed(&self, window: OwnedValue) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    fn activity_changed(&self, idle: bool) -> zbus::Result<()>;
+    fn activity_changed(&self, tag: u32) -> zbus::Result<()>;
 }
 
 pub struct ManagerClient {
@@ -76,13 +83,14 @@ impl PluginRegistry {
     pub async fn subscribe_signals(
         &self,
         instance_id: &PluginInstanceId,
+        handle: &tokio::runtime::Handle,
     ) -> Option<tokio::sync::mpsc::Receiver<PlatformEvent>> {
         let client = self.clients.get(instance_id)?;
         let proxy = client.proxy.clone();
         let uid = client.uid;
         let (tx, rx) = tokio::sync::mpsc::channel::<PlatformEvent>(256);
 
-        tokio::spawn(async move {
+        handle.spawn(async move {
             let mut focus_stream = match proxy.receive_focus_changed().await {
                 Ok(s) => s,
                 Err(e) => {
@@ -113,19 +121,19 @@ impl PluginRegistry {
                             use zvariant::Value;
                             let v: Value = val.into();
                             match &v {
-                                Value::U32(1) => {
+                                Value::U32(FOCUS_TAG_DESKTOP) => {
                                     tx.send(PlatformEvent::Unfocused).await.ok();
                                 }
-                                Value::Structure(s) if s.fields().len() >= 6 => {
+                                Value::Structure(s) if s.fields().len() >= FOCUS_STRUCT_FIELD_COUNT => {
                                     let f = s.fields();
                                     if let (
-                                        Value::U32(2),
+                                        Value::U32(FOCUS_TAG_APP),
                                         Value::Str(app_id),
                                         Value::Str(title),
                                         Value::U32(pid),
                                         Value::U32(uid),
                                         Value::Bool(overlay),
-                                    ) = (&f[0], &f[1], &f[2], &f[3], &f[4], &f[5])
+                                    ) = (&f[FOCUS_FIELD_TAG], &f[FOCUS_FIELD_APP_ID], &f[FOCUS_FIELD_TITLE], &f[FOCUS_FIELD_PID], &f[FOCUS_FIELD_UID], &f[FOCUS_FIELD_OVERLAY])
                                         && let Ok(aid) = wellbeing_core::AppId::new(app_id.as_str()) {
                                             let wt = wellbeing_core::WindowTitle::new(title.as_str());
                                             tx.send(PlatformEvent::WindowFocused {
@@ -143,7 +151,7 @@ impl PluginRegistry {
                     }
                     Some(signal) = activity_stream.next() => {
                         if let Ok(args) = signal.args() {
-                            let event = if args.idle {
+                            let event = if args.tag == ACTIVITY_TAG_IDLE {
                                 PlatformEvent::Idle
                             } else {
                                 PlatformEvent::Resumed

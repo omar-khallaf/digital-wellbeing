@@ -101,6 +101,45 @@ pub fn info(cx: &App) -> Hsla {
     Theme::global(cx).info
 }
 
+/// Chart label text — foreground at 70% opacity for clear readability on
+/// chart backgrounds without overwhelming the chart data.
+pub fn chart_text(cx: &App) -> Hsla {
+    let fg = Theme::global(cx).foreground;
+    with_alpha(fg, 0.70)
+}
+
+/// Primary indicator color — optimized for small foreground elements
+/// (dots, badges) on [`surface()`] in both light and dark themes.
+pub fn primary(cx: &App) -> Hsla {
+    adjust_for_surface(cx, accent(cx))
+}
+
+/// Secondary indicator color — same guarantee as [`primary()`] but
+/// derived from the info palette for lower visual weight.
+pub fn secondary(cx: &App) -> Hsla {
+    adjust_for_surface(cx, info(cx))
+}
+
+/// Push a color's lightness away from the surface background (≥0.25 delta)
+/// and ensure strong saturation + full opacity so small elements stay
+/// visible in both light and dark themes.
+fn adjust_for_surface(cx: &App, c: Hsla) -> Hsla {
+    let bg = Theme::global(cx).background;
+    let srf_l = (bg.l + 0.04).clamp(0.0, 1.0);
+    let delta = 0.25;
+    let mut out = c;
+    if (out.l - srf_l).abs() < delta {
+        out.l = if out.l > srf_l {
+            (srf_l + delta).min(1.0)
+        } else {
+            (srf_l - delta).max(0.0)
+        };
+    }
+    out.s = out.s.max(0.5);
+    out.a = 1.0;
+    out
+}
+
 /// Lift a color's lightness by `amount` (clamped to [0,1]).
 fn lift(mut c: Hsla, amount: f32) -> Hsla {
     c.l = (c.l + amount).clamp(0.0, 1.0);
@@ -117,12 +156,14 @@ fn with_alpha(mut c: Hsla, a: f32) -> Hsla {
 ///
 /// Used for per-app / per-category series colors where no explicit color is
 /// provided. Produces saturated, mid-lightness hues.
-fn color_from_str(seed: &str) -> Hsla {
+pub fn color_from_str(seed: &str) -> Hsla {
     let hash: u32 = seed
         .bytes()
         .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    let hue = (hash % 360) as f32;
-    hsla(hue, 0.62, 0.58, 1.0)
+    let r = ((hash >> 0) & 0xFF) as u8;
+    let g = ((hash >> 8) & 0xFF) as u8;
+    let b = ((hash >> 16) & 0xFF) as u8;
+    rgb_to_hsla(r, g, b)
 }
 
 /// Resolve a color: explicit hex wins, otherwise a deterministic seed color.

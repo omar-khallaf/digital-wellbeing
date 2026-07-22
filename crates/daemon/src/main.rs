@@ -2,7 +2,6 @@
 //! Starts the D-Bus server, platform layer, and background actors.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -10,49 +9,16 @@ use futures::StreamExt;
 use tokio::sync::{RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{
     BLOCK_STATE_CHANGED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
     DAILY_USAGE_CHANGED_SIGNAL,
 };
-use wellbeing_core::{SystemClock, Uid};
-use wellbeing_daemon::{dbus::DaemonInterface, signal::DaemonSignal};
-
-#[derive(Debug, Clone, Copy)]
-enum BusMode {
-    System,
-    Session,
-}
-
-#[derive(Debug, Clone)]
-enum DaemonMode {
-    System { db_path: PathBuf },
-    Session { db_path: PathBuf, _uid: Uid },
-}
-
-fn resolve_daemon_mode() -> DaemonMode {
-    let euid = nix::unistd::Uid::effective();
-    if euid.is_root() {
-        DaemonMode::System {
-            db_path: PathBuf::from("/var/lib/digital-wellbeing/db.sqlite"),
-        }
-    } else {
-        let xdg_data = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            format!("{home}/.local/share")
-        });
-        DaemonMode::Session {
-            db_path: PathBuf::from(xdg_data).join("digital-wellbeing/db.sqlite"),
-            _uid: Uid(euid.as_raw()),
-        }
-    }
-}
-
-fn resolve_bus(mode: &DaemonMode) -> BusMode {
-    match mode {
-        DaemonMode::System { .. } => BusMode::System,
-        DaemonMode::Session { .. } => BusMode::Session,
-    }
-}
+use wellbeing_daemon::{
+    bus_resolution::{self, BusMode, DaemonMode},
+    dbus::DaemonInterface,
+    signal::DaemonSignal,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,8 +29,10 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let mode = resolve_daemon_mode();
+    let mode = bus_resolution::resolve_daemon_mode();
     info!(?mode, "daemon starting");
+
+    let bus = bus_resolution::resolve_bus(&mode);
 
     let db_path = match &mode {
         DaemonMode::System { db_path } | DaemonMode::Session { db_path, .. } => {
@@ -88,11 +56,10 @@ async fn main() -> Result<()> {
         wellbeing_daemon::reports::prune_loop(prune_pool, Box::new(SystemClock)).await;
     });
 
-    let (platform, event_stream) =
-        wellbeing_daemon::platform::linux::LinuxPlatformBuilder::new(pool.clone())
-            .build()
-            .await
-            .context("failed to build platform")?;
+    let (platform, event_stream) = wellbeing_daemon::platform::linux::LinuxPlatformBuilder::new()
+        .build(bus)
+        .await
+        .context("failed to build platform")?;
     let registry = platform.registry();
     let platform = Arc::new(platform);
     info!("platform layer ready");
@@ -119,12 +86,9 @@ async fn main() -> Result<()> {
         info!("event fan-out: platform event stream ended");
     });
 
-    let (notifier, _notifier_rx) = wellbeing_daemon::tracking::ReactiveNotifier::new();
-    let tracker = wellbeing_daemon::tracking::TrackerActor::new(
-        notifier,
-        Box::new(SystemClock),
-        signal_tx.clone(),
-    );
+    let (notifier, _) = wellbeing_daemon::tracking::ReactiveNotifier::new();
+    let tracker =
+        wellbeing_daemon::tracking::TrackerActor::new(notifier, SystemClock, signal_tx.clone());
     tokio::spawn(async move {
         tracker.run(tracker_rx).await;
         info!("tracker actor finished");
@@ -136,7 +100,7 @@ async fn main() -> Result<()> {
     let mut enforcer = wellbeing_daemon::blocking::EnforcerActor::new(
         pool.clone(),
         platform.clone(),
-        Box::new(SystemClock),
+        SystemClock,
         signal_tx.clone(),
         active_blocks.clone(),
     );
@@ -182,7 +146,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    let bus = resolve_bus(&mode);
     let conn = match bus {
         BusMode::System => zbus::Connection::system()
             .await
@@ -211,6 +174,7 @@ async fn main() -> Result<()> {
         platform.event_tx(),
         Box::new(SystemClock),
         active_blocks,
+        tokio::runtime::Handle::current(),
     );
 
     // Register object server BEFORE requesting the name. This eliminates
@@ -367,6 +331,7 @@ async fn main() -> Result<()> {
                                                             recovery_event_tx.clone(),
                                                             Box::new(SystemClock),
                                                             recovery_active_blocks.clone(),
+                                                            tokio::runtime::Handle::current(),
                                                         );
 
                                                         if let Err(e) = fresh_conn

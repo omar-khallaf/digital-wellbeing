@@ -2,6 +2,7 @@
 //! Re-exports all internal modules for integration testing.
 
 pub mod blocking;
+pub mod bus_resolution;
 pub mod categorization;
 pub mod dbus;
 pub mod platform;

@@ -56,8 +56,8 @@ Status: **B1 done** (store), B2–B3 **in progress**.
 
 ## Phase F: Deployment
 
-| Step | File(s)                                   | What               |
-| ---- | ----------------------------------------- | ------------------ |
-| F1   | `deploy/digital-wellbeing-daemon.service` | systemd unit       |
-| F2   | `deploy/*.conf`                           | D-Bus policy files |
-| F3   | `Makefile` or `justfile`                  | Install targets    |
+| Step | File(s)                                           | What               |
+| ---- | ------------------------------------------------- | ------------------ |
+| F1   | `deploy/systemd/digital-wellbeing-daemon.service` | systemd unit       |
+| F2   | `deploy/*.conf`                                   | D-Bus policy files |
+| F3   | `Makefile` or `justfile`                          | Install targets    |

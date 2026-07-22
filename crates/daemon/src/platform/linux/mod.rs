@@ -7,8 +7,8 @@ use tokio::sync::RwLock;
 use zbus::proxy;
 use zvariant::Value;
 
+use crate::bus_resolution::BusMode;
 use crate::platform::{Platform, PlatformEvent};
-use crate::store::DbPool;
 
 mod manager;
 mod suspend;
@@ -38,7 +38,6 @@ trait Notifications {
 pub struct LinuxPlatform {
     registry: Arc<RwLock<PluginRegistry>>,
     event_tx: tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
-    _pool: DbPool,
     session_conn: zbus::Connection,
 }
 
@@ -73,17 +72,22 @@ impl LinuxPlatform {
     }
 }
 
-pub struct LinuxPlatformBuilder {
-    pool: DbPool,
+pub struct LinuxPlatformBuilder;
+
+impl Default for LinuxPlatformBuilder {
+    fn default() -> Self {
+        Self
+    }
 }
 
 impl LinuxPlatformBuilder {
-    pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+    pub fn new() -> Self {
+        Self
     }
 
     pub async fn build(
         self,
+        bus_mode: BusMode,
     ) -> Result<(
         LinuxPlatform,
         impl Stream<Item = PlatformEvent> + Send + 'static,
@@ -91,12 +95,14 @@ impl LinuxPlatformBuilder {
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let registry = Arc::new(RwLock::new(PluginRegistry::new()));
 
-        let session_conn = zbus::Connection::session().await?;
+        let session_conn = match bus_mode {
+            BusMode::System => zbus::Connection::system().await?,
+            BusMode::Session => zbus::Connection::session().await?,
+        };
 
         let platform = LinuxPlatform {
             registry,
             event_tx,
-            _pool: self.pool,
             session_conn,
         };
 

@@ -1,0 +1,32 @@
+[Unit]
+Description=Digital Wellbeing Daemon
+Documentation=https://github.com/omar/digital-wellbeing
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=org.wellbeing.v1.Controller
+ExecStart=/usr/libexec/digital-wellbeing/wellbeing-daemon
+Restart=on-failure
+RestartSec=3
+User=root
+Group=root
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/digital-wellbeing
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# State directory
+StateDirectory=digital-wellbeing
+StateDirectoryMode=700
+
+[Install]
+WantedBy=multi-user.target

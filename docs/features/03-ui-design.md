@@ -1,451 +1,153 @@
 # UI Design — gpui-component Screens
 
-The GUI renders with gpui's retained-mode tree. All data arrives via the
-in-memory cache documented in
-[09-state-flow.md](../architecture/09-state-flow.md#gui-cache-architecture);
-this file covers screen layout, components, and the view models that feed them.
+The GUI renders with gpui's retained-mode component tree. All data arrives via
+the in-memory cache; this file covers screen layout, component identification,
+view models, and the read paths that build them. No raw database access happens
+in the GUI — all data flows through D-Bus and cache invalidation is driven by
+reactive notifications.
 
 ## Screen Layout
 
-The dashboard uses a TabBar to switch between three screens:
+The dashboard uses a top tab bar to switch between three screens: Dashboard,
+Policies, and Reports. On narrow viewports the tab bar moves to the bottom; on
+medium and wide viewports it stays at the top. A TimeRangeSelector component
+appears on the Dashboard and Reports screens to control the date window.
 
-```text
-┌─────────────────────────────────────────────────────────┐
-│ ╔═══════════════════════════════════════════════════╗ │
-│ ║ TitleBar                                            ║ │
-│ ║  ⬤ Dashboard   ⬤ Policies   ⬤ Reports               ║ │
-│ ╚═══════════════════════════════════════════════════╝ │
-│                                                         │
-│  ┌─────────────────────────────────────────────────────┐│
-│  │                                                     ││
-│  │             Screen content (varies by tab)          ││
-│  │                                                     ││
-│  │  [TimeRangeSelector: 7d | 30d | 90d | Custom]      ││
-│  │                                                     ││
-│  └─────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────┘
-```
+The visible screens are:
+
+- Dashboard — usage overview with charts, per-app and per-category breakdowns,
+  top apps, and any currently active block cards.
+- Policies — app and category policy management with editor forms.
+- Reports — usage history and export for the selected time range.
 
 ## Component Mapping
 
-| Screen    | Route            | Key Components                                                      |
-| --------- | ---------------- | ------------------------------------------------------------------- |
-| Dashboard | `Tab::Dashboard` | `TimeRangeSelector`, `BarChart`, `PieChart`, `AppList`, `BlockCard` |
-| Policies  | `Tab::Policies`  | `AppSelector`, `PolicyEditor`, `CategoryEditor`                     |
-| Reports   | `Tab::Reports`   | `TimeRangeSelector`, `BarChart`, `PieChart`, `ExportDialog`         |
+Dashboard renders BarChart, PieChart, AppList, and BlockCard widgets. Policies
+renders AppSelector input plus the PolicyEditor and CategoryEditor forms.
+Reports renders TimeRangeSelector plus BarChart, PieChart, and ExportDialog.
 
 ## TimeRangeSelector
 
-Shared component used on Dashboard and Reports screens.
-
-```rust
-struct TimeRangeSelector {
-    /// Currently selected range. Drives data fetch via GetUsageRange.
-    selected: DateRange,
-    /// Preset buttons shown as a button group.
-    presets: [DateRange; 3],
-    /// Optional DatePicker for custom range selection.
-    custom_picker: Option<DatePickerState>,
-}
-```
-
-Renders as a row of preset buttons (`7d`, `30d`, `90d`) plus a `Custom` button
-that opens a `DatePicker` in range mode. Selecting any preset or confirming a
-custom range updates `AppState.selected_range`, which triggers a re-fetch via
-`GetUsageRange(start, end, uid)` and a ViewModel rebuild.
-
-The `DateRange` newtype is defined in `wellbeing-core`:
-
-```rust
-pub struct DateRange {
-    pub start: NaiveDate,
-    pub end: NaiveDate,
-}
-```
-
-`DateRange` validates `start <= end` at construction time. Presets are computed
-relative to today.
+This shared component renders a row of preset buttons — 7d, 30d, 90d — plus a
+Custom button that opens a date-picker in range mode. Selecting any preset or
+confirming a custom range updates the app state date range, which triggers a
+re-fetch of usage data and a ViewModel rebuild. The underlying DateRange type
+validates that start is less than or equal to end at construction time and
+computes presets relative to today.
 
 ## Dashboard Screen
 
-Tab 0 — Usage overview for the selected time range.
+### Total Screen Time
 
-### Total Screen Time — BarChart
+The dashboard shows daily totals as a simple column chart with day labels on the
+X-axis and hours on the Y-axis. Each bar represents one day in the selected
+range. The chart is built from daily summary groups returned by the usage range
+query.
 
-```rust
-struct BarChart {
-    /// One bar per day in the selected range.
-    bars: Vec<Bar>,
-    /// Max value for Y-axis scaling.
-    max_minutes: f64,
-}
+### Per-App Screen Time
 
-struct Bar {
-    date: NaiveDate,
-    total_minutes: f64,
-}
-```
+A pie chart shows the top apps by usage in the selected date range. Each slice
+is labeled with the app display name, colored by category color when available,
+and annotated with the percentage of total time. Clicking a slice filters other
+visualizations on the dashboard to that specific app.
 
-Renders as a simple column chart with day labels on X-axis and hours on Y-axis.
-Built from `DailySummary` groups returned by `GetUsageRange`.
+### Per-Category Screen Time
 
-### Per-App Screen Time — PieChart
+A second pie chart groups the same usage by category instead of by app. It joins
+daily usage with app_categories and categories to obtain category names and
+colors, then aggregates usage per category for the selected date range.
 
-```rust
-struct PieChart {
-    slices: Vec<Slice>,
-}
+### Top Apps List
 
-struct Slice {
-    app_id: AppId,
-    display_name: String,
-    color: Color,
-    percentage: f64,
-}
-```
+A ranked list shows the top applications by usage in the selected date range,
+displaying rank, display name, icon path when available, total minutes,
+percentage of total time, category color, and a blocked indicator. The list is
+sortable by time, alphabetically, or by category.
 
-Shows top N apps by usage in the selected date range. Click a slice → filter
-other visualizations to that app.
+### Currently Blocked Apps
 
-### Per-Category Screen Time — PieChart
-
-Same as per-app but grouped by `app_categories.category_id` → `categories.name`.
-
-### Top 10 Apps — List / Table
-
-```rust
-struct AppList {
-    entries: Vec<AppListEntry>,
-}
-
-struct AppListEntry {
-    rank: usize,
-    app_id: AppId,
-    display_name: String,
-    icon: Option<IconPath>,
-    total_minutes: i64,
-    percentage: f64,
-    category_color: Option<Color>,
-    is_blocked: bool,
-}
-```
-
-Sortable by time (default), alphabetically, or by category.
-
-### Currently Blocked Apps — Collapsible Card
-
-```rust
-struct BlockCard {
-    app_id: AppId,
-    display_name: String,
-    blocked_since: SystemTime,
-}
-```
-
-Renders as a collapsible read-only card when a block is active. Block resolution
-is handled exclusively by the compositor overlay — the dashboard displays
-information only:
-
-```
-┌──────────────────────────────────────────────────┐
-│ ▼ Firefox — Blocked 12 minutes ago               │
-│  Daily limit of 60m reached                      │
-│  To continue using this app, switch to its       │
-│  window and use the overlay controls.            │
-└──────────────────────────────────────────────────┘
-```
+A collapsible card renders for each currently blocked app, showing the app name,
+how long the block has been active, and which daily limit was reached. Block
+resolution is handled exclusively by the compositor overlay; the dashboard
+displays information only and cannot grant time or close an app.
 
 ## Policies Screen
 
-Tab 1 — Manage blocking and time-limit policies.
+### App Selector
 
-### App Selector — Input + Select Combination
+A combined free-text input and select dropdown lets the user choose an app_id
+for policy targeting. Typing filters the dropdown of known app IDs from the
+event log, and typing a new app ID followed by Enter creates a new target.
 
-```rust
-struct AppSelector {
-    apps: Vec<AppId>,
-    selected: Option<AppId>,
-    filter: String,
-}
-```
+### Policy Configuration Forms
 
-- **Input**: Free-text app_id entry (for apps not yet tracked).
-- **Select**: Dropdown of all app_ids seen in the event log.
-- Combined: Type to filter the dropdown, or type a new app_id and press Enter.
+Policy data is constructed from database rows into domain types before the UI
+sees it. The Policy enum distinguishes App and Category targets. Each target
+carries an id, name, and a PolicyConfig that specifies kind, optional
+time_limit_minutes, extra_minutes, and schedule.
 
-### Policy Configuration — Settings Pattern
+Block kind is unconditional; it blocks whenever the policy is active and has no
+time limit. TimeLimit kind blocks when elapsed minutes reach or exceed
+time_limit_minutes. Notify kind never blocks; it only alerts when the limit is
+reached.
 
-The data layer constructs one of these per DB row — domain logic never sees raw
-rows:
+TimeWindow wraps schedule rules, which can be either daily (start and end times
+each day) or weekly (a set of weekdays plus start and end times). Empty or null
+schedule rules mean the policy is active all the time.
 
-```rust
-/// A policy targets exactly one thing. Constructed by PolicyRepository.
-pub enum Policy {
-    App { id: PolicyId, name: String, config: PolicyConfig, app_id: AppId },
-    Category { id: PolicyId, name: String, config: PolicyConfig, category_id: CategoryId },
-}
+The editor renders labeled controls for kind, target, time limit, extra minutes,
+schedule rules, and active flag. Time_limit_minutes is shown only when kind is
+TimeLimit or Notify; extra minutes are shown only for TimeLimit kind.
 
-pub struct PolicyConfig {
-    pub kind: PolicyKind,
-    pub time_limit_seconds: Option<i64>,   // None for Block and Notify
-    pub extra_seconds: i64,
-    pub schedule: TimeWindow,
-}
-
-pub enum PolicyKind {
-    Block,      // unconditional — always blocks when active, no time_limit_seconds
-    TimeLimit,  // blocks when elapsed ≥ time_limit_seconds
-    Notify,     // never blocks, alerts at threshold
-}
-
-struct TimeWindow {
-    rules: Vec<ScheduleRule>,
-}
-
-enum ScheduleRule {
-    Daily { start: LocalTime, end: LocalTime },
-    Weekly { days: Vec<Weekday>, start: LocalTime, end: LocalTime },
-}
-```
-
-**Construction rule:** `time_limit_seconds` is `Some` only for `TimeLimit` kind.
-`Block` and `Notify` have it `None` (enforced by DB `CHECK` constraint).
-
-Rendered as groups of labeled controls:
-
-```text
-Kind:         [block] [time_limit] [notify]
-Target:       [App: firefox] or [Category: Entertainment]
-Time limit:   [ 60 ] minutes (per day)
-Extra time:   [ 10 ] minutes (extension grant)
-Schedule:     [Every day] from [ 09:00 ] to [ 23:00 ]
-              [Add rule]
-Active:       [on/off]
-```
+Categories are managed through a separate editor that lets users create, rename,
+assign colors, and assign icons. The editor operates on the categories table
+directly and on app_categories rows to map apps to categories.
 
 ## Reports Screen
 
-Tab 2 — Usage history and export for the selected time range.
+### Usage Charts
 
-### TimeRangeSelector
+The reports screen shows the same chart shapes as the dashboard but for the
+selected report range. Total minutes are computed from daily_usage over the date
+range, and per-app or per-category breakdowns are built from joins equivalent to
+the dashboard read paths.
 
-Same component as Dashboard. Controls which days are fetched via `GetUsageRange`
-and displayed in the report.
+### Export
 
-### ReportBarChart
-
-```rust
-struct ReportBarChart {
-    bars: Vec<ReportBar>,
-    max_minutes: f64,
-}
-
-struct ReportBar {
-    date: NaiveDate,
-    total_minutes: f64,
-}
-```
-
-### ReportPieChart
-
-```rust
-struct ReportPieChart {
-    slices: Vec<ReportSlice>,
-}
-
-struct ReportSlice {
-    app_id: AppId,
-    display_name: String,
-    color: Color,
-    total_minutes: i64,
-    percentage: f64,
-}
-```
-
-### ExportDialog
-
-CSV and JSON export of the current range's `DailySummary` data.
-
-## Responsive Layout Strategy
-
-```rust
-struct AppLayout {
-    sidebar: Option<Column>,   // hidden on narrow screens
-    main: Column,
-    detail: Option<Column>,    // overlay or side panel
-}
-
-enum ViewportClass {
-    Narrow,   // < 600px — stacked, single column
-    Medium,   // 600-1000px — sidebar + main
-    Wide,     // > 1000px — sidebar + main + detail
-}
-```
-
-The layout switches between `Narrow` (phone-like), `Medium` (tablet), and `Wide`
-(desktop) based on window width. On `Narrow`, the TabBar becomes a bottom
-navigation bar; on `Medium` and `Wide`, it's a top tab bar.
+An export dialog writes the current range's DailySummary data to CSV or JSON.
+The data comes from the same daemon queries the reports charts use, so export
+always matches what is shown.
 
 ## View Models
 
-### DashboardViewModel
+The GUI constructs ViewModels from two sources: the cache of recent D-Bus method
+responses, and reactive signals that invalidate cache entries. ViewModels are
+pure data structures assembled each render frame; gpui rendering consumes them
+without touching D-Bus or actors.
 
-```rust
-pub struct DashboardViewModel {
-    pub date_range: DateRange,
-    pub bar_chart: Vec<Bar>,
-    pub pie_app: Vec<Slice>,
-    pub pie_category: Vec<Slice>,
-    pub top_apps: Vec<AppListEntry>,
-    pub block_cards: Vec<BlockCard>,
-}
-```
+DashboardViewModel carries the selected date range, bar chart data, per-app and
+per-category pie slices, the top apps list, and any block cards. It is built
+from DailySummary groups returned by GetUsageRange.
 
-Built from `&[DailySummary]` returned by `GetUsageRange`. The `date_range` field
-carries the explicit selected range (not inferred from data).
+ReportsViewModel carries the date range, bar chart data, pie slices, total
+minutes, and the top app identifier. It is also built from DailySummary groups.
 
-### ReportsViewModel
+PoliciesViewModel carries the distinct app list available for targeting, the
+currently selected policy target and its editable configuration, all categories,
+and any validation errors from the editor forms. The selected policy target is
+either an AppId or a CategoryId with its apps.
 
-```rust
-pub struct ReportsViewModel {
-    pub date_range: DateRange,
-    pub bar_chart: Vec<ReportBar>,
-    pub pie_app: Vec<ReportSlice>,
-    pub total_minutes: i64,
-    pub top_app: String,
-}
-```
+## DB Read Paths for Screens
 
-Built from `&[DailySummary]` returned by `GetUsageRange`. The `date_range` field
-mirrors the selector state.
+All screen data originates from daemon-side data modules. The dashboard issues
+GetUsageRange(start, end, uid) and receives DailySummary groups. The policy
+screen reads distinct app_ids from the events table and all categories and
+app_categories rows for the user. The reports screen issues the same
+GetUsageRange call as the dashboard.
 
-### PoliciesViewModel
-
-```rust
-pub struct PoliciesViewModel {
-    pub app_list: Vec<AppId>,
-    /// Edit target: either an AppId or a CategoryId + its apps.
-    pub selected_policy: Option<(PolicyTarget, PolicyConfig)>,
-    pub categories: Vec<Category>,
-    pub validation_errors: Vec<String>,
-}
-
-/// UI-level target selector — mirrors the Policy enum variants
-/// but carries user-editable form data, not a finalized domain Policy.
-pub enum PolicyTarget {
-    App(AppId),
-    Category(CategoryId),
-}
-```
-
-## DB Query Patterns for Screens
-
-See [persistence/01-database.md](../persistence/01-database.md) for schema
-details. The queries below are the read paths each screen's view model is built
-from. All queries are executed server-side by the daemon in response to
-`GetUsageRange(start, end, uid)`.
-
-### Dashboard — Daily Totals (range query)
-
-```sql
--- Total screen time per day in the selected date range
-SELECT date, SUM(total_seconds) as total_seconds
-FROM daily_usage
-WHERE date >= ? AND date <= ?
-GROUP BY date
-ORDER BY date;
-```
-
-### Dashboard — Per-App Breakdown
-
-```sql
--- Per-app totals in the selected date range
-SELECT du.app_id, du.total_seconds, du.extended,
-       ao.display_name, ao.icon_path, c.name as category_name, c.color as category_color
-FROM daily_usage du
-LEFT JOIN app_categories ao ON du.app_id = ao.app_id
-LEFT JOIN categories c ON ao.category_id = c.id
-WHERE du.date >= ? AND du.date <= ?
-ORDER BY du.total_seconds DESC
-LIMIT 50;
-```
-
-### Dashboard — Per-Category Breakdown
-
-```sql
--- Per-category totals in the selected date range
-SELECT c.name, c.color, SUM(du.total_seconds) as total_seconds
-FROM daily_usage du
-JOIN app_categories ao ON du.app_id = ao.app_id
-JOIN categories c ON ao.category_id = c.id
-WHERE du.date >= ? AND du.date <= ?
-GROUP BY c.id
-ORDER BY total_seconds DESC;
-```
-
-### Policies — Distinct App IDs
-
-```sql
--- All app_ids seen in events (for the policy screen's app selector)
-SELECT DISTINCT app_id FROM events WHERE app_id IS NOT NULL ORDER BY app_id;
-```
-
-## Cross-Screen Navigation
-
-```rust
-enum NavigationEvent {
-    NavigateToApp(String),
-    NavigateToCategory(u32),
-    NavigateToDate(NaiveDate),
-}
-
-impl DashboardViewModel {
-    fn on_slice_click(&self, slice: &Slice) -> Option<NavigationEvent> {
-        match slice {
-            Slice::App(id, _) => Some(NavigationEvent::NavigateToApp(id.clone())),
-            Slice::Category(cat_id, _) => Some(NavigationEvent::NavigateToCategory(*cat_id)),
-        }
-    }
-}
-```
-
-Clicking a PieChart slice navigates to a filtered view showing detailed
-breakdown for that app or category across the current date range.
-
-## Implementation Modules
-
-The dashboard is split across the two binaries, following the headless-daemon /
-gui-client split. There is **no `ui/` directory inside the daemon's feature
-directories** — gpui lives only in the `gui/` crate.
-
-- **Daemon side** (`daemon/src/reports/`): `domain/` (aggregates, filter state,
-  time range), `data/` (SQLite queries for dashboard totals), `core/` (report
-  building). Results are exposed over D-Bus via `GetUsageRange`.
-- **GUI side** (`gui/src/screens/dashboard/`): `mod.rs` + `view.rs`. The screen
-  defines its **ViewModels** (above) from the D-Bus client + cache and renders
-  gpui components (`BarChart`, `PieChart`, `AppList`, `BlockCard`).
-
-```
-gui/src/screens/dashboard/
-├── mod.rs          # Screen registration, Tab::Dashboard route
-└── view.rs         # DashboardViewModel + gpui component tree
-
-gui/src/screens/reports/
-├── mod.rs          # Screen registration, Tab::Reports route
-└── view.rs         # ReportsViewModel + gpui component tree
-```
-
-## Future UI Enhancements
-
-### 24h Timeline Strip Chart (v3)
-
-A horizontal stacked bar showing 24 hours divided into 5-minute strips, colored
-by app/category. Mousedown+mousemove reveals per-strip detail:
-
-```
-00:00 ████████████████████████████████████████████████████ 24:00
-       ^--- Firefox 34m ---^ ^-- Code 12m --^
-```
-
-Not in v1. Referenced here to inform the data model — the `daily_usage` table
-already captures per-app daily totals needed for this visualization.
+Daily totals for the selected date range come from summing total_minutes in
+daily_usage grouped by date. Per-app breakdown adds display_name, icon_path,
+category name, and category color by left joining app_categories and categories.
+Per-category breakdown joins through app_categories to categories and sums per
+category. Distinct app_ids for the policy selector are read from events where
+app_id is not null.

@@ -11,7 +11,7 @@ use gpui::px;
 use gpui::*;
 use gpui_component::ActiveTheme;
 use gpui_component::h_flex;
-use gpui_component::input::{InputState, NumberInputEvent, StepAction};
+use gpui_component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::theme::Theme;
 use gpui_component::v_flex;
@@ -19,6 +19,7 @@ use nix::unistd::Uid;
 use wellbeing_core::*;
 
 use crate::dashboard;
+use crate::dbus;
 use crate::policies;
 use crate::reports;
 use crate::theme::*;
@@ -91,11 +92,12 @@ pub struct AppState {
     pub client: crate::dbus::DaemonClient,
     pub selected_range: DateRange,
     pub range_cache: Vec<DailySummary>,
-    pub policy_cache: Vec<Policy>,
+    pub policy_cache: Vec<PolicyData>,
     pub category_cache: Vec<Category>,
     pub app_category_cache: Vec<AppCategoryRow>,
     pub block_cards: Vec<dashboard::BlockCardInfo>,
     pub daemon_available: bool,
+    pub connection_status: dbus::ConnectionStatus,
 }
 
 /// Top-level app view.
@@ -109,6 +111,8 @@ pub struct App {
     pub(crate) policy_edit: Option<(policies::PolicyTarget, policies::PolicyConfigForm)>,
     /// Policy id currently being edited (None = creating new).
     pub(crate) policy_edit_id: Option<wellbeing_core::PolicyId>,
+    /// Track last synced policy id to avoid resetting inputs on every render.
+    pub(crate) last_synced_policy_edit_id: Option<wellbeing_core::PolicyId>,
     /// InputState entities for the policy editor fields.
     pub(crate) time_limit_input: Option<Entity<InputState>>,
     pub(crate) extra_secs_input: Option<Entity<InputState>>,
@@ -118,7 +122,7 @@ pub struct App {
 impl App {
     pub fn new(state: Arc<tokio::sync::Mutex<AppState>>) -> Self {
         let is_admin = state.try_lock().map(|s| s.mode.is_admin()).unwrap_or(false);
-        let default_range = DateRange::last_n_days(7);
+        let default_range = DateRange::last_n_days(1);
         Self {
             active_tab: Tab::Dashboard,
             state,
@@ -147,6 +151,7 @@ impl App {
             }),
             policy_edit: None,
             policy_edit_id: None,
+            last_synced_policy_edit_id: None,
             time_limit_input: None,
             extra_secs_input: None,
             app_id_input: None,
@@ -180,6 +185,7 @@ impl App {
             &s.range_cache,
             &s.category_cache,
             &s.app_category_cache,
+            s.block_cards.clone(),
         ));
 
         let pol_vm = Some(policies::build_policies_viewmodel(
@@ -206,6 +212,21 @@ impl App {
             .unwrap_or("User")
     }
 
+    fn connection_status_label(&self) -> String {
+        self.state
+            .try_lock()
+            .map(|s| match s.connection_status {
+                dbus::ConnectionStatus::Connected(dbus::BusType::System) => {
+                    "Connected (System)".into()
+                }
+                dbus::ConnectionStatus::Connected(dbus::BusType::Session) => {
+                    "Connected (Session)".into()
+                }
+                dbus::ConnectionStatus::Disconnected => "Disconnected".into(),
+            })
+            .unwrap_or_else(|_| "Unknown".into())
+    }
+
     /// Create or reset InputState entities for the policy editor fields.
     /// Should be called from render() where &mut Window is available.
     pub(crate) fn ensure_policy_editor_inputs(
@@ -221,6 +242,11 @@ impl App {
         }
         let form = self.policy_edit.as_ref().map(|(_, f)| f.clone());
         let Some(form) = form else { return };
+
+        let needs_sync = self.last_synced_policy_edit_id != self.policy_edit_id;
+        if needs_sync {
+            self.last_synced_policy_edit_id = self.policy_edit_id;
+        }
 
         // Time limit (minutes) — NumberInput
         if self.time_limit_input.is_none() {
@@ -260,9 +286,12 @@ impl App {
             );
             self.time_limit_input = Some(entity);
         }
-        if let Some(ref entity) = self.time_limit_input {
+        if needs_sync && let Some(ref entity) = self.time_limit_input {
             entity.update(cx, |state, cx| {
-                state.set_value(form.time_limit_minutes.to_string(), window, cx);
+                let desired = form.time_limit_minutes.to_string();
+                if state.value() != desired.as_str() {
+                    state.set_value(desired, window, cx);
+                }
             });
         }
 
@@ -285,7 +314,7 @@ impl App {
                                 input.set_value(new_val.to_string(), window, cx);
                             });
                             if let Some((_, ref mut form)) = this.policy_edit {
-                                form.extra_seconds = new_val;
+                                form.extra_minutes = new_val;
                             }
                         }
                         NumberInputEvent::Step(StepAction::Decrement) => {
@@ -295,7 +324,7 @@ impl App {
                                 input.set_value(new_val.to_string(), window, cx);
                             });
                             if let Some((_, ref mut form)) = this.policy_edit {
-                                form.extra_seconds = new_val;
+                                form.extra_minutes = new_val;
                             }
                         }
                     }
@@ -303,9 +332,12 @@ impl App {
             );
             self.extra_secs_input = Some(entity);
         }
-        if let Some(ref entity) = self.extra_secs_input {
+        if needs_sync && let Some(ref entity) = self.extra_secs_input {
             entity.update(cx, |state, cx| {
-                state.set_value(form.extra_seconds.to_string(), window, cx);
+                let desired = form.extra_minutes.to_string();
+                if state.value() != desired.as_str() {
+                    state.set_value(desired, window, cx);
+                }
             });
         }
 
@@ -313,11 +345,27 @@ impl App {
         if self.app_id_input.is_none() {
             let entity =
                 cx.new(|cx| InputState::new(window, cx).placeholder("e.g. firefox, kitty, Code"));
+            let _ = cx.subscribe(
+                &entity,
+                |this: &mut App,
+                 state: Entity<InputState>,
+                 event: &InputEvent,
+                 cx: &mut Context<App>| {
+                    if let InputEvent::Change = event {
+                        let val = state.read(cx).value().to_string();
+                        if let Some((_, ref mut form)) = this.policy_edit {
+                            form.app_id = val;
+                        }
+                    }
+                },
+            );
             self.app_id_input = Some(entity);
         }
-        if let Some(ref entity) = self.app_id_input {
+        if needs_sync && let Some(ref entity) = self.app_id_input {
             entity.update(cx, |state, cx| {
-                state.set_value(form.app_id.clone(), window, cx);
+                if state.value() != form.app_id.as_str() {
+                    state.set_value(form.app_id.clone(), window, cx);
+                }
             });
         }
     }
@@ -342,7 +390,6 @@ impl Render for App {
                     .flex_1()
                     .h_full()
                     .min_w(px(0.0))
-                    .child(disconnected_banner(&*cx, &self.state))
                     .child(header(&*cx, active, mode))
                     .child(self.content_area(cx, active)),
             )
@@ -402,13 +449,34 @@ fn sidebar(
             ),
         )
         .child(
-            // Footer: mode badge + theme toggle
+            // Footer: connection status + mode badge + theme toggle
             v_flex()
                 .mt_auto()
                 .p(sp::LG)
                 .gap_2()
                 .border_t_1()
                 .border_color(cx.theme().sidebar_border)
+                // ── Connection status ──────────────────────────────────
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().size(px(8.0)).rounded(rad::full()).bg({
+                            let status = app.connection_status_label();
+                            if status.starts_with("Connected") {
+                                success(cx)
+                            } else {
+                                danger(cx)
+                            }
+                        }))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().sidebar_foreground)
+                                .child(app.connection_status_label()),
+                        ),
+                )
+                // ── Mode badge ────────────────────────────────────────
                 .child(
                     h_flex()
                         .gap_2()
@@ -430,6 +498,7 @@ fn sidebar(
                                 .child(format!("{} Mode", mode)),
                         ),
                 )
+                // ── Theme toggle ──────────────────────────────────────
                 .child(
                     h_flex()
                         .gap_2()
@@ -567,27 +636,67 @@ fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
 impl App {
     fn content_area(&mut self, cx: &mut Context<Self>, active_tab: Tab) -> AnyElement {
         let state = self.state.clone();
-        let on_range_change = move |new_range: DateRange| {
-            if let Ok(mut s) = state.try_lock() {
-                s.selected_range = new_range;
-            }
-        };
+        let weak_app = cx.entity().downgrade();
 
         div()
             .flex_1()
+            .min_h_0()
             .overflow_y_scrollbar()
             .p(sp::LG)
             .child(match active_tab {
                 Tab::Dashboard => {
-                    let oc = on_range_change.clone();
-                    dashboard_content(cx, &self.dashboard_vm, oc).into_any_element()
+                    let state = state.clone();
+                    let weak_app = weak_app.clone();
+                    dashboard_content(cx, &self.dashboard_vm, move |new_range: DateRange, app| {
+                        let state = state.clone();
+                        let weak_app = weak_app.clone();
+                        app.spawn(async move |cx| {
+                            state.lock().await.selected_range = new_range;
+                            let (db, pol, rep) = App::refresh_viewmodels(&state).await;
+                            let vms = AppViewModels {
+                                dashboard: db,
+                                policies: pol,
+                                reports: rep,
+                            };
+                            weak_app
+                                .update(cx, |app, cx| {
+                                    app.apply_viewmodels(vms);
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .detach();
+                    })
+                    .into_any_element()
                 }
                 Tab::Policies => {
                     let vm = self.policies_vm.clone();
                     self.policies_content(cx, &vm).into_any_element()
                 }
                 Tab::Reports => {
-                    reports_content(cx, &self.reports_vm, on_range_change).into_any_element()
+                    let state = state.clone();
+                    let weak_app = weak_app.clone();
+                    reports_content(cx, &self.reports_vm, move |new_range: DateRange, app| {
+                        let state = state.clone();
+                        let weak_app = weak_app.clone();
+                        app.spawn(async move |cx| {
+                            state.lock().await.selected_range = new_range;
+                            let (db, pol, rep) = App::refresh_viewmodels(&state).await;
+                            let vms = AppViewModels {
+                                dashboard: db,
+                                policies: pol,
+                                reports: rep,
+                            };
+                            weak_app
+                                .update(cx, |app, cx| {
+                                    app.apply_viewmodels(vms);
+                                    cx.notify();
+                                })
+                                .ok();
+                        })
+                        .detach();
+                    })
+                    .into_any_element()
                 }
             })
             .into_any_element()
@@ -608,7 +717,7 @@ impl App {
 fn dashboard_content(
     cx: &gpui::App,
     vm: &Option<dashboard::DashboardViewModel>,
-    on_range_change: impl Fn(DateRange) + 'static,
+    on_range_change: impl Fn(DateRange, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     match vm.as_ref() {
         Some(vm) => dashboard::render_dashboard_view(cx, vm, on_range_change).into_any_element(),
@@ -619,35 +728,12 @@ fn dashboard_content(
 fn reports_content(
     cx: &gpui::App,
     vm: &Option<reports::ReportsViewModel>,
-    on_range_change: impl Fn(DateRange) + 'static,
+    on_range_change: impl Fn(DateRange, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     match vm.as_ref() {
         Some(vm) => reports::render_reports_view(cx, vm, on_range_change).into_any_element(),
         None => loading_state(cx, "Loading reports…").into_any_element(),
     }
-}
-
-/// Warning banner shown when the daemon is unreachable.
-fn disconnected_banner(cx: &gpui::App, state: &Arc<tokio::sync::Mutex<AppState>>) -> AnyElement {
-    let available = state.try_lock().map(|s| s.daemon_available).unwrap_or(true);
-
-    if available {
-        return div().into_any_element();
-    }
-
-    div()
-        .w_full()
-        .px(sp::LG)
-        .py(sp::SM)
-        .bg(danger(cx))
-        .text_color(cx.theme().accent_foreground)
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .child("Daemon disconnected — running in degraded mode. Start the daemon to enable full functionality."),
-        )
-        .into_any_element()
 }
 
 /// Centered placeholder shown while a ViewModel is being built.

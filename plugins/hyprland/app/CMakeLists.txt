@@ -89,12 +89,12 @@ fetchcontent_declare(
     GIT_SHALLOW True
     GIT_PROGRESS True
     CMAKE_ARGS
-        -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON   # needed for a .so
-        -DBUILD_SHARED_LIBS:BOOL=OFF                # build sdbus-c++ as a STATIC lib
-        -DSDBUSCPP_BUILD_DOCS:BOOL=OFF              # no doxygen in build env
+        -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
+        -DBUILD_SHARED_LIBS:BOOL=OFF
+        -DSDBUSCPP_BUILD_DOCS:BOOL=OFF
         -DSDBUSCPP_BUILD_CODEGEN:BOOL=OFF
         -DSDBUSCPP_BUILD_TESTS:BOOL=OFF
-        -DSDBUSCPP_BUILD_LIBSYSTEMD:BOOL=OFF        # link the system libsystemd.so
+        -DSDBUSCPP_BUILD_LIBSYSTEMD:BOOL=OFF
 )
 fetchcontent_makeavailable(sdbus-cpp)
 # sdbus-c++ v2.x exposes a single target (static when BUILD_SHARED_LIBS=OFF).

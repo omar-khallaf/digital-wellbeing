@@ -1,0 +1,59 @@
+Source: digital-wellbeing
+Section: utils
+Priority: optional
+Maintainer: Digital Wellbeing Maintainers <maintainers@example.com>
+Build-Depends: debhelper-compat (= 13),
+ cargo,
+ cmake,
+ ninja-build,
+ gcc,
+ pkg-config,
+ wayland-protocols,
+ glslang,
+ lua5.5,
+ libsystemd-dev,
+ libwayland-dev,
+ libxkbcommon-dev,
+ libgl-dev,
+ libfontconfig1-dev,
+ libfreetype6-dev,
+ libcairo2-dev,
+ libpango1.0-dev,
+ libinput-dev,
+ libuuid1-dev,
+ libglib2.0-dev,
+ libre2-dev,
+ libmuparser-dev,
+ liblcms2-dev
+Standards-Version: 4.7.0
+Vcs-Browser: https://github.com/omar/digital-wellbeing
+Vcs-Git: https://github.com/omar/digital-wellbeing.git
+
+Package: wellbeing-common
+Architecture: all
+Depends: ${misc:Depends}, dbus
+Description: Digital Wellbeing common files
+ D-Bus system policy files and systemd units shared across all
+ Digital Wellbeing components.
+
+Package: wellbeing-daemon
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, wellbeing-common, dbus
+Description: Digital Wellbeing system daemon
+ Root-owned system service that tracks app usage, enforces policies,
+ and exposes the org.wellbeing.v1.Controller D-Bus API.
+
+Package: wellbeing-gui
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, wellbeing-common, dbus
+Description: Digital Wellbeing desktop GUI
+ gpui desktop client for viewing usage reports and managing policies.
+ Connects to the daemon exclusively over D-Bus; does not access
+ SQLite directly.
+
+Package: wellbeing-hyprland-plugin
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, wellbeing-common, dbus, hyprland (>= 0.41)
+Description: Hyprland compositor plugin for Digital Wellbeing
+ Renders block overlays via OpenGL and emits FocusChanged / ActivityChanged
+ signals. Requires Hyprland >= 0.41.

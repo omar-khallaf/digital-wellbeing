@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod cache;
+pub mod chart;
 pub mod components;
 pub mod dashboard;
 pub mod dbus;

@@ -58,6 +58,9 @@ pub fn card(
 }
 
 /// A KPI tile: small label + large value, with an optional accent dot.
+///
+/// The caller should pass a pre-adjusted dot color from [`theme::primary`],
+/// [`theme::secondary`], [`theme::danger`], etc.
 pub fn stat_card(cx: &App, value: &str, label: &str, dot: Option<Hsla>) -> AnyElement {
     let dot_el = dot.map(|c| {
         div()
@@ -123,15 +126,31 @@ pub fn danger_button(id: impl Into<ElementId>, label: &str) -> Button {
     Button::new(id).label(label).danger()
 }
 
-/// Time range selector with preset buttons (7d, 30d, 90d) and current range label.
+/// Format minutes into a human-readable duration string.
+pub fn format_duration(total_minutes: i64) -> String {
+    if total_minutes < 60 {
+        format!("{}m", total_minutes)
+    } else {
+        let hours = total_minutes / 60;
+        let mins = total_minutes % 60;
+        if mins == 0 {
+            format!("{}h", hours)
+        } else {
+            format!("{}h {}m", hours, mins)
+        }
+    }
+}
+
+/// Time range selector with preset buttons (1d, 7d, 14d, 30d, 90d) and current
+/// range label.
 ///
-/// Renders three preset buttons and a label showing the selected date range.
+/// Renders preset buttons and a label showing the selected date range.
 /// The active preset is highlighted with `.primary()` styling.
 /// Clicking a preset calls `on_change` with the corresponding `DateRange`.
 pub fn time_range_selector(
     cx: &App,
     selected: DateRange,
-    on_change: impl Fn(DateRange) + 'static,
+    on_change: impl Fn(DateRange, &mut App) + 'static,
 ) -> AnyElement {
     let on_change = std::sync::Arc::new(on_change);
 
@@ -139,13 +158,31 @@ pub fn time_range_selector(
     let end_str = selected.end.format("%b %d, %Y").to_string();
     let range_label = SharedString::from(format!("{start_str} — {end_str}"));
 
+    let btn_today = {
+        let oc = on_change.clone();
+        let mut btn = Button::new("1d").label("Today");
+        if selected == DateRange::last_n_days(1) {
+            btn = btn.primary();
+        }
+        btn.on_click(move |_, _, cx| (oc.as_ref())(DateRange::last_n_days(1), cx))
+    };
+
     let btn_7d = {
         let oc = on_change.clone();
         let mut btn = Button::new("7d").label("7d");
         if selected == DateRange::last_n_days(7) {
             btn = btn.primary();
         }
-        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(7)))
+        btn.on_click(move |_, _, cx| (oc.as_ref())(DateRange::last_n_days(7), cx))
+    };
+
+    let btn_14d = {
+        let oc = on_change.clone();
+        let mut btn = Button::new("14d").label("14d");
+        if selected == DateRange::last_n_days(14) {
+            btn = btn.primary();
+        }
+        btn.on_click(move |_, _, cx| (oc.as_ref())(DateRange::last_n_days(14), cx))
     };
 
     let btn_30d = {
@@ -154,7 +191,7 @@ pub fn time_range_selector(
         if selected == DateRange::last_n_days(30) {
             btn = btn.primary();
         }
-        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(30)))
+        btn.on_click(move |_, _, cx| (oc.as_ref())(DateRange::last_n_days(30), cx))
     };
 
     let btn_90d = {
@@ -163,12 +200,14 @@ pub fn time_range_selector(
         if selected == DateRange::last_n_days(90) {
             btn = btn.primary();
         }
-        btn.on_click(move |_, _, _| (oc.as_ref())(DateRange::last_n_days(90)))
+        btn.on_click(move |_, _, cx| (oc.as_ref())(DateRange::last_n_days(90), cx))
     };
 
     h_flex()
         .gap_2()
+        .child(btn_today)
         .child(btn_7d)
+        .child(btn_14d)
         .child(btn_30d)
         .child(btn_90d)
         .child(

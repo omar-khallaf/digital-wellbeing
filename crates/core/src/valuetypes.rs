@@ -62,7 +62,7 @@ pub struct PolicyId(pub i64);
 #[zvariant(signature = "t")]
 pub struct CategoryId(pub i64);
 
-/// Duration in seconds.
+/// Duration in minutes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
 #[zvariant(signature = "t")]
 pub struct DurationSecs(pub i64);

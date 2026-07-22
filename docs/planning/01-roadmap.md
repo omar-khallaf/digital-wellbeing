@@ -93,8 +93,8 @@ milestones that the phases deliver.
 
 ### Phase F — Deployment · `Ready`
 
-- [ ] `deploy/digital-wellbeing-daemon.service`: systemd unit (`Type=dbus`,
-      root, hardening, `StateDirectory`).
+- [ ] `deploy/systemd/digital-wellbeing-daemon.service`: systemd unit
+      (`Type=dbus`, root, hardening, `StateDirectory`).
 - [ ] `deploy/*.service`: D-Bus activation + `Makefile`/`justfile` install
       targets.
 
@@ -124,7 +124,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
    `tokio::sleep(remaining)` on focus; re-evaluates on expiry; cancels on switch
    (`features/01-blocking.md`).
 2. **Policy engine** — pure `evaluate(app_id, &[Policy], elapsed, now)` with AND
-   semantics; `Block`/`TimeLimit`/`Notify`; `extra_seconds`; `TimeWindow`
+   semantics; `Block`/`TimeLimit`/`Notify`; `extra_minutes`; `TimeWindow`
    (`features/01-blocking.md`, `features/02-categorization.md`).
 3. **Overlay-only blocking** — gate-first evaluate before DB write; blocked app
    never logged; `grant_extension()` writes synthetic `WindowFocused` +

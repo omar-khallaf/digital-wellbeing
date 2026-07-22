@@ -9,6 +9,7 @@
 //! 6. On daemon unavailable → show warning banner (degraded mode).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::px;
 use gpui::*;
@@ -17,9 +18,13 @@ use tokio::sync::mpsc;
 use tracing::info;
 use tracing::warn;
 
+use chrono::{DateTime, Utc};
 use wellbeing_core::DateRange;
 use wellbeing_gui::app::{App, AppState, AppViewModels, RenderMode};
-use wellbeing_gui::dbus::{self, CoalescedNotifications, DaemonClient, SignalCoalescer};
+use wellbeing_gui::dashboard::BlockCardInfo;
+use wellbeing_gui::dbus::{
+    self, CoalescedNotifications, ConnectionStatus, DaemonClient, SignalCoalescer,
+};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
@@ -36,19 +41,21 @@ async fn main() {
     let uid = nix::unistd::Uid::current().as_raw();
     info!(mode = ?mode, uid, "GUI starting");
 
-    let (client, signal_rx, daemon_available) = setup_daemon_connection().await;
+    let (client, signal_rx, coalescer, signal_tx, daemon_available, connection_status) =
+        setup_daemon_connection().await;
 
     let state = Arc::new(tokio::sync::Mutex::new(AppState {
         uid,
         mode,
         client: client.clone(),
-        selected_range: DateRange::last_n_days(7),
+        selected_range: DateRange::last_n_days(1),
         range_cache: Vec::new(),
         policy_cache: Vec::new(),
         category_cache: Vec::new(),
         app_category_cache: Vec::new(),
         block_cards: Vec::new(),
         daemon_available,
+        connection_status,
     }));
 
     // Channel: background loop → GPUI entity (StateFlow-like VM events).
@@ -58,10 +65,20 @@ async fn main() {
     let bg_state = state.clone();
     let bg_client = client.clone();
     let vm_tx_clone = vm_tx.clone();
+    let bg_coalescer = coalescer.clone();
+    let bg_signal_tx = signal_tx.clone();
     tokio::spawn(async move {
         // Immediate first refresh so the UI doesn't wait 5s for initial data.
         refresh_and_emit(&bg_state, &bg_client, &vm_tx_clone).await;
-        background_loop(bg_state, bg_client, signal_rx, vm_tx_clone).await;
+        background_loop(
+            bg_state,
+            bg_client,
+            signal_rx,
+            vm_tx_clone,
+            bg_coalescer,
+            bg_signal_tx,
+        )
+        .await;
     });
 
     // Run gpui application on the main thread.
@@ -111,35 +128,37 @@ async fn main() {
 
 /// Connect to daemon and set up signal subscription.
 ///
-/// Returns `(client, signal_rx, daemon_available)`.
+/// Returns `(client, signal_rx, coalescer, signal_tx, daemon_available, connection_status)`.
 async fn setup_daemon_connection() -> (
     DaemonClient,
     mpsc::UnboundedReceiver<CoalescedNotifications>,
+    Arc<SignalCoalescer>,
+    mpsc::UnboundedSender<CoalescedNotifications>,
     bool,
+    ConnectionStatus,
 ) {
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
+    let coalescer = Arc::new(SignalCoalescer::new());
 
     match DaemonClient::connect().await {
         Ok(client) => {
             info!("connected to wellbeing daemon");
-            let coalescer = Arc::new(SignalCoalescer::new());
-            dbus::spawn_signal_listener(&client, coalescer, signal_tx.clone());
-            (client, signal_rx, true)
+            let status = client.connection_status();
+            dbus::spawn_signal_listener(&client, coalescer.clone(), signal_tx.clone());
+            (client, signal_rx, coalescer, signal_tx, true, status)
         }
         Err(e) => {
             warn!("daemon unavailable: {e}");
-            let conn = match zbus::Connection::session().await {
-                Ok(c) => c,
-                Err(_) => {
-                    let coalescer = Arc::new(SignalCoalescer::new());
-                    drop(coalescer);
-                    panic!(
-                        "daemon unreachable. start daemon first:\n  sudo systemctl start digital-wellbeing-daemon\n  # or: wellbeing-daemon"
-                    );
-                }
-            };
-            let client = DaemonClient::degraded(conn).await;
-            (client, signal_rx, false)
+            // Still connect to both busses for NameOwnerChanged readiness.
+            let client = DaemonClient::degraded().await;
+            (
+                client,
+                signal_rx,
+                coalescer,
+                signal_tx,
+                false,
+                ConnectionStatus::Disconnected,
+            )
         }
     }
 }
@@ -149,19 +168,55 @@ async fn setup_daemon_connection() -> (
 /// GPUI entity — the foreground half of the StateFlow.
 async fn background_loop(
     state: Arc<tokio::sync::Mutex<AppState>>,
-    client: DaemonClient,
+    mut client: DaemonClient,
     mut signal_rx: mpsc::UnboundedReceiver<CoalescedNotifications>,
     vm_tx: mpsc::UnboundedSender<AppViewModels>,
+    coalescer: Arc<SignalCoalescer>,
+    signal_tx: mpsc::UnboundedSender<CoalescedNotifications>,
 ) {
     // Periodically refresh data every 5 seconds.
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    // Re-resolve the daemon bus every 10s to recover from late-start/restart.
+    let mut resync = tokio::time::interval(Duration::from_secs(10));
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 refresh_and_emit(&state, &client, &vm_tx).await;
             }
-            Some(_notif) = signal_rx.recv() => {
+            _ = resync.tick() => {
+                if client.re_resolve_bus().await {
+                    info!("daemon reconnected");
+                    let mut s = state.lock().await;
+                    s.client = client.clone();
+                    s.connection_status = client.connection_status();
+                    s.daemon_available = client.connection_status().is_connected();
+                    // Clear stale empty caches from degraded mode so the
+                    // immediate refresh pulls real data instead of serving
+                    // old empty vectors.
+                    s.range_cache.clear();
+                    s.policy_cache.clear();
+                    s.category_cache.clear();
+                    s.app_category_cache.clear();
+                    drop(s);
+                    dbus::spawn_signal_listener(&client, coalescer.clone(), signal_tx.clone());
+                    // Refresh immediately so the UI shows data without waiting
+                    // up to 5s for the next periodic tick.
+                    refresh_and_emit(&state, &client, &vm_tx).await;
+                }
+            }
+            Some(notif) = signal_rx.recv() => {
+                // Invalidate D-Bus client caches so the next fetch hits the
+                // daemon instead of serving stale data from the short-lived
+                // ClientCache. The signal coalescer aggregates rapid-fire
+                // signals — we drain it here to keep the atomic flags clean.
+                if notif.usage {
+                    client.invalidate_range_cache();
+                }
+                if notif.policy {
+                    client.invalidate_policy_cache();
+                }
+                let _ = coalescer.drain();
                 refresh_and_emit(&state, &client, &vm_tx).await;
             }
         }
@@ -199,21 +254,40 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
     let policy_fut = client.list_policies(uid);
     let cat_fut = client.list_categories();
     let app_cat_fut = client.get_app_categories();
+    let blocks_fut = client.get_active_blocks();
 
-    let (usage, policies, categories, app_categories) =
-        tokio::join!(usage_fut, policy_fut, cat_fut, app_cat_fut);
+    let (usage, policies, categories, app_categories, blocks) =
+        tokio::join!(usage_fut, policy_fut, cat_fut, app_cat_fut, blocks_fut);
 
     let mut s = state.lock().await;
-    if let Ok(entries) = usage {
-        s.range_cache = entries;
+    match usage {
+        Ok(entries) => s.range_cache = entries,
+        Err(e) => warn!(error = %e, "failed to fetch usage range"),
     }
-    if let Ok(policies) = policies {
-        s.policy_cache = policies;
+    match policies {
+        Ok(p) => s.policy_cache = p,
+        Err(e) => warn!(error = %e, "failed to fetch policies"),
     }
-    if let Ok(cats) = categories {
-        s.category_cache = cats;
+    match categories {
+        Ok(c) => s.category_cache = c,
+        Err(e) => warn!(error = %e, "failed to fetch categories"),
     }
-    if let Ok(rows) = app_categories {
-        s.app_category_cache = rows;
+    match app_categories {
+        Ok(a) => s.app_category_cache = a,
+        Err(e) => warn!(error = %e, "failed to fetch app categories"),
+    }
+    match blocks {
+        Ok(entries) => {
+            s.block_cards = entries
+                .into_iter()
+                .map(|b| BlockCardInfo {
+                    app_id: b.app_id,
+                    display_name: String::new(),
+                    blocked_since: DateTime::from_timestamp(b.blocked_since as i64, 0)
+                        .unwrap_or(Utc::now()),
+                })
+                .collect();
+        }
+        Err(e) => warn!(error = %e, "failed to fetch active blocks"),
     }
 }
