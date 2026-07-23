@@ -1,10 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use tracing::{error, info};
-use wellbeing_core::Clock;
 use zbus::proxy;
-
-use crate::store::DbPool;
 
 #[proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -25,36 +22,31 @@ trait LoginManager {
 
     #[zbus(signal)]
     fn prepare_for_shutdown(&self, start: bool) -> zbus::Result<()>;
-}
-
-#[proxy(
-    interface = "org.freedesktop.login1.Session",
-    default_service = "org.freedesktop.login1",
-    default_path = "/org/freedesktop/login1/session/self"
-)]
-trait LoginSession {
-    #[zbus(signal)]
-    fn lock(&self) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    fn unlock(&self) -> zbus::Result<()>;
+    fn session_removed(
+        &self,
+        session: &str,
+        object_path: zvariant::ObjectPath<'_>,
+    ) -> zbus::Result<()>;
 }
 
+/// Power-state events from logind.
+///
+/// Screen lock/unlock is handled separately by [`super::ScreenLockWatcher`]
+/// via `org.gnome.ScreenSaver` — see `screen_lock.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerEvent {
     Slept,
     ShutDown,
-    Locked,
     LoggedOut,
+    ResumedSystem,
 }
 
 pub struct PowerStateWatcher;
 
 impl PowerStateWatcher {
-    pub async fn watch(
-        pool: DbPool,
-        clock: Box<dyn Clock>,
-    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<PowerEvent>> {
+    pub async fn watch() -> Result<tokio::sync::mpsc::UnboundedReceiver<PowerEvent>> {
         let conn = zbus::Connection::system()
             .await
             .map_err(|e| anyhow::anyhow!("failed to connect to system bus: {e}"))?;
@@ -63,11 +55,19 @@ impl PowerStateWatcher {
             .await
             .map_err(|e| anyhow::anyhow!("failed to get login manager: {e}"))?;
 
-        let session = LoginSessionProxy::new(&conn)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to get login session: {e}"))?;
+        // Resolve the current session path via the /self symlink
+        // so we can detect when *our* session is removed (logged out).
+        let session_path = {
+            use zbus::proxy::Builder;
+            let p: zbus::Proxy<'_> = Builder::new(&conn)
+                .destination("org.freedesktop.login1")?
+                .path("/org/freedesktop/login1/session/self")?
+                .interface("org.freedesktop.login1.Session")?
+                .build()
+                .await?;
+            p.path().to_string()
+        };
 
-        // Acquire delay inhibitor for sleep + shutdown.
         let _inhibit_fd = manager
             .inhibit(
                 "sleep:shutdown",
@@ -95,17 +95,10 @@ impl PowerStateWatcher {
                     return;
                 }
             };
-            let mut lock_stream = match session.receive_lock().await {
+            let mut session_removed_stream = match manager.receive_session_removed().await {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("cannot subscribe lock: {e}");
-                    return;
-                }
-            };
-            let mut unlock_stream = match session.receive_unlock().await {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("cannot subscribe unlock: {e}");
+                    error!("cannot subscribe session_removed: {e}");
                     return;
                 }
             };
@@ -113,59 +106,35 @@ impl PowerStateWatcher {
             loop {
                 tokio::select! {
                     Some(signal) = sleep_stream.next() => {
-                        if let Ok(args) = signal.args()
-                            && *args.start() {
+                        if let Ok(args) = signal.args() {
+                            if *args.start() {
                                 info!("logind: prepare_for_sleep");
-                                Self::flush_event(&pool, &*clock, 0).await;
                                 tx.send(PowerEvent::Slept).ok();
+                            } else {
+                                info!("logind: resumed from sleep");
+                                tx.send(PowerEvent::ResumedSystem).ok();
                             }
+                        }
                     }
                     Some(signal) = shutdown_stream.next() => {
                         if let Ok(args) = signal.args()
                             && *args.start() {
-                                info!("logind: prepare_for_shutdown");
-                                Self::flush_event(&pool, &*clock, 0).await;
-                                tx.send(PowerEvent::ShutDown).ok();
-                            }
+                            info!("logind: prepare_for_shutdown");
+                            tx.send(PowerEvent::ShutDown).ok();
+                        }
                     }
-                    Some(_) = lock_stream.next() => {
-                        info!("logind: session locked");
-                        Self::flush_event(&pool, &*clock, 0).await;
-                        tx.send(PowerEvent::Locked).ok();
-                    }
-                    Some(_) = unlock_stream.next() => {
-                        // Unlock is a no-op for intervals: next WindowFocused
-                        // reopens a fresh interval.
+                    Some(signal) = session_removed_stream.next() => {
+                        if let Ok(args) = signal.args()
+                            && args.object_path.to_string() == session_path
+                        {
+                            info!("logind: session removed (logged out)");
+                            tx.send(PowerEvent::LoggedOut).ok();
+                        }
                     }
                 }
             }
         });
 
         Ok(rx)
-    }
-
-    async fn flush_event(pool: &DbPool, clock: &dyn Clock, user_id: i32) {
-        use diesel::ExpressionMethods;
-        use diesel_async::RunQueryDsl;
-        let mut conn = match pool.get().await {
-            Ok(c) => c,
-            Err(e) => {
-                error!("flush_event: pool error: {e}");
-                return;
-            }
-        };
-        let now = clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let payload = serde_json::json!({"t": &now}).to_string();
-        if let Err(e) = diesel::insert_into(crate::store::schema::events::table)
-            .values((
-                crate::store::schema::events::event_type.eq(4),
-                crate::store::schema::events::payload.eq(&payload),
-                crate::store::schema::events::user_id.eq(user_id),
-            ))
-            .execute(&mut conn)
-            .await
-        {
-            error!("flush_event: write failed: {e}");
-        }
     }
 }

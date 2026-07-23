@@ -105,8 +105,8 @@ EnforcerActor acts as gate — evaluates BEFORE any DB write:
 4. Call evaluate(B, &policies, elapsed_usage, now) — PURE DOMAIN FN
 
 If PolicyVerdict::Block: a. Check in-memory focus state — if previous app A has
-open interval: INSERT Unfocused (closes A's interval) (TrackerActor
-accumulate_interval() closes A via in-memory focus state) b. Build
+open interval: INSERT Unfocused (closes A's interval) (EnforcerActor
+`accumulate_daily_usage` closes A via in-memory focus state) b. Build
 ShowOverlayConfig with reason, policy_id, and available_actions determined by
 policy type: Block -> [Close]; TimeLimit -> app_state(usage,
 config).can_extend() ? [Extra, Close] : [Close] c. platform.show_overlay(config)
@@ -268,8 +268,8 @@ The EnforcerActor handles the block path after evaluate() returns Block:
 
 1. Close the PREVIOUS app's interval (if any) — interval management, NOT block
    enforcement. The blocked app never had an interval opened. Check in-memory
-   focus state (passed from TrackerActor). Insert Unfocused to close the
-   previous interval. accumulate_interval() runs in the same transaction.
+   focus state (passed from EnforcerActor). Insert Unfocused to close the
+   previous interval. `accumulate_daily_usage` runs in the same transaction.
 2. Cancel any limit timer for this app (stale from prior session).
 3. Determine overlay buttons from the blocking policy's variant:
    - Block -> [Close] only.
@@ -515,7 +515,7 @@ avoid a second source of truth.
 WindowFocused for B -> EnforcerActor evaluates -> Block verdict | v
 
 1. If previous app A has open interval: INSERT Unfocused (closes A)
-   (TrackerActor accumulate_interval() closes A via in-memory focus state —
+   (EnforcerActor `accumulate_daily_usage` closes A via in-memory focus state —
    interval management, NOT block enforcement)
 2. Build ShowOverlayConfig from TimeLimitedApp state
 3. Cancel any stale limit timer for B

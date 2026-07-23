@@ -12,7 +12,7 @@ pub struct AppListEntry {
     pub rank: usize,
     pub app_id: String,
     pub display_name: String,
-    pub total_minutes: i64,
+    pub total_millis: i64,
     pub percentage: f64,
     pub category_color: Option<String>,
     pub is_blocked: bool,
@@ -49,8 +49,8 @@ pub struct DashboardViewModel {
 /// Computed KPI summary for the stat row.
 #[derive(Debug, Clone)]
 pub struct Kpis {
-    pub total_minutes: i64,
+    pub total_millis: i64,
     pub top_app: String,
-    pub top_app_minutes: i64,
+    pub top_app_millis: i64,
     pub active_blocks: usize,
 }

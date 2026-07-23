@@ -7,7 +7,7 @@ use wellbeing_core::{
 use zbus::fdo;
 use zbus::interface;
 
-use crate::platform::linux::ManagerProxy;
+use crate::platform::{PlatformEvent, linux::ManagerProxy};
 
 use super::controller::DaemonInterface;
 use super::core::{authenticate, resolve_uid};
@@ -152,6 +152,12 @@ impl DaemonInterface {
             reg.register(instance, uid, proxy);
         }
 
+        // Sync session state: compare CurrentFocus with the last DB event
+        // and emit the minimal events needed to bring the in-memory and
+        // persisted state up to date. This ensures we don't double-insert
+        // WindowFocused when an interval is already open.
+        sync_focus_on_register(&self.pool, &self.registry, &self.event_tx).await;
+
         // Subscribe to plugin signals and spawn the event forwarding loop
         // as a background task. IMPORTANT: the forwarding loop runs in a
         // spawned task instead of inline — the previous inline design caused
@@ -186,20 +192,21 @@ impl DaemonInterface {
     }
 
     #[zbus(property)]
-    async fn active_blocks(&self) -> fdo::Result<Vec<ActiveBlockEntry>> {
+    async fn active_blocks(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: Option<zbus::message::Header<'_>>,
+    ) -> fdo::Result<Vec<ActiveBlockEntry>> {
+        let header = header.ok_or_else(|| fdo::Error::Failed("missing header".into()))?;
+        let caller = authenticate(conn, header).await?;
         let blocks = self.active_blocks.read().await;
-        let mut result = Vec::new();
-        for uid_blocks in blocks.values() {
-            for entry in uid_blocks.values() {
-                result.push(ActiveBlockEntry {
-                    app_id: entry.app_id.clone(),
-                    policy_id: entry.policy_id,
-                    blocked_since: entry.blocked_since,
-                    reason: entry.reason,
-                    available_actions: entry.available_actions.clone(),
-                });
-            }
-        }
+        let result: Vec<ActiveBlockEntry> = if caller == 0 {
+            blocks.values().flat_map(|v| v.values().cloned()).collect()
+        } else if let Some(uid_blocks) = blocks.get(&Uid(caller)) {
+            uid_blocks.values().cloned().collect()
+        } else {
+            vec![]
+        };
         Ok(result)
     }
 
@@ -276,5 +283,102 @@ impl DaemonInterface {
             })?;
         let _ = signals::policy_mutated(conn, caller).await;
         Ok(())
+    }
+}
+
+/// Sync session state after a plugin registers.
+///
+/// Compares `CurrentFocus` against the last event in the database and emits
+/// only the minimal events needed to reconcile:
+///
+/// | DB last event        | CurrentFocus     | Action                                |
+/// |----------------------|------------------|---------------------------------------|
+/// | empty / close event  | WindowFocused    | send WindowFocused                    |
+/// | empty / close event  | None             | nothing (desktop)                     |
+/// | WindowFocused (same) | WindowFocused    | nothing (already open)                |
+/// | WindowFocused (diff) | WindowFocused    | send Unfocused + WindowFocused        |
+/// | WindowFocused        | None             | send Unfocused (close stale interval) |
+pub(crate) async fn sync_focus_on_register(
+    pool: &crate::store::DbPool,
+    registry: &std::sync::Arc<tokio::sync::RwLock<crate::platform::linux::PluginRegistry>>,
+    event_tx: &tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
+) {
+    use crate::blocking::data::{CLOSE_EVENT_TYPES, EVENT_WINDOW_FOCUSED, EventRow};
+    use crate::store::schema::events::dsl::*;
+    use diesel::ExpressionMethods;
+    use diesel::QueryDsl;
+    use diesel::SelectableHelper;
+    use diesel_async::RunQueryDsl;
+
+    // 1. Query CurrentFocus from the plugin
+    let current = {
+        let reg = registry.read().await;
+        reg.query_current_focus().await
+    };
+
+    // 2. Read the last event from the database
+    let last_event: Option<EventRow> = match pool.get().await {
+        Ok(mut conn) => events
+            .order(id.desc())
+            .select(EventRow::as_select())
+            .first(&mut conn)
+            .await
+            .ok(),
+        Err(e) => {
+            tracing::error!(error = %e, "sync_focus_on_register: DB connection failed");
+            return;
+        }
+    };
+
+    // 3. Compare and act
+    match (last_event, current) {
+        // Empty DB or last event is a close → no open interval
+        (None, Some(focus)) => {
+            event_tx.send(focus).ok();
+        }
+        (Some(ref last), Some(focus)) if CLOSE_EVENT_TYPES.contains(&last.event_type) => {
+            event_tx.send(focus).ok();
+        }
+        // Last event is WindowFocused and CurrentFocus has the same app → nothing
+        (
+            Some(EventRow {
+                event_type: EVENT_WINDOW_FOCUSED,
+                app_id: ref last_app,
+                ..
+            }),
+            Some(PlatformEvent::WindowFocused {
+                app_id: ref cur_app_id,
+                ..
+            }),
+        ) if last_app.as_deref() == Some(cur_app_id.as_str()) => {
+            // Same app — interval is already open, nothing to do.
+        }
+        // Last event is WindowFocused but CurrentFocus is different → close old, open new
+        (
+            Some(EventRow {
+                event_type: EVENT_WINDOW_FOCUSED,
+                ..
+            }),
+            Some(focus),
+        ) => {
+            event_tx.send(PlatformEvent::Unfocused).ok();
+            event_tx.send(focus).ok();
+        }
+        // Last event is WindowFocused but plugin reports desktop → close stale interval
+        (
+            Some(EventRow {
+                event_type: EVENT_WINDOW_FOCUSED,
+                ..
+            }),
+            None,
+        ) => {
+            event_tx.send(PlatformEvent::Unfocused).ok();
+        }
+        // Last event was some other non-focus event (Idle, Resumed, etc.)
+        (_, Some(focus)) => {
+            event_tx.send(focus).ok();
+        }
+        // No app focused and no open interval — nothing to do.
+        (_, None) => {}
     }
 }

@@ -5,10 +5,10 @@ use diesel::{
     update,
 };
 use diesel_async::RunQueryDsl;
-use wellbeing_core::{AppId, CategoryId, Clock, PolicyId, Uid};
+use wellbeing_core::{AppId, CategoryId, PolicyId, Uid};
 
 use crate::store::connection::DbConn;
-use crate::store::schema::{app_categories, daily_usage, policies};
+use crate::store::schema::{app_categories, policies};
 
 use super::insert::{NewPolicy, UpdatePolicy};
 use super::models::PolicyRow;
@@ -52,19 +52,10 @@ pub(crate) trait PolicyRepo {
         app_id: &AppId,
         uid: Uid,
     ) -> anyhow::Result<Vec<CategoryId>>;
-    /// Get daily usage for an app on today's date.
-    async fn get_daily_usage_for_app(
-        &self,
-        conn: &mut DbConn,
-        app_id: &AppId,
-        uid: Uid,
-        clock: &dyn Clock,
-    ) -> anyhow::Result<Option<(i64, bool)>>;
     /// Get a policy owner_id (for auth checks).
     async fn get_policy_owner(&self, conn: &mut DbConn, id: i32) -> anyhow::Result<i32>;
 }
 
-/// Production implementation using diesel-async.
 pub(crate) struct DieselPolicyRepo;
 
 impl PolicyRepo for DieselPolicyRepo {
@@ -197,27 +188,6 @@ impl PolicyRepo for DieselPolicyRepo {
             .flatten()
             .map(|id| CategoryId(id as i64))
             .collect())
-    }
-
-    async fn get_daily_usage_for_app(
-        &self,
-        conn: &mut DbConn,
-        app_id: &AppId,
-        uid: Uid,
-        clock: &dyn Clock,
-    ) -> anyhow::Result<Option<(i64, bool)>> {
-        let today = clock.now().format("%Y-%m-%d").to_string();
-
-        let result: Option<(i32, bool)> = daily_usage::table
-            .filter(daily_usage::user_id.eq(uid.0 as i32))
-            .filter(daily_usage::app_id.eq(app_id.as_str()))
-            .filter(daily_usage::date.eq(&today))
-            .select((daily_usage::total_minutes, daily_usage::extended))
-            .first(conn)
-            .await
-            .optional()?;
-
-        Ok(result.map(|(secs, ext)| (secs as i64, ext)))
     }
 
     async fn get_policy_owner(&self, conn: &mut DbConn, id: i32) -> anyhow::Result<i32> {

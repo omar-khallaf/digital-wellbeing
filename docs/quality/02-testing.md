@@ -223,7 +223,7 @@ app limit but above the category limit — the category policy triggers first.
 - VirtualClock implements Clone — each clone shares the same Arc<AtomicI64>.
   Advancing one advances all. This allows passing the same logical clock to
   multiple actors in a test.
-- All actors that issue time-stamped DB writes (TrackerActor, EnforcerActor,
+- All actors that issue time-stamped DB writes (EnforcerActor, prune loop)
   prune loop) must take a Clock parameter — they need deterministic time for
   testable timestamp assertions.
 - Pure domain logic (evaluate, TimeWindow::is_active) should accept an explicit

@@ -92,7 +92,7 @@ pub struct DailyUsageEntry {
     pub date: String,
     pub user_id: u32,
     pub app_id: String,
-    pub total_minutes: i64,
+    pub total_millis: i64,
     pub extended: bool,
 }
 
@@ -355,7 +355,6 @@ mod tests {
     fn focus_changed_desktop_variant_matches_cpp_encoding() {
         // C++ emits: sdbus::Variant{uint32_t(FocusVariantTag::Desktop)}   → U32(FOCUS_TAG_DESKTOP)
         // Rust handler in manager.rs checks Value::U32(FOCUS_TAG_DESKTOP) for unfocused.
-        use zvariant::Value;
         let val = Value::U32(FOCUS_TAG_DESKTOP);
         let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
         let bytes = to_bytes(ctxt, &val).expect("serialize desktop variant");
@@ -378,7 +377,7 @@ mod tests {
         //   f[FOCUS_FIELD_PID]     → Value::U32(pid)
         //   f[FOCUS_FIELD_UID]     → Value::U32(uid)
         //   f[FOCUS_FIELD_OVERLAY] → Value::Bool(overlay)
-        use zvariant::{OwnedValue, Structure};
+        use zvariant::Structure;
 
         let app_val: OwnedValue = Value::Structure(Structure::from((
             FOCUS_TAG_APP, // FocusVariantTag::App
@@ -429,7 +428,7 @@ mod tests {
 
     #[test]
     fn focus_changed_app_variant_raw_signature() {
-        use zvariant::{DynamicType, Structure};
+        use zvariant::Structure;
         let s = Structure::from((FOCUS_TAG_APP, "term", "Terminal", 7777u32, 1000u32, false));
         assert_eq!(
             s.signature().to_string(),
@@ -442,7 +441,6 @@ mod tests {
     fn activity_changed_idle_tag_matches_cpp_encoding() {
         // C++ emits: static_cast<uint32_t>(FocusActivityTag::Idle)  → u32(ACTIVITY_TAG_IDLE)
         // Rust handler in manager.rs checks args.tag == ACTIVITY_TAG_IDLE → PlatformEvent::Idle
-        use zvariant::Value;
         let val = Value::U32(ACTIVITY_TAG_IDLE);
         let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
         let bytes = to_bytes(ctxt, &val).expect("serialize idle tag");
@@ -458,7 +456,6 @@ mod tests {
     fn activity_changed_resumed_tag_matches_cpp_encoding() {
         // C++ emits: static_cast<uint32_t>(FocusActivityTag::Resumed)  → u32(ACTIVITY_TAG_RESUMED)
         // Rust handler in manager.rs checks args.tag != ACTIVITY_TAG_IDLE → PlatformEvent::Resumed
-        use zvariant::Value;
         let val = Value::U32(ACTIVITY_TAG_RESUMED);
         let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
         let bytes = to_bytes(ctxt, &val).expect("serialize resumed tag");
@@ -472,7 +469,7 @@ mod tests {
 
     #[test]
     fn window_info_variant_pattern_match() {
-        use zvariant::{OwnedValue, Structure};
+        use zvariant::Structure;
 
         let desktop_val: OwnedValue = OwnedValue::from(FOCUS_TAG_DESKTOP);
         let v: Value = desktop_val.into();

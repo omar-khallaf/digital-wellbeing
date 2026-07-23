@@ -127,15 +127,12 @@ ReportsViewModel) and the UI components that consume them are detailed in
 ## Daemon Wiring
 
 The daemon's actor wiring constructs a StoreBuilder to obtain the database pool,
-then creates a ReactiveNotifier that emits three signals on the daemon's D-Bus
-API. A watch channel for BlockState drives BlockStateChanged emission. Approved
-events flow through an mpsc channel from the event stream to the tracker. The
-Linux platform builder provides the event stream. The tracker actor receives
-approved events, the pool, and the notifier. The enforcer actor receives the
-event stream, the approved events sender, the pool, and the notifier. The D-Bus
-server actor exposes methods and signals to the GUI, forwards commands to the
-enforcer, and receives the notifier's watch receiver plus the enforcer's block
-state sender.
+then exposes three D-Bus signals. Approved events flow through an mpsc channel
+from the event stream to the enforcer. The Linux platform builder provides the
+event stream. The enforcer actor receives the event stream, the pool, and the
+signal sender. The D-Bus server actor exposes methods and signals to the GUI,
+forwards commands to the enforcer, and receives the enforcer's block state
+sender.
 
 All data access goes through D-Bus method calls that query SQLite synchronously
 within the daemon process.

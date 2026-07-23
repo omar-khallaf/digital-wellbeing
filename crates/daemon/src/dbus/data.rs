@@ -38,26 +38,11 @@ pub(crate) async fn create_policy(
 ) -> anyhow::Result<i64> {
     let mut conn = pool.get().await?;
 
-    let category_id: Option<i32> = if input.category_id > 0 {
-        Some(input.category_id as i32)
-    } else {
-        None
-    };
-    let app_id: Option<String> = if input.app_id.is_empty() {
-        None
-    } else {
-        Some(input.app_id.clone())
-    };
-    let time_limit: Option<i32> = if input.time_limit_minutes > 0 {
-        Some(input.time_limit_minutes as i32)
-    } else {
-        None
-    };
-    let notify_repeat: Option<i32> = if input.notification_repeat_interval_minutes > 0 {
-        Some(input.notification_repeat_interval_minutes as i32)
-    } else {
-        None
-    };
+    let category_id = (input.category_id > 0).then_some(input.category_id as i32);
+    let app_id = (!input.app_id.is_empty()).then(|| input.app_id.clone());
+    let time_limit = (input.time_limit_minutes > 0).then_some(input.time_limit_minutes as i32);
+    let notify_repeat = (input.notification_repeat_interval_minutes > 0)
+        .then_some(input.notification_repeat_interval_minutes as i32);
 
     let tw: Option<TimeWindow> = if input.schedule_json.is_empty() {
         None
@@ -182,9 +167,9 @@ pub(crate) async fn get_daily_usage(
             daily_usage::date,
             daily_usage::user_id,
             daily_usage::app_id,
-            daily_usage::total_minutes,
+            daily_usage::closed_millis,
+            daily_usage::open_millis,
             daily_usage::extended,
-            daily_usage::updated_at,
         ))
         .load(&mut conn)
         .await?;
@@ -195,7 +180,7 @@ pub(crate) async fn get_daily_usage(
             date: r.date,
             user_id: r.user_id as u32,
             app_id: r.app_id,
-            total_minutes: r.total_minutes as i64,
+            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
             extended: r.extended,
         })
         .collect())
@@ -218,9 +203,9 @@ pub(crate) async fn get_usage_range(
             daily_usage::date,
             daily_usage::user_id,
             daily_usage::app_id,
-            daily_usage::total_minutes,
+            daily_usage::closed_millis,
+            daily_usage::open_millis,
             daily_usage::extended,
-            daily_usage::updated_at,
         ))
         .load(&mut conn)
         .await?;
@@ -234,7 +219,7 @@ pub(crate) async fn get_usage_range(
                 date: r.date,
                 user_id: r.user_id as u32,
                 app_id: r.app_id,
-                total_minutes: r.total_minutes as i64,
+                total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
                 extended: r.extended,
             });
     }

@@ -11,8 +11,9 @@ pub enum PlatformEvent {
         overlay_shown: bool,
     },
     Unfocused,
-    Idle,
-    Resumed,
+    IdleActivity,
+    ResumedActivity,
+    ResumedSystem,
     Slept,
     ShutDown,
     Locked,
@@ -24,11 +25,14 @@ pub enum PlatformEvent {
     },
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Platform: Send + Sync + 'static {
     type EventStream: Stream<Item = PlatformEvent> + Send + 'static;
 
-    async fn notify(&self, title: &str, body: &str) -> anyhow::Result<()>;
+    fn notify(
+        &self,
+        title: &str,
+        body: &str,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
 }
 
 pub mod linux;

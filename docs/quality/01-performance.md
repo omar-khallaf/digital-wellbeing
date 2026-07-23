@@ -66,13 +66,27 @@ Classifying a window involves an app_categories DB lookup (PK point query), AI
 classification as fallback (cached 60 seconds), and pattern matching on title
 (for browser tabs). The AI result per AppId is cached for 60 seconds.
 
-### Event-Driven Writes
+### Event-Driven Writes (Buffered Flush)
 
-Events are written on demand per user action (focus switch, block, extra time
-grant). Write frequency is bounded by user interaction rate (max roughly one per
-100 milliseconds). SQLite in WAL mode handles individual inserts at this rate
-without batching. No periodic flush timer, no accumulation buffer, no batch
-transaction.
+Events are not written individually. Focus switches are buffered in memory
+inside `EnforcerActor.event_buffer` (a bounded 10k FIFO `EventBuffer` in
+`crates/daemon/src/blocking/buffer.rs`). A minute-ticker aligned to wall-clock
+minute boundaries triggers periodic flushes.
+
+Flush triggers:
+
+- **Count threshold**: buffer contains 100 or more events.
+- **Timer boundary**: the minute-ticker fires at the next wall-clock minute
+  boundary, regardless of buffer occupancy.
+
+When a flush fires, all buffered events are written in a single batch INSERT
+inside a `conn.transaction()`. After a successful commit, a
+`DailyUsageChanged` D-Bus signal is emitted to notify the GUI. An empty flush
+(no events in the buffer) is a no-op — zero DB writes and no signal emission.
+
+Shutdown and suspend paths force an immediate flush so no events are lost.
+When the daemon resumes from suspend, any accumulated events in the buffer are
+flushed on the next tick or count trigger.
 
 ### inline Policy
 

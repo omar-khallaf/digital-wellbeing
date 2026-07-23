@@ -25,14 +25,14 @@ Status: **B1 done** (store), B2–B3 **in progress**.
 
 ## Phase C: Daemon actors (tracking, policy engine, enforcer)
 
-| Step | File(s)                       | What                                         |
-| ---- | ----------------------------- | -------------------------------------------- |
-| C1   | `daemon/src/tracking/*`       | TrackerActor — event persistence             |
-| C2   | `daemon/src/policy/*`         | PolicyEngine — evaluate(), domain types      |
-| C3   | `daemon/src/blocking/*`       | EnforcerActor — gate-first pipeline, overlay |
-| C4   | `daemon/src/categorization/*` | Category resolution + AI fallback            |
-| C5   | `daemon/src/reports/*`        | Aggregate queries for history/export         |
-| C6   | `daemon/src/main.rs`          | Wiring all actors + D-Bus server             |
+| Step | File(s)                       | What                                                |
+| ---- | ----------------------------- | --------------------------------------------------- |
+| C1   | `daemon/src/tracking/*`       | `FocusState` domain type + `accumulate_daily_usage` |
+| C2   | `daemon/src/policy/*`         | PolicyEngine — evaluate(), domain types             |
+| C3   | `daemon/src/blocking/*`       | EnforcerActor — gate-first pipeline, overlay        |
+| C4   | `daemon/src/categorization/*` | Category resolution + AI fallback                   |
+| C5   | `daemon/src/reports/*`        | Aggregate queries for history/export                |
+| C6   | `daemon/src/main.rs`          | Wiring all actors + D-Bus server                    |
 
 ## Phase D: GUI
 

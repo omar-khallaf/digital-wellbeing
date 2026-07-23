@@ -17,9 +17,9 @@ diesel::table! {
         date -> Text,
         user_id -> Integer,
         app_id -> Text,
-        total_minutes -> Integer,
+        closed_millis -> Integer,
+        open_millis -> Integer,
         extended -> Bool,
-        updated_at -> Text,
     }
 }
 

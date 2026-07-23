@@ -35,7 +35,7 @@ pub async fn get_daily_usage(
             date: r.date,
             user_id: r.user_id as u32,
             app_id: r.app_id,
-            total_minutes: r.total_minutes as i64,
+            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
             extended: r.extended,
         })
         .collect())
@@ -64,7 +64,7 @@ pub async fn get_usage_range(
             date: r.date.clone(),
             user_id: r.user_id as u32,
             app_id: r.app_id,
-            total_minutes: r.total_minutes as i64,
+            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
             extended: r.extended,
         };
 
@@ -158,12 +158,12 @@ async fn prune_cycle(pool: &DbPool, clock: &dyn Clock) -> anyhow::Result<()> {
 
     loop {
         let count = sql_query(
-            "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE timestamp < $1 LIMIT $2)"
+            "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE timestamp < $1 LIMIT $2)",
         )
-            .bind::<Text, _>(&cutoff_dt)
-            .bind::<Integer, _>(500)
-            .execute(&mut conn)
-            .await?;
+        .bind::<Text, _>(&cutoff_dt)
+        .bind::<Integer, _>(500)
+        .execute(&mut conn)
+        .await?;
         if count < 500 {
             break;
         }

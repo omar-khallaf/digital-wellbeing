@@ -3,10 +3,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use futures::StreamExt;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use wellbeing_core::SystemClock;
@@ -19,6 +21,9 @@ use wellbeing_daemon::{
     dbus::DaemonInterface,
     signal::DaemonSignal,
 };
+
+use wellbeing_daemon::blocking::InternalEvent;
+use wellbeing_daemon::platform::{PlatformEvent, linux::PluginRegistry};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -67,17 +72,12 @@ async fn main() -> Result<()> {
     let (signal_tx, mut signal_rx) =
         mpsc::unbounded_channel::<wellbeing_daemon::signal::DaemonSignal>();
 
-    let (tracker_tx, tracker_rx) = mpsc::channel::<wellbeing_daemon::platform::PlatformEvent>(256);
-    let (enforcer_tx, mut enforcer_rx) =
+    let (enforcer_tx, enforcer_rx) =
         mpsc::channel::<wellbeing_daemon::platform::PlatformEvent>(256);
 
     tokio::spawn(async move {
         let mut stream = event_stream;
         while let Some(event) = stream.next().await {
-            if tracker_tx.send(event.clone()).await.is_err() {
-                info!("event fan-out: tracker receiver dropped");
-                break;
-            }
             if enforcer_tx.send(event).await.is_err() {
                 info!("event fan-out: enforcer receiver dropped");
                 break;
@@ -86,62 +86,142 @@ async fn main() -> Result<()> {
         info!("event fan-out: platform event stream ended");
     });
 
-    let (notifier, _) = wellbeing_daemon::tracking::ReactiveNotifier::new();
-    let tracker =
-        wellbeing_daemon::tracking::TrackerActor::new(notifier, SystemClock, signal_tx.clone());
-    tokio::spawn(async move {
-        tracker.run(tracker_rx).await;
-        info!("tracker actor finished");
-    });
-    info!("tracker actor ready");
-
     let active_blocks = Arc::new(RwLock::new(HashMap::new()));
 
-    let mut enforcer = wellbeing_daemon::blocking::EnforcerActor::new(
+    // Create shutdown token early so the minute-ticker and signal/watchdog
+    // tasks can all reference it.
+    let shutdown_token = CancellationToken::new();
+
+    let (mut enforcer, internal_rx) = wellbeing_daemon::blocking::EnforcerActor::new(
         pool.clone(),
         platform.clone(),
         SystemClock,
         signal_tx.clone(),
         active_blocks.clone(),
     );
+
+    // Recover routing + daily usage from the database on startup
+    // so the in-memory state matches persisted events after a crash or
+    // system resume.
+    enforcer
+        .recover()
+        .await
+        .context("failed to recover enforcer state")?;
+
+    // Flush synthetic close events from recovery so the database is
+    // authoritative when the plugin later registers and runs the sync
+    // algorithm.  Without this, `sync_focus_on_register` would see the
+    // stale WindowFocused from last session and skip the reconcile.
+    enforcer
+        .flush_buffer()
+        .await
+        .context("failed to flush recovery buffer")?;
+
+    // Clone flush handle BEFORE moving enforcer into the actor task.
+    // `flush_tx` stays in main's scope; only clones are moved into spawns.
+    let flush_tx = enforcer.flush_handle();
+
+    // Wall-clock aligned minute-ticker: sends InternalEvent::Flush to the
+    // EnforcerActor at every minute boundary. Re-calculates the delay on every
+    // iteration so NTP steps / system sleep do not cause drift.
+    let minute_flush_tx = flush_tx.clone();
+    let minute_token = shutdown_token.clone();
     tokio::spawn(async move {
-        while let Some(event) = enforcer_rx.recv().await {
-            enforcer.handle_event(event).await;
+        loop {
+            tokio::select! {
+                _ = minute_token.cancelled() => {
+                    info!("minute-ticker: shutting down");
+                    break;
+                }
+                _ = async {
+                    let now = Utc::now();
+                    let next_boundary = (now.timestamp() / 60 + 1) * 60;
+                    let delay_secs = (next_boundary - now.timestamp()).max(1) as u64;
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                } => {
+                    if minute_flush_tx.send(InternalEvent::Flush(None)).await.is_err() {
+                        info!("minute-ticker: enforcer actor dropped");
+                        break;
+                    }
+                }
+            }
         }
+    });
+
+    tokio::spawn(async move {
+        enforcer.run(enforcer_rx, internal_rx).await;
         info!("enforcer actor finished");
     });
     info!("enforcer actor ready");
 
-    let power_rx = wellbeing_daemon::platform::linux::PowerStateWatcher::watch(
-        pool.clone(),
-        Box::new(SystemClock),
-    )
-    .await
-    .context("failed to start PowerStateWatcher")?;
+    let power_rx = wellbeing_daemon::platform::linux::PowerStateWatcher::watch()
+        .await
+        .context("failed to start PowerStateWatcher")?;
+    let power_flush_tx = flush_tx.clone();
     let power_tx = platform.event_tx();
     let shutdown_tx = power_tx.clone();
+    let power_registry = registry.clone();
     tokio::spawn(async move {
         use futures::StreamExt;
         use tokio_stream::wrappers::UnboundedReceiverStream;
         let mut power_stream = UnboundedReceiverStream::new(power_rx);
         while let Some(event) = power_stream.next().await {
-            let platform_event = match event {
+            // Flush buffered events BEFORE power state change
+            let _ = power_flush_tx.send(InternalEvent::Flush(None)).await;
+            let (platform_event, is_resume) = match event {
                 wellbeing_daemon::platform::linux::PowerEvent::Slept => {
-                    wellbeing_daemon::platform::PlatformEvent::Slept
+                    (wellbeing_daemon::platform::PlatformEvent::Slept, false)
                 }
                 wellbeing_daemon::platform::linux::PowerEvent::ShutDown => {
-                    wellbeing_daemon::platform::PlatformEvent::ShutDown
+                    (wellbeing_daemon::platform::PlatformEvent::ShutDown, false)
                 }
-                wellbeing_daemon::platform::linux::PowerEvent::Locked => {
-                    wellbeing_daemon::platform::PlatformEvent::Locked
-                }
+                wellbeing_daemon::platform::linux::PowerEvent::ResumedSystem => (
+                    wellbeing_daemon::platform::PlatformEvent::ResumedSystem,
+                    true,
+                ),
                 wellbeing_daemon::platform::linux::PowerEvent::LoggedOut => {
-                    wellbeing_daemon::platform::PlatformEvent::LoggedOut
+                    (wellbeing_daemon::platform::PlatformEvent::LoggedOut, false)
                 }
             };
             if power_tx.send(platform_event).is_err() {
                 info!("power event channel closed");
                 break;
+            }
+            // After ResumedSystem, reconcile focus so intervals are
+            // reopened for whatever app the user is actually using.
+            if is_resume {
+                let reconcile_events = reconcile_focus(&power_registry).await;
+                for ev in reconcile_events {
+                    if power_tx.send(ev).is_err() {
+                        info!("power event channel closed during reconcile");
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let screen_lock_rx = wellbeing_daemon::platform::linux::ScreenLockWatcher::watch()
+        .await
+        .context("failed to start ScreenLockWatcher")?;
+    let sl_tx = platform.event_tx();
+    let sl_registry = registry.clone();
+    tokio::spawn(async move {
+        use futures::StreamExt;
+        use tokio_stream::wrappers::UnboundedReceiverStream;
+        let mut sl_stream = UnboundedReceiverStream::new(screen_lock_rx);
+        while let Some(event) = sl_stream.next().await {
+            match event {
+                wellbeing_daemon::platform::linux::ScreenLockEvent::Locked => {
+                    sl_tx
+                        .send(wellbeing_daemon::platform::PlatformEvent::Locked)
+                        .ok();
+                }
+                wellbeing_daemon::platform::linux::ScreenLockEvent::Unlocked => {
+                    for ev in reconcile_focus(&sl_registry).await {
+                        sl_tx.send(ev).ok();
+                    }
+                }
             }
         }
     });
@@ -165,7 +245,6 @@ async fn main() -> Result<()> {
     let recovery_registry = registry.clone();
     let recovery_event_tx = platform.event_tx().clone();
     let recovery_active_blocks = active_blocks.clone();
-
     // Build interface before touching the connection so we can register
     // the object server atomically with the name request.
     let interface = DaemonInterface::new(
@@ -191,7 +270,6 @@ async fn main() -> Result<()> {
         .context("failed to acquire D-Bus name")?;
     info!("D-Bus server ready on {bus:?} bus");
 
-    // Seed shared state with the initial serving connection + unique name.
     let our_unique_name = conn
         .unique_name()
         .map(|n| n.to_string())
@@ -202,7 +280,6 @@ async fn main() -> Result<()> {
     // so I/O errors in the watch stream cannot corrupt the daemon's serving
     // connection. On re-acquisition, builds a FRESH connection + interface so
     // a dead socket cannot be silently reused.
-    let shutdown_token = CancellationToken::new();
     let watchdog_token = shutdown_token.clone();
     let watchdog_name = DAEMON_BUS_NAME.to_string();
     let bus_mode = bus;
@@ -274,10 +351,11 @@ async fn main() -> Result<()> {
                                         if args.name == watchdog_name {
                                             // Read the CURRENT unique name from shared state so we
                                             // match after every re-acquisition, not just the first.
-                                            let current_name = {
-                                                let state = recovery_state.read().await;
-                                                state.as_ref().map(|(_, name)| name.clone())
-                                            };
+                                            let current_name = recovery_state
+                                                .read()
+                                                .await
+                                                .as_ref()
+                                                .map(|(_, name)| name.clone());
                                             if let Some(our_name) = current_name
                                                 && args.old_owner == our_name {
                                                     error!(name = ?args.name, old_owner = ?args.old_owner, new_owner = ?args.new_owner, "D-Bus name lost, attempting re-acquisition");
@@ -366,7 +444,6 @@ async fn main() -> Result<()> {
                                                                 // chance of immediate re-loss from external interference.
                                                                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-                                                                // Verify the connection survived stabilization.
                                                                 let still_ok = fresh_conn.unique_name().is_some();
                                                                 if still_ok {
                                                                     info!(unique_name = ?new_unique, "D-Bus connection stable after re-acquisition");
@@ -440,10 +517,11 @@ async fn main() -> Result<()> {
                 signal = signal_rx.recv() => {
                     match signal {
                         Some(signal) => {
-                            let conn = {
-                                let state = dbus_conn.read().await;
-                                state.as_ref().map(|(c, _)| c.clone())
-                            };
+                            let conn = dbus_conn
+                                .read()
+                                .await
+                                .as_ref()
+                                .map(|(c, _)| c.clone());
                             let Some(conn) = conn else { continue };
                             match signal {
                                 DaemonSignal::BlockStateChanged {
@@ -503,26 +581,45 @@ async fn main() -> Result<()> {
     }
     info!("shutting down");
 
-    // Cancel watchdog so it exits its main loop instead of waiting for signals.
+    // Send ShutDown BEFORE flushing so the enforcer buffers close events
+    // and the following flush persists them to the database.
+    let _ = shutdown_tx.send(wellbeing_daemon::platform::PlatformEvent::ShutDown);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Flush remaining events (including ShutDown buffer) to DB
+    let (done_tx, done_rx) = oneshot::channel();
+    if flush_tx
+        .send(InternalEvent::Flush(Some(done_tx)))
+        .await
+        .is_ok()
+    {
+        let _ = done_rx.await;
+    }
+
     watchdog_token.cancel();
 
-    // Wait for background tasks to finish so they drop their connection
-    // references before the runtime tears down.  This avoids the known
-    // zbus+tokio panic where dropping a Connection during runtime shutdown
-    // tries to block the worker thread.
     let _ = watchdog_handle.await;
-
-    // The signal task exits when all senders are dropped or when the
-    // shutdown token fires.  Use a short timeout so we never hang here
-    // if something is still holding a sender.
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), signal_handle).await;
 
-    // Explicitly drop the shared serving state so the underlying
-    // zbus::Connection is released while we are still in a clean context.
     drop(serving_state);
 
-    let _ = shutdown_tx.send(wellbeing_daemon::platform::PlatformEvent::ShutDown);
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
     Ok(())
+}
+
+/// Reconcile session state after an interruption (boot, unlock, resume).
+///
+/// Queries the plugin's `CurrentFocus` and returns a single
+/// `WindowFocused` event if an app window is focused, or an empty vec
+/// when no app is focused (desktop/null).
+///
+/// At all three call-sites the enforcer's `current_focus` has already
+/// been drained (by `recover()`, `PlatformEvent::Locked`, or
+/// `PlatformEvent::Slept`), so `handle_event` will accept the new focus
+/// without dedup issues.
+async fn reconcile_focus(registry: &RwLock<PluginRegistry>) -> Vec<PlatformEvent> {
+    let current = registry.read().await.query_current_focus().await;
+    match current {
+        Some(ev @ PlatformEvent::WindowFocused { .. }) => vec![ev],
+        _ => vec![],
+    }
 }

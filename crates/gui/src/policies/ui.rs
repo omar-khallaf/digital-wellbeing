@@ -243,7 +243,6 @@ impl GuiApp {
                     .text_color(theme::text_primary(&*cx))
                     .child(target_label),
             )
-            // Kind selector
             .child(
                 h_flex()
                     .gap_2()
@@ -272,7 +271,6 @@ impl GuiApp {
                             })
                     })),
             )
-            // AppId text input (only for App-targeted policies)
             .when(is_app_target, |el| {
                 el.child(
                     h_flex()
@@ -296,7 +294,6 @@ impl GuiApp {
                         ),
                 )
             })
-            // Time limit — NumberInput with direct typing
             .child(
                 h_flex()
                     .gap_2()
@@ -320,7 +317,6 @@ impl GuiApp {
                     )
                     .when(!show_time_limit, |el| el.opacity(0.4)),
             )
-            // Extra time — NumberInput with direct typing
             .child(
                 h_flex()
                     .gap_2()
@@ -344,7 +340,6 @@ impl GuiApp {
                     )
                     .when(hide_extra_time, |el| el.opacity(0.4)),
             )
-            // Active toggle
             .child(
                 h_flex().gap_2().items_center().child(
                     Button::new("toggle-active")
@@ -363,7 +358,6 @@ impl GuiApp {
                         }),
                 ),
             )
-            // Action buttons
             .child(
                 h_flex()
                     .gap_2()
@@ -414,9 +408,8 @@ impl GuiApp {
                                                 this.state.try_lock().map(|s| s.uid).unwrap_or(0);
                                             let input = policy_input_from(target, &form, uid);
                                             let edit_id = this.policy_edit_id;
-                                            let state = this.state.clone();
                                             let client = client.clone();
-                                            std::mem::drop(cx2.spawn(async move |this2, cx3| {
+                                            let task = cx2.spawn(async move |this2, cx3| {
                                                 let res = match edit_id {
                                                     Some(id) => {
                                                         client.update_policy(id, input).await
@@ -427,14 +420,14 @@ impl GuiApp {
                                                         .map(|_| ()),
                                                 };
                                                 if res.is_ok() {
-                                                    let _ = state;
                                                     let _ = this2.update(cx3, |this3, cx4| {
                                                         this3.policy_edit = None;
                                                         this3.policy_edit_id = None;
                                                         cx4.notify();
                                                     });
                                                 }
-                                            }));
+                                            });
+                                            this.set_policy_task(task);
                                         }
                                         cx2.notify();
                                     });
@@ -453,17 +446,16 @@ impl GuiApp {
                                     let client = client.clone();
                                     entity.update(app, |this, cx2| {
                                         if let Some(id) = this.policy_edit_id {
-                                            let state = this.state.clone();
                                             let client = client.clone();
-                                            std::mem::drop(cx2.spawn(async move |this2, cx3| {
+                                            let task = cx2.spawn(async move |this2, cx3| {
                                                 let _ = client.delete_policy(id).await;
-                                                let _ = state;
                                                 let _ = this2.update(cx3, |this3, cx4| {
                                                     this3.policy_edit = None;
                                                     this3.policy_edit_id = None;
                                                     cx4.notify();
                                                 });
-                                            }));
+                                            });
+                                            this.set_policy_task(task);
                                         }
                                         cx2.notify();
                                     });

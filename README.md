@@ -8,8 +8,8 @@ Inspired by Android's Digital Wellbeing, built for Linux desktop.
 ## Project Status
 
 **MVP — architecture in place.** The system tracks activity on hyprland, but
-still missing proper implementation for policies, categorization, authenticated
-dbus access to the daemon, RBAC, and other rough edges.
+still missing proper implementation for policies, categorization, schema, RBAC,
+charts, authenticated dbus access to the daemon, and other rough edges.
 
 ## Architecture
 
@@ -39,7 +39,6 @@ optional compositor plugin for overlay enforcement:
                      │  wellbeing-daemon (system/session mode)  │
                      │                                          │
                      │  ┌───────────tokio runtime─────────────┐ │
-                     │  │ TrackerActor  PolicyEngine          │ │
                      │  │ EnforcerActor ReportBuilder         │ │
                      │  │                                     │ │
                      │  │  ──write──→ SQLite ───┐             │ │
@@ -54,16 +53,11 @@ optional compositor plugin for overlay enforcement:
                      │  │  org.wellbeing.v1.Controller       │  │
                      │  │  system bus (root) /               │  │
                      │  │  session bus (non-root)            │  │
-                     │  │  Methods: ListPolicies,            │  │
-                     │  │   CreatePolicy, GetDailyUsage,     │  │
-                     │  │   GetUsageRange, ListCategories,   │  │
-                     │  │   SetAppCategory                   │  │
                      │  └────────────────────────────────────┘  │
                      │                                          │
                      │  ┌────────────────────────────────────┐  │
                      │  │  PluginRegistry (per-instance,     │  │
-                     │  │  daemon's resolved bus)            │  │
-                     │  │  → plugin Overlay(v)               │  │
+                     │  │  on daemon's resolved bus)         │  │
                      │  └────────────────────────────────────┘  │
                      └────────────────────┬─────────────────────┘
                                           │
@@ -79,10 +73,10 @@ optional compositor plugin for overlay enforcement:
                │  ┌──────────────────┐  │    │  org.wellbeing.v1.     │
                │  │ gpui (main thr.) │  │    │  Manager               │
                │  │  render loop     │  │    │                        │
-               │  └────────┬─────────┘  │    │ Overlay(v)             │
-               │           │ mpsc       │    │  FocusChanged [signal] │
-               │  ┌────────┴─────────┐  │    │  CurrentFocus [prop]   │
-               │  │ tokio (bg thr.)  │  │    └────────────────────────┘
+               │  └────────┬─────────┘  │    │  FocusChanged [signal] │
+               │           │ mpsc       │    │  CurrentFocus [prop]   │
+               │  ┌────────┴─────────┐  │    └────────────────────────┘
+               │  │ tokio (bg thr.)  │  │
                │  │  D-Bus client    │  │
                │  │  zbus stubs +    │  │
                │  │  signal sub      │  │
@@ -122,7 +116,7 @@ crates/
 │   ├── store/          # DbPool, migrations, schema
 │   ├── platform/       # Platform trait + LinuxPlatform + ManagerClient
 │   ├── dbus/           # org.wellbeing.v1.Controller server + RBAC
-│   ├── tracking/       # domain/ data/ core/ (TrackerActor)
+│   ├── tracking/       # domain/ (FocusState used by blocking)
 │   ├── policy/         # domain/ data/ core/ (PolicyEngine)
 │   ├── categorization/ # data/ core/ (Categorizer + AI fallback)
 │   ├── blocking/       # domain/ overlay/ core/ (EnforcerActor)

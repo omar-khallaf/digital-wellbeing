@@ -38,36 +38,28 @@ pub fn build_dashboard_viewmodel(
     }
 }
 
-/// Build per-day bar chart data from usage entries.
 fn build_bars(usage: &[DailyUsageEntry]) -> Vec<Bar> {
     let mut by_date: BTreeMap<String, f64> = BTreeMap::new();
     for entry in usage {
-        let total_minutes = entry.total_minutes as f64;
-        *by_date.entry(entry.date.clone()).or_insert(0.0) += total_minutes;
+        let total_millis = entry.total_millis as f64;
+        *by_date.entry(entry.date.clone()).or_insert(0.0) += total_millis;
     }
 
     by_date
         .into_iter()
-        .filter_map(|(date_str, total_minutes)| {
+        .filter_map(|(date_str, total_millis)| {
             NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
                 .ok()
-                .map(|date| Bar {
-                    date,
-                    total_minutes,
-                })
+                .map(|date| Bar { date, total_millis })
         })
         .collect()
 }
 
-/// Build per-app pie slices sorted by usage descending.
-fn build_app_slices(
-    usage: &[DailyUsageEntry],
-    app_categories: &[AppCategoryRow],
-) -> Vec<Slice> {
+fn build_app_slices(usage: &[DailyUsageEntry], app_categories: &[AppCategoryRow]) -> Vec<Slice> {
     let mut by_app: HashMap<String, f64> = HashMap::new();
     let mut total: f64 = 0.0;
     for entry in usage {
-        let minutes = entry.total_minutes as f64;
+        let minutes = entry.total_millis as f64;
         *by_app.entry(entry.app_id.clone()).or_insert(0.0) += minutes;
         total += minutes;
     }
@@ -106,7 +98,6 @@ fn build_app_slices(
     slices
 }
 
-/// Build per-category pie slices by cross-referencing usage with categories.
 fn build_category_slices(
     usage: &[DailyUsageEntry],
     categories: &[Category],
@@ -122,13 +113,13 @@ fn build_category_slices(
     let mut by_cat: HashMap<String, (f64, String)> = HashMap::new();
     let mut total: f64 = 0.0;
     for entry in usage {
-        let minutes = entry.total_minutes as f64;
+        let minutes = entry.total_millis as f64;
         let cat_id = app_to_cat.get(entry.app_id.as_str()).copied().unwrap_or(0);
-            let cat_name = cat_map
-                .get(&cat_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| "Uncategorized".into());
-            let entry = by_cat.entry(cat_name).or_insert((0.0, String::new()));
+        let cat_name = cat_map
+            .get(&cat_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Uncategorized".into());
+        let entry = by_cat.entry(cat_name).or_insert((0.0, String::new()));
         entry.0 += minutes;
         total += minutes;
     }
@@ -155,7 +146,6 @@ fn build_category_slices(
     slices
 }
 
-/// Build the top-apps list sorted by total usage descending.
 fn build_top_apps(
     usage: &[DailyUsageEntry],
     app_categories: &[AppCategoryRow],
@@ -175,8 +165,8 @@ fn build_top_apps(
     let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
     let mut grand_total: f64 = 0.0;
     for entry in usage {
-        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_minutes;
-        grand_total += entry.total_minutes as f64;
+        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
+        grand_total += entry.total_millis as f64;
     }
 
     if grand_total <= 0.0 {
@@ -185,18 +175,15 @@ fn build_top_apps(
 
     let mut entries: Vec<AppListEntry> = by_app
         .into_iter()
-        .map(|(app_id, total_minutes)| {
-            let display_name = app_meta
+        .map(|(app_id, total_millis)| {
+            let (display_name, category_color) = app_meta
                 .get(app_id.as_str())
-                .map(|(name, _)| name.to_string())
-                .unwrap_or_else(|| app_id.clone());
-            let category_color = app_meta
-                .get(app_id.as_str())
-                .and_then(|(_, color)| color.clone());
+                .map(|(name, color)| (name.to_string(), color.clone()))
+                .unwrap_or_else(|| (app_id.clone(), None));
             AppListEntry {
                 rank: 0,
-                total_minutes,
-                percentage: (total_minutes as f64 / grand_total) * 100.0,
+                total_millis,
+                percentage: (total_millis as f64 / grand_total) * 100.0,
                 app_id,
                 display_name,
                 category_color,
@@ -205,7 +192,7 @@ fn build_top_apps(
         })
         .collect();
 
-    entries.sort_by_key(|a| std::cmp::Reverse(a.total_minutes));
+    entries.sort_by_key(|a| std::cmp::Reverse(a.total_millis));
     for (i, entry) in entries.iter_mut().enumerate() {
         entry.rank = i + 1;
     }
@@ -216,14 +203,14 @@ fn build_top_apps(
 
 /// Compute the KPI summary for the stat row.
 pub fn compute_kpis(vm: &DashboardViewModel) -> Kpis {
-    let total_minutes: i64 = vm.bar_chart.iter().map(|b| b.total_minutes as i64).sum();
+    let total_millis: i64 = vm.bar_chart.iter().map(|b| b.total_millis as i64).sum();
     let top = vm.top_apps.first();
     Kpis {
-        total_minutes,
+        total_millis,
         top_app: top
             .map(|t| t.display_name.clone())
             .unwrap_or_else(|| "\u{2014}".into()),
-        top_app_minutes: top.map(|t| t.total_minutes).unwrap_or(0),
+        top_app_millis: top.map(|t| t.total_millis).unwrap_or(0),
         active_blocks: vm.block_cards.len(),
     }
 }

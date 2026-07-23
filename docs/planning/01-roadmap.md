@@ -43,8 +43,8 @@ milestones that the phases deliver.
 
 ### Phase C — Daemon actors · `Done`
 
-- [x] `tracking/*`: `TrackerActor`, `HashMap<Uid, FocusState>`,
-      `accumulate_interval()`.
+- [x] `tracking/*`: `FocusState` domain type (used by `EnforcerActor`),
+      daily-usage accumulation via `accumulate_daily_usage`.
 - [x] `policy/*`: `PolicyConfig` enum (`Block`/`TimeLimit`/`Notify`),
       `evaluate()`, `app_state()`, `TimeWindow`.
 - [x] `categorization/*`: `Categorizer` + `AiClassifier` (v1 heuristic),
@@ -53,8 +53,8 @@ milestones that the phases deliver.
       `OverlayConfig`, grant-extension, plugin disconnect/reconnect
       (`features/01-blocking.md`).
 - [x] `reports/*`: aggregate queries for history/export.
-- [x] `main.rs`: wire `TrackerActor` + `EnforcerActor` + event fan-out +
-      `ReactiveNotifier` + D-Bus server + `PowerStateWatcher` + SIGTERM/SIGINT
+- [x] `main.rs`: wire `EnforcerActor` + event fan-out +
+      D-Bus server + `PowerStateWatcher` + SIGTERM/SIGINT
       handler.
 
 ### Phase D — GUI · `Ready`
@@ -110,8 +110,8 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
    `RENDER_PASS_POST_WINDOW` hook →
    `WindowInfo{app_id,title,pid,uid, overlay_shown}` (`features/01-blocking.md`,
    `architecture/04-plugin-ipc.md`).
-2. **Event-driven usage** — `TrackerActor` writes one append-only `events` row
-   per `WindowFocused`/`Unfocused`; `accumulate_interval()` updates
+2. **Event-driven usage** — `EnforcerActor` writes one append-only `events` row
+   per `WindowFocused`/`Unfocused`; `accumulate_daily_usage` updates
    `daily_usage` in the same transaction (`persistence/01-database.md`).
 3. **Idle/Resume + power/session closes** — `ActivityChanged` (FocusActivityTag)
    → `Idle`/`Resumed`; `PowerStateWatcher` (logind) → real
@@ -145,7 +145,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 1. **SQLite (WAL)** — `events` (generated cols + CHECK JSON), `daily_usage`,
    `policies` (exclusive-arc + kind CHECKs), `categories`, `app_categories`;
    initial schema (`persistence/01-database.md`).
-2. **ReactiveNotifier → signals** — `watch` channel drives `BlockStateChanged` /
+2. **Signals** — D-Bus signals `BlockStateChanged` /
    `DailyUsageChanged` / `PolicyMutated` (`architecture/09-state-flow.md`).
 3. **Seeded `app_categories`** — built-in categories + `INSERT OR IGNORE`
    defaults replace `.desktop`/config parsing (`features/02-categorization.md`).

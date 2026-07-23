@@ -4,65 +4,34 @@
 use chrono::Utc;
 use gpui::prelude::*;
 use gpui::*;
-use gpui_component::ActiveTheme;
 use gpui_component::{h_flex, v_flex};
-use wellbeing_core::DateRange;
 
 use crate::chart::{daily_bar_chart, empty_state, pie_chart_panel};
-use crate::components::{card, format_duration, stat_card, time_range_selector};
+use crate::components::{card, format_duration, stat_card};
 use crate::theme::{self, rad, sp};
 
 use super::data::compute_kpis;
 use super::domain::{AppListEntry, BlockCardInfo, DashboardViewModel};
 
 /// Render the complete dashboard view from a ViewModel.
-pub fn render_dashboard_view(
-    cx: &App,
-    vm: &DashboardViewModel,
-    on_range_change: impl Fn(DateRange, &mut App) + 'static,
-) -> impl IntoElement {
-    let date_range_text = format!(
-        "{} \u{2014} {}",
-        vm.date_range.start.format("%b %d"),
-        vm.date_range.end.format("%b %d, %Y"),
-    );
-    let range = vm.date_range;
-
+pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElement {
     let kpis = compute_kpis(vm);
 
     v_flex()
         .gap_4()
         .child(
-            // Sub-header: date range selector + range badge
-            h_flex()
-                .gap_3()
-                .items_center()
-                .child(time_range_selector(cx, range, on_range_change))
-                .child(
-                    div()
-                        .text_xs()
-                        .px(sp::XS)
-                        .py(px(2.0))
-                        .rounded(rad::sm())
-                        .bg(theme::accent(cx))
-                        .text_color(cx.theme().accent_foreground)
-                        .child(date_range_text),
-                ),
-        )
-        // KPI stat row
-        .child(
             h_flex()
                 .gap_4()
                 .child(stat_card(
                     cx,
-                    &format_duration(kpis.total_minutes),
+                    &format_duration(kpis.total_millis),
                     "Total Screen Time",
                     Some(theme::primary(cx)),
                 ))
                 .child(stat_card(
                     cx,
                     &kpis.top_app,
-                    &format!("Top App \u{B7} {}", format_duration(kpis.top_app_minutes)),
+                    &format!("Top App \u{B7} {}", format_duration(kpis.top_app_millis)),
                     Some(theme::secondary(cx)),
                 ))
                 .child(stat_card(
@@ -72,13 +41,11 @@ pub fn render_dashboard_view(
                     Some(theme::danger(cx)),
                 )),
         )
-        // Daily bar chart
         .child(card(
             cx,
             Some("Daily Screen Time"),
             vec![daily_bar_chart(cx, &vm.bar_chart).into_any_element()],
         ))
-        // Two-up: pie by app / pie by category
         .child(
             h_flex()
                 .gap_4()
@@ -93,13 +60,11 @@ pub fn render_dashboard_view(
                     vec![pie_chart_panel(cx, &vm.pie_category, true).into_any_element()],
                 ))),
         )
-        // Top apps
         .child(card(
             cx,
             Some("Top Apps"),
             vec![app_list_panel(cx, &vm.top_apps).into_any_element()],
         ))
-        // Blocked cards
         .when(!vm.block_cards.is_empty(), |el| {
             el.child(card(
                 cx,
@@ -111,8 +76,6 @@ pub fn render_dashboard_view(
             ))
         })
 }
-
-// ── Top apps list ─────────────────────────────────────────────────────────────
 
 fn app_list_panel(cx: &App, entries: &[AppListEntry]) -> AnyElement {
     if entries.is_empty() {
@@ -159,7 +122,7 @@ fn app_list_panel(cx: &App, entries: &[AppListEntry]) -> AnyElement {
                     div()
                         .text_xs()
                         .text_color(blocked_color)
-                        .child(if entry.is_blocked { "BLOCKED" } else { "" }.to_string()),
+                        .child(if entry.is_blocked { "BLOCKED" } else { "" }),
                 )
                 .child(
                     div()
@@ -172,7 +135,7 @@ fn app_list_panel(cx: &App, entries: &[AppListEntry]) -> AnyElement {
                         .text_sm()
                         .font_weight(FontWeight::BOLD)
                         .text_color(theme::text_primary(cx))
-                        .child(format_duration(entry.total_minutes)),
+                        .child(format_duration(entry.total_millis)),
                 )
                 .into_any_element()
         })
@@ -180,8 +143,6 @@ fn app_list_panel(cx: &App, entries: &[AppListEntry]) -> AnyElement {
 
     v_flex().gap_1().children(rows).into_any_element()
 }
-
-// ── Blocked app card ──────────────────────────────────────────────────────────
 
 fn block_card(cx: &App, info: &BlockCardInfo) -> AnyElement {
     let now = Utc::now();
@@ -225,5 +186,3 @@ fn block_card(cx: &App, info: &BlockCardInfo) -> AnyElement {
         )
         .into_any_element()
 }
-
-

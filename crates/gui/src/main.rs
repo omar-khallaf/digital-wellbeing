@@ -4,26 +4,25 @@
 //! 1. Initialize tracing.
 //! 2. Connect to daemon via `DaemonClient` (4-step bus resolution).
 //! 3. Subscribe to daemon signals.
-//! 4. Start background tokio task for signal handling + periodic queries.
+//! 4. Start background tokio task for signal handling + daemon-reconnect resync.
 //! 5. Run gpui application loop.
 //! 6. On daemon unavailable → show warning banner (degraded mode).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::px;
 use gpui::*;
 use gpui_component::{ActiveTheme, Root, theme::Theme};
 use tokio::sync::mpsc;
-use tracing::info;
-use tracing::warn;
+use tracing::{info, warn};
 
 use chrono::{DateTime, Utc};
 use wellbeing_core::DateRange;
 use wellbeing_gui::app::{App, AppState, AppViewModels, RenderMode};
 use wellbeing_gui::dashboard::BlockCardInfo;
 use wellbeing_gui::dbus::{
-    self, CoalescedNotifications, ConnectionStatus, DaemonClient, SignalCoalescer,
+    self, CoalescedNotifications, ConnectionStatus, DaemonClient, DaemonPresenceEvent,
+    SignalCoalescer,
 };
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -44,6 +43,11 @@ async fn main() {
     let (client, signal_rx, coalescer, signal_tx, daemon_available, connection_status) =
         setup_daemon_connection().await;
 
+    // Spawn NameOwnerChanged watchers on both busses for instant daemon
+    // (dis)appearance detection — replaces the 10s polling approach.
+    let presence_rx =
+        dbus::spawn_daemon_name_watch(client.system_connection(), client.session_connection());
+
     let state = Arc::new(tokio::sync::Mutex::new(AppState {
         uid,
         mode,
@@ -58,25 +62,28 @@ async fn main() {
         connection_status,
     }));
 
+    // Populate state cache before GPUI starts so App::new can build initial
+    // ViewModels with real data—no loading-state race.
+    refresh_all_data(&state, &client).await;
+
     // Channel: background loop → GPUI entity (StateFlow-like VM events).
     let (vm_tx, vm_rx) = mpsc::unbounded_channel();
 
-    // Spawn background tokio task for signal handling + periodic refresh.
+    // Spawn background tokio task for signal handling + daemon-reconnect
+    // resync. The initial data population happens above before GPUI starts.
     let bg_state = state.clone();
     let bg_client = client.clone();
-    let vm_tx_clone = vm_tx.clone();
     let bg_coalescer = coalescer.clone();
     let bg_signal_tx = signal_tx.clone();
     tokio::spawn(async move {
-        // Immediate first refresh so the UI doesn't wait 5s for initial data.
-        refresh_and_emit(&bg_state, &bg_client, &vm_tx_clone).await;
         background_loop(
             bg_state,
             bg_client,
             signal_rx,
-            vm_tx_clone,
+            vm_tx,
             bg_coalescer,
             bg_signal_tx,
+            presence_rx,
         )
         .await;
     });
@@ -110,15 +117,20 @@ async fn main() {
 
             // Drain VM events from the background loop and apply them to the
             // App entity — this is the foreground half of the StateFlow.
+            // MUST store the Task handle in the entity — dropping it cancels
+            // the future (including vm_rx) before it ever processes a message.
             let entity = app_view.clone();
-            std::mem::drop(cx.spawn(async move |cx| {
+            let task = cx.spawn(async move |cx| {
                 while let Some(vms) = vm_rx.recv().await {
                     entity.update(cx, |app, cx| {
                         app.apply_viewmodels(vms);
                         cx.notify();
                     });
                 }
-            }));
+            });
+            app_view.update(cx, |app, _cx| {
+                app.set_viewmodel_task(task);
+            });
 
             cx.new(|cx| Root::new(app_view, window, cx).bg(cx.theme().background))
         })
@@ -163,7 +175,7 @@ async fn setup_daemon_connection() -> (
     }
 }
 
-/// Background loop: processes signals + periodic data refresh.
+/// Background loop: processes signals + daemon-reconnect resync.
 /// Builds ViewModels after each refresh and emits them through `vm_tx` to the
 /// GPUI entity — the foreground half of the StateFlow.
 async fn background_loop(
@@ -173,21 +185,15 @@ async fn background_loop(
     vm_tx: mpsc::UnboundedSender<AppViewModels>,
     coalescer: Arc<SignalCoalescer>,
     signal_tx: mpsc::UnboundedSender<CoalescedNotifications>,
+    mut presence_rx: mpsc::UnboundedReceiver<DaemonPresenceEvent>,
 ) {
-    // Periodically refresh data every 5 seconds.
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
-    // Re-resolve the daemon bus every 10s to recover from late-start/restart.
-    let mut resync = tokio::time::interval(Duration::from_secs(10));
-
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                refresh_and_emit(&state, &client, &vm_tx).await;
-            }
-            _ = resync.tick() => {
-                if client.re_resolve_bus().await {
-                    info!("daemon reconnected");
-                    let mut s = state.lock().await;
+            Some(event) = presence_rx.recv() => {
+                let reconnected = client.re_resolve_bus().await;
+                let mut s = state.lock().await;
+                if reconnected {
+                    info!("daemon reconnected after {:?} event", event);
                     s.client = client.clone();
                     s.connection_status = client.connection_status();
                     s.daemon_available = client.connection_status().is_connected();
@@ -200,16 +206,23 @@ async fn background_loop(
                     s.app_category_cache.clear();
                     drop(s);
                     dbus::spawn_signal_listener(&client, coalescer.clone(), signal_tx.clone());
-                    // Refresh immediately so the UI shows data without waiting
-                    // up to 5s for the next periodic tick.
+                    // Refresh immediately so the UI shows data
+                    // without waiting for the next signal.
+                    refresh_and_emit(&state, &client, &vm_tx).await;
+                } else {
+                    // Daemon disappeared — update UI to show disconnected
+                    // state even when no daemon is reachable.
+                    s.client = client.clone();
+                    s.connection_status = client.connection_status();
+                    s.daemon_available = false;
+                    drop(s);
                     refresh_and_emit(&state, &client, &vm_tx).await;
                 }
             }
             Some(notif) = signal_rx.recv() => {
                 // Invalidate D-Bus client caches so the next fetch hits the
-                // daemon instead of serving stale data from the short-lived
-                // ClientCache. The signal coalescer aggregates rapid-fire
-                // signals — we drain it here to keep the atomic flags clean.
+                // daemon instead of serving stale data. The caller (signal
+                // or reconnect) explicitly wants fresh data.
                 if notif.usage {
                     client.invalidate_range_cache();
                 }
@@ -240,7 +253,6 @@ async fn refresh_and_emit(
     });
 }
 
-/// Refresh all cached data from the daemon.
 async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &DaemonClient) {
     let (uid, range) = {
         let s = state.lock().await;
@@ -249,7 +261,6 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
     let start = range.start_str();
     let end = range.end_str();
 
-    // Fetch in parallel using the daemon client.
     let usage_fut = client.get_usage_range(&start, &end, uid);
     let policy_fut = client.list_policies(uid);
     let cat_fut = client.list_categories();

@@ -140,13 +140,11 @@ fn adjust_for_surface(cx: &App, c: Hsla) -> Hsla {
     out
 }
 
-/// Lift a color's lightness by `amount` (clamped to [0,1]).
 fn lift(mut c: Hsla, amount: f32) -> Hsla {
     c.l = (c.l + amount).clamp(0.0, 1.0);
     c
 }
 
-/// Scale a color's alpha.
 fn with_alpha(mut c: Hsla, a: f32) -> Hsla {
     c.a = a.clamp(0.0, 1.0);
     c
@@ -160,7 +158,7 @@ pub fn color_from_str(seed: &str) -> Hsla {
     let hash: u32 = seed
         .bytes()
         .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    let r = ((hash >> 0) & 0xFF) as u8;
+    let r = (hash & 0xFF) as u8;
     let g = ((hash >> 8) & 0xFF) as u8;
     let b = ((hash >> 16) & 0xFF) as u8;
     rgb_to_hsla(r, g, b)

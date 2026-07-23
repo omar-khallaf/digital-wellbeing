@@ -1,8 +1,9 @@
 //! GUI D-Bus client: `DaemonClient` proxy + `SignalCoalescer` + bus selection.
 //!
 //! The GUI never touches SQLite — all data flows through the daemon's D-Bus API
-//! (`org.wellbeing.v1.Daemon`). Responses are cached via `ClientCache` with
-//! stale-while-revalidate semantics.
+//! (`org.wellbeing.v1.Daemon`). Responses are cached via `ClientCache` to
+//! deduplicate repeated D-Bus calls within a single refresh cycle; callers
+//! explicitly invalidate the cache when signals indicate data has changed.
 //!
 //! ## Architecture (06-daemon-dbus.md / 09-state-flow.md)
 //!
@@ -27,6 +28,110 @@ use zbus::Connection;
 use zbus::proxy;
 
 use crate::cache::ClientCache;
+
+// ── Daemon Presence Watch (NameOwnerChanged) ────────────────────────────────
+
+/// Events from NameOwnerChanged watching for the daemon's bus name.
+///
+/// Replaces the 10-second polling approach — the D-Bus daemon pushes
+/// name change signals immediately instead of the GUI polling every 10s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonPresenceEvent {
+    /// Daemon appeared on a bus (new_owner present).
+    Appeared,
+    /// Daemon disappeared from a bus (new_owner absent).
+    Disappeared,
+}
+
+/// Spawn background tasks on both busses watching `NameOwnerChanged` for
+/// `DAEMON_BUS_NAME`. Returns a receiver for presence change events.
+///
+/// Both busses are watched simultaneously so cross-bus restarts (daemon moves
+/// from system to session bus or vice versa) are detected instantly.
+pub fn spawn_daemon_name_watch(
+    sys_conn: &Connection,
+    sess_conn: &Connection,
+) -> mpsc::UnboundedReceiver<DaemonPresenceEvent> {
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    let tx_sys = tx.clone();
+    let sys = sys_conn.clone();
+    let sess = sess_conn.clone();
+    tokio::spawn(async move {
+        name_owner_watch_on_bus(sys, tx_sys).await;
+    });
+    tokio::spawn(async move {
+        name_owner_watch_on_bus(sess, tx).await;
+    });
+
+    rx
+}
+
+/// Watch `NameOwnerChanged` on a single bus connection. Infinite loop with
+/// auto-restart if the stream drops (e.g., bus connection lost temporarily).
+async fn name_owner_watch_on_bus(conn: Connection, tx: mpsc::UnboundedSender<DaemonPresenceEvent>) {
+    #[zbus::proxy(
+        default_service = "org.freedesktop.DBus",
+        default_path = "/org/freedesktop/DBus",
+        interface = "org.freedesktop.DBus"
+    )]
+    trait DBusFdo {
+        #[zbus(signal)]
+        fn name_owner_changed(
+            &self,
+            name: String,
+            old_owner: String,
+            new_owner: String,
+        ) -> zbus::Result<()>;
+    }
+
+    loop {
+        let proxy = match DBusFdoProxy::new(&conn).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(%e, "name watch: failed to create DBus proxy, retrying in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        let mut stream = match proxy.receive_name_owner_changed().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(%e, "name watch: failed to subscribe to NameOwnerChanged, retrying in 1s");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+
+        while let Some(msg) = stream.next().await {
+            match msg.args() {
+                Ok(args) if args.name == DAEMON_BUS_NAME => {
+                    let event = if args.old_owner.is_empty() && !args.new_owner.is_empty() {
+                        DaemonPresenceEvent::Appeared
+                    } else if !args.old_owner.is_empty() && args.new_owner.is_empty() {
+                        DaemonPresenceEvent::Disappeared
+                    } else if !args.old_owner.is_empty() && !args.new_owner.is_empty() {
+                        // Owner changed while still present (daemon reconnected
+                        // on same bus after transient disconnect) — treat as
+                        // appearance so the loop re-resolves and reattaches.
+                        DaemonPresenceEvent::Appeared
+                    } else {
+                        continue;
+                    };
+                    let _ = tx.send(event);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(%e, "name watch: failed to parse NameOwnerChanged args");
+                }
+            }
+        }
+
+        warn!("name watch: NameOwnerChanged stream ended, restarting in 1s");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
 
 // ── Connection status types ──────────────────────────────────────────────────
 
@@ -65,13 +170,11 @@ impl ConnectionStatus {
     default_path = "/org/wellbeing/Controller"
 )]
 trait Daemon {
-    /// ═══ Policy CRUD ═══
     async fn list_policies(&self, filter_owner: u32) -> zbus::Result<Vec<PolicyData>>;
     async fn create_policy(&self, input: PolicyInput) -> zbus::Result<PolicyId>;
     async fn update_policy(&self, id: PolicyId, input: PolicyInput) -> zbus::Result<()>;
     async fn delete_policy(&self, id: PolicyId) -> zbus::Result<()>;
 
-    /// ═══ Usage Data ═══
     async fn get_daily_usage(&self, date: &str, user_id: u32)
     -> zbus::Result<Vec<DailyUsageEntry>>;
     async fn get_usage_range(
@@ -81,16 +184,14 @@ trait Daemon {
         user_id: u32,
     ) -> zbus::Result<Vec<DailySummary>>;
 
-    /// ═══ Categories ═══
     async fn list_categories(&self) -> zbus::Result<Vec<Category>>;
     async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
     async fn set_app_category(&self, app_id: &str, category_id: CategoryId) -> zbus::Result<()>;
 
-    /// ═══ Block State ═══
     #[zbus(property)]
     fn active_blocks(&self) -> zbus::Result<Vec<ActiveBlockEntry>>;
 
-    /// ═══ Signals (non-async — zbus generates receivers) ═══
+    /// Signals (non-async — zbus generates receivers)
     #[zbus(signal)]
     fn block_state_changed(&self) -> zbus::Result<(u32, String, bool, u32)>;
 
@@ -211,10 +312,10 @@ impl DaemonClient {
             sys_conn,
             sess_conn,
             active_conn,
-            range_cache: Arc::new(ClientCache::new(Duration::from_millis(500))),
-            policy_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
-            category_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
-            app_category_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
+            range_cache: Arc::new(ClientCache::new()),
+            policy_cache: Arc::new(ClientCache::new()),
+            category_cache: Arc::new(ClientCache::new()),
+            app_category_cache: Arc::new(ClientCache::new()),
         })
     }
 
@@ -245,10 +346,10 @@ impl DaemonClient {
             sys_conn,
             sess_conn,
             active_conn,
-            range_cache: Arc::new(ClientCache::new(Duration::from_millis(500))),
-            policy_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
-            category_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
-            app_category_cache: Arc::new(ClientCache::new(Duration::from_secs(5))),
+            range_cache: Arc::new(ClientCache::new()),
+            policy_cache: Arc::new(ClientCache::new()),
+            category_cache: Arc::new(ClientCache::new()),
+            app_category_cache: Arc::new(ClientCache::new()),
         }
     }
 
@@ -299,8 +400,6 @@ impl DaemonClient {
         }
     }
 
-    // ── Policy CRUD ──
-
     pub async fn list_policies(&self, filter_owner: u32) -> Result<Vec<PolicyData>> {
         let key = format!("policies:{}", filter_owner);
         if let Some(cached) = self.policy_cache.get(&key) {
@@ -329,8 +428,6 @@ impl DaemonClient {
         Ok(())
     }
 
-    // ── Usage Data ──
-
     pub async fn get_usage_range(
         &self,
         start_date: &str,
@@ -348,8 +445,6 @@ impl DaemonClient {
         self.range_cache.set(key, summaries.clone());
         Ok(summaries)
     }
-
-    // ── Categories ──
 
     pub async fn list_categories(&self) -> Result<Vec<Category>> {
         let key = "categories".into();
@@ -374,8 +469,6 @@ impl DaemonClient {
     pub async fn get_active_blocks(&self) -> Result<Vec<ActiveBlockEntry>> {
         self.proxy.active_blocks().await.map_err(Into::into)
     }
-
-    // ── Cache Invalidation ──
 
     pub fn invalidate_range_cache(&self) {
         self.range_cache.clear();

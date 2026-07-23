@@ -100,17 +100,16 @@ to the next step.
 
 - DB lookups are fast (PK point query) — no separate cache needed.
 - AI results cached in LruCache<AppId, WindowCategory> with 60-second TTL.
-- Cache is invalidated on app_categories INSERT/UPDATE/DELETE via
-  ReactiveNotifier::PolicyMutated.
+- Cache is invalidated on app_categories INSERT/UPDATE/DELETE via PolicyMutated.
 - At startup, the cache is empty — AI classifies apps lazily on first focus.
 
 ### Cache Invalidation
 
 When the user modifies an app's category in the UI, the change is written to
-app_categories in the DB. The ReactiveNotifier broadcasts PolicyMutated, which
-prompts the Categorizer to evict the cached entry for that app_id. The
-categorizer exposes a public invalidate(app_id) method that removes the matching
-key from the LRU cache if present — a no-op for unknown app_ids.
+app_categories in the DB. The daemon broadcasts PolicyMutated, which prompts the
+Categorizer to evict the cached entry for that app_id. The categorizer exposes a
+public invalidate(app_id) method that removes the matching key from the LRU
+cache if present — a no-op for unknown app_ids.
 
 ## Category System
 

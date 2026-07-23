@@ -1,140 +1,91 @@
-//! In-memory stale-while-revalidate cache for D-Bus sourced data.
-//! No SQLite, no persistence — purely in-memory.
+//! In-memory write-through cache for D-Bus sourced data.
+//! No SQLite, no persistence, no expiry — purely in-memory.
 //!
-//! ## TTLs (per 09-state-flow.md)
+//! ## Design
 //!
-//! | Data         | TTL          | Invalidation              |
-//! | ------------ | ------------ | ------------------------- |
-//! | Daily usage  | 500ms        | `DailyUsageChanged`       |
-//! | Policies     | 5s           | `PolicyMutated`           |
-//! | Block states | signal-drive | Never stale (real-time)   |
+//! `ClientCache` is a simple key/value store used to deduplicate D-Bus calls
+//! within a single refresh cycle. Callers explicitly invalidate the cache
+//! (via `invalidate()` or `clear()`) when they know the data has changed —
+//! the cache itself never expires entries on its own.
+//!
+//! | Data         | Invalidation trigger          |
+//! | ------------ | ----------------------------- |
+//! | Daily usage  | `DailyUsageChanged` signal    |
+//! | Policies     | `PolicyMutated` signal        |
+//! | Categories   | `PolicyMutated` signal        |
+//! | Block states | `BlockStateChanged` signal    |
 
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
-/// A cache entry with its fetch timestamp.
-#[derive(Debug, Clone)]
-struct CacheEntry<V> {
-    value: V,
-    fetched_at: Instant,
-}
-
-/// Time-based stale-while-revalidate cache.
+/// Simple in-memory cache with no time-based expiry.
 ///
-/// - `get()` returns `Some(value)` if the entry exists and is fresh (within TTL).
-/// - `get_stale()` returns `Some(value)` even if stale (for stale-while-revalidate).
-/// - `set()` inserts/updates an entry.
-/// - `invalidate()` removes a specific key.
-/// - `clear()` removes all entries.
-///
-/// Thread-safe via `Mutex` — contention is negligible (one render thread + one
-/// tokio thread).
+/// Thread-safe via `Mutex` — contention is negligible (one render thread +
+/// one tokio thread).
 #[derive(Debug)]
 pub struct ClientCache<K: Eq + Hash + Clone, V: Clone> {
-    inner: Mutex<HashMap<K, CacheEntry<V>>>,
-    ttl: Duration,
+    inner: Mutex<HashMap<K, V>>,
+}
+
+impl<K: Eq + Hash + Clone, V: Clone> Default for ClientCache<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<K: Eq + Hash + Clone, V: Clone> ClientCache<K, V> {
-    /// Create a new cache with the given per-entry TTL.
-    pub fn new(ttl: Duration) -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
-            ttl,
         }
     }
 
-    /// Returns cached value if fresh (elapsed < TTL), or `None` if stale/missing.
     pub fn get(&self, key: &K) -> Option<V> {
-        let map = self.inner.lock().unwrap();
-        match map.get(key) {
-            Some(entry) if entry.fetched_at.elapsed() < self.ttl => Some(entry.value.clone()),
-            _ => None,
-        }
+        self.inner.lock().unwrap().get(key).cloned()
     }
 
-    /// Returns cached value even if stale (for stale-while-revalidate pattern).
-    /// Returns `None` only if the key is missing entirely.
-    pub fn get_stale(&self, key: &K) -> Option<V> {
-        let map = self.inner.lock().unwrap();
-        map.get(key).map(|e| e.value.clone())
-    }
-
-    /// Returns true if the key exists and is fresh.
-    pub fn is_fresh(&self, key: &K) -> bool {
-        let map = self.inner.lock().unwrap();
-        map.get(key)
-            .is_some_and(|e| e.fetched_at.elapsed() < self.ttl)
-    }
-
-    /// Insert or update a cache entry (resets its fetch timestamp).
     pub fn set(&self, key: K, value: V) {
-        let mut map = self.inner.lock().unwrap();
-        map.insert(
-            key,
-            CacheEntry {
-                value,
-                fetched_at: Instant::now(),
-            },
-        );
+        self.inner.lock().unwrap().insert(key, value);
     }
 
-    /// Remove a specific key from the cache.
     pub fn invalidate(&self, key: &K) {
-        let mut map = self.inner.lock().unwrap();
-        map.remove(key);
+        self.inner.lock().unwrap().remove(key);
     }
 
-    /// Clear all entries.
     pub fn clear(&self) {
-        let mut map = self.inner.lock().unwrap();
-        map.clear();
+        self.inner.lock().unwrap().clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread::sleep;
 
     #[test]
     fn test_get_and_set() {
-        let cache: ClientCache<String, i32> = ClientCache::new(Duration::from_secs(10));
+        let cache: ClientCache<String, i32> = ClientCache::new();
         cache.set("key1".into(), 42);
         assert_eq!(cache.get(&"key1".into()), Some(42));
     }
 
     #[test]
     fn test_missing_key() {
-        let cache: ClientCache<String, i32> = ClientCache::new(Duration::from_secs(10));
+        let cache: ClientCache<String, i32> = ClientCache::new();
         assert_eq!(cache.get(&"nonexistent".into()), None);
     }
 
     #[test]
-    fn test_stale_entry() {
-        let cache: ClientCache<String, i32> = ClientCache::new(Duration::from_millis(10));
-        cache.set("key1".into(), 42);
-        sleep(Duration::from_millis(20));
-        // Fresh get should return None
-        assert_eq!(cache.get(&"key1".into()), None);
-        // Stale get should still return the value
-        assert_eq!(cache.get_stale(&"key1".into()), Some(42));
-    }
-
-    #[test]
     fn test_invalidate() {
-        let cache: ClientCache<String, i32> = ClientCache::new(Duration::from_secs(10));
+        let cache: ClientCache<String, i32> = ClientCache::new();
         cache.set("key1".into(), 42);
         cache.invalidate(&"key1".into());
         assert_eq!(cache.get(&"key1".into()), None);
-        assert_eq!(cache.get_stale(&"key1".into()), None);
     }
 
     #[test]
     fn test_clear() {
-        let cache: ClientCache<String, i32> = ClientCache::new(Duration::from_secs(10));
+        let cache: ClientCache<String, i32> = ClientCache::new();
         cache.set("a".into(), 1);
         cache.set("b".into(), 2);
         cache.clear();

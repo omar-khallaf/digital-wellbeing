@@ -29,7 +29,7 @@ directories under docs/ and link back here for shared context:
 - docs/features/ — per-feature design: 01-blocking (overlay-only enforcement),
   02-categorization (DB-first categories + AI fallback), and 03-ui-design (gpui
   screens, component mapping, view models).
-- docs/persistence/ — SQLite schema, migration policy, and the per-event / bulk
+- docs/persistence/ — SQLite schema, migration policy, and the buffered flush
   write strategy.
 - docs/quality/ — cross-cutting engineering: performance budget and testing
   philosophy.

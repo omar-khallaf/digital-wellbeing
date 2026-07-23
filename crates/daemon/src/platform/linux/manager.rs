@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use futures::StreamExt;
 
 use tracing::{error, info, warn};
+
+use crate::platform::PlatformEvent;
 use wellbeing_core::{
     AppId, PluginInstanceId, Uid,
     dbus_constants::{
@@ -14,15 +16,17 @@ use wellbeing_core::{
 use zbus::proxy;
 use zvariant::OwnedValue;
 
-use crate::platform::PlatformEvent;
-
 #[proxy(
     interface = "org.wellbeing.v1.Manager",
     default_path = "/org/wellbeing/Manager"
 )]
 pub trait Manager {
-    #[zbus(property)]
-    fn current_session(&self) -> zbus::Result<OwnedValue>;
+    /// Current focus (property `CurrentFocus` on the wire).
+    ///
+    /// Returns the same variant encoding as `FocusChanged` — either
+    /// `U32(0)` for desktop (no app) or a `Structure` with app fields.
+    #[zbus(property, name = "CurrentFocus")]
+    fn current_focus(&self) -> zbus::Result<OwnedValue>;
 
     #[zbus(signal)]
     fn user_action(&self, app_id: &str, action: u32) -> zbus::Result<()>;
@@ -152,9 +156,9 @@ impl PluginRegistry {
                     Some(signal) = activity_stream.next() => {
                         if let Ok(args) = signal.args() {
                             let event = if args.tag == ACTIVITY_TAG_IDLE {
-                                PlatformEvent::Idle
+                                PlatformEvent::IdleActivity
                             } else {
-                                PlatformEvent::Resumed
+                                PlatformEvent::ResumedActivity
                             };
                             tx.send(event).await.ok();
                         }
@@ -175,6 +179,70 @@ impl PluginRegistry {
         });
 
         Some(rx)
+    }
+}
+
+impl PluginRegistry {
+    /// Query the `CurrentFocus` property from every registered plugin.
+    ///
+    /// Returns the first [`PlatformEvent::WindowFocused`] whose variant
+    /// carries an app window, or `None` when all plugins report desktop
+    /// focus (no app) or are unreachable.
+    pub async fn query_current_focus(&self) -> Option<PlatformEvent> {
+        for (instance_id, client) in &self.clients {
+            let val = match client.proxy.current_focus().await {
+                Ok(v) => v,
+                Err(e) => {
+                    error!(
+                        plugin = %instance_id.as_ref(),
+                        uid = ?client.uid,
+                        error = %e,
+                        "query_current_focus failed"
+                    );
+                    continue;
+                }
+            };
+            let v: zvariant::Value = val.into();
+            // D-Bus properties always carry a variant wrapper (sig `v`).
+            let v = match v {
+                zvariant::Value::Value(boxed) => *boxed,
+                other => other,
+            };
+            match v {
+                zvariant::Value::U32(FOCUS_TAG_DESKTOP) => {
+                    continue;
+                }
+                zvariant::Value::Structure(s) if s.fields().len() >= FOCUS_STRUCT_FIELD_COUNT => {
+                    let f = s.fields();
+                    if let (
+                        zvariant::Value::U32(FOCUS_TAG_APP),
+                        zvariant::Value::Str(app_id),
+                        zvariant::Value::Str(title),
+                        zvariant::Value::U32(pid),
+                        zvariant::Value::U32(uid),
+                        zvariant::Value::Bool(overlay),
+                    ) = (
+                        &f[FOCUS_FIELD_TAG],
+                        &f[FOCUS_FIELD_APP_ID],
+                        &f[FOCUS_FIELD_TITLE],
+                        &f[FOCUS_FIELD_PID],
+                        &f[FOCUS_FIELD_UID],
+                        &f[FOCUS_FIELD_OVERLAY],
+                    ) && let Ok(aid) = AppId::new(app_id.as_str())
+                    {
+                        return Some(PlatformEvent::WindowFocused {
+                            app_id: aid,
+                            title: wellbeing_core::WindowTitle::new(title.as_str()),
+                            pid: wellbeing_core::Pid(*pid),
+                            uid: wellbeing_core::Uid(*uid),
+                            overlay_shown: *overlay,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 

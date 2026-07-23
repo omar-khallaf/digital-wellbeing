@@ -8,7 +8,6 @@ use gpui::*;
 use gpui_component::chart::{BarChart, PieChart};
 use gpui_component::{h_flex, v_flex};
 
-use gpui_component::scroll::ScrollableElement as _;
 use crate::components::format_duration;
 use crate::theme::{self, color_from_str, rad, sp};
 
@@ -16,7 +15,7 @@ use crate::theme::{self, color_from_str, rad, sp};
 #[derive(Debug, Clone)]
 pub struct Bar {
     pub date: NaiveDate,
-    pub total_minutes: f64,
+    pub total_millis: f64,
 }
 
 /// One slice in a usage breakdown pie chart.
@@ -41,12 +40,21 @@ pub fn daily_bar_chart(cx: &App, bars: &[Bar]) -> AnyElement {
         .child(
             BarChart::new(bars.to_vec())
                 .band(|b: &Bar| b.date.format("%m/%d").to_string())
-                .value(|b: &Bar| b.total_minutes)
-                .label(|b: &Bar| SharedString::from(format_duration(b.total_minutes as i64)))
+                .value(|b: &Bar| b.total_millis)
+                .label(|b: &Bar| SharedString::from(format_duration(b.total_millis as i64)))
                 .fill(move |_b, _bar, _chart, _align| accent)
                 .label_axis(true),
         )
         .into_any_element()
+}
+
+/// Return the best display label for a slice: display_name if non-empty, else app_id.
+fn slice_label(s: &Slice) -> &str {
+    if s.display_name.is_empty() {
+        &s.app_id
+    } else {
+        &s.display_name
+    }
 }
 
 /// Render a donut pie chart with optional legend below it.
@@ -75,12 +83,7 @@ pub fn pie_chart_panel(cx: &App, slices: &[Slice], show_legend: bool) -> AnyElem
                 .inner_radius(45.)
                 .outer_radius(80.)
                 .label(|s: &Slice| {
-                    let display = if s.display_name.is_empty() {
-                        &s.app_id
-                    } else {
-                        &s.display_name
-                    };
-                    SharedString::from(format!("{} {:.0}%", display, s.percentage))
+                    SharedString::from(format!("{} {:.0}%", slice_label(s), s.percentage))
                 }),
         )
         .into_any_element();
@@ -89,29 +92,34 @@ pub fn pie_chart_panel(cx: &App, slices: &[Slice], show_legend: bool) -> AnyElem
         return chart;
     }
 
-    let legend = v_flex()
-        .gap_1()
-        .h(px(100.0))
-        .overflow_y_scrollbar()
-        .children(slices.iter().map(|s| {
+    let legend_items: Vec<AnyElement> = slices
+        .iter()
+        .map(|s| {
             let color = color_from_str(&s.display_name);
-            let display = if s.display_name.is_empty() {
-                &s.app_id
-            } else {
-                &s.display_name
-            };
             h_flex()
                 .gap_2()
                 .items_center()
+                .w_full()
                 .child(div().size(px(10.0)).rounded(rad::full()).bg(color))
                 .child(
                     div()
+                        .flex_1()
+                        .overflow_x_hidden()
                         .text_xs()
                         .text_color(theme::chart_text(cx))
-                        .child(format!("{}  {:.0}%", display, s.percentage)),
+                        .child(format!("{}  {:.0}%", slice_label(s), s.percentage)),
                 )
                 .into_any_element()
-        }))
+        })
+        .collect();
+
+    let legend = div()
+        .id("chart-legend")
+        .w_full()
+        .max_h(px(110.0))
+        .overflow_y_scroll()
+        .overflow_x_hidden()
+        .child(v_flex().gap_1().children(legend_items))
         .into_any_element();
 
     v_flex()

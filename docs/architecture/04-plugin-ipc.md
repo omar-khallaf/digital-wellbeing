@@ -123,6 +123,9 @@ exposes it via the ActivityChanged D-Bus signal on org.wellbeing.v1.Manager. The
 daemon subscribes and maps Idle -> Idle (pause), Resumed -> Resumed (unpause)
 PlatformEvents.
 
+Tracked time includes idle spans. Idle/Resumed only affect the GUI's idle
+breakdown display, not daily usage or limit enforcement.
+
 Key points:
 
 - Idle/Resumed carry no app_id; the app they pause is the open interval from the

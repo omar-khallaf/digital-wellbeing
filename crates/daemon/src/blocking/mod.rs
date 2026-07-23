@@ -21,9 +21,11 @@
 //! the plugin directly — the plugin reads daemon state and manages its own
 //! overlays.
 
+mod buffer;
 mod core;
-mod data;
+pub mod data;
 mod domain;
+mod overlay;
 
 pub use core::*;
 pub use domain::*;

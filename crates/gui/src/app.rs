@@ -13,6 +13,7 @@ use gpui_component::ActiveTheme;
 use gpui_component::h_flex;
 use gpui_component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
 use gpui_component::scroll::ScrollableElement as _;
+use gpui_component::spinner::Spinner;
 use gpui_component::theme::Theme;
 use gpui_component::v_flex;
 use nix::unistd::Uid;
@@ -117,50 +118,82 @@ pub struct App {
     pub(crate) time_limit_input: Option<Entity<InputState>>,
     pub(crate) extra_secs_input: Option<Entity<InputState>>,
     pub(crate) app_id_input: Option<Entity<InputState>>,
+    /// Custom date range picker state.
+    pub(crate) show_custom_range: bool,
+    pub(crate) custom_start_input: Option<Entity<InputState>>,
+    pub(crate) custom_end_input: Option<Entity<InputState>>,
+    /// Held gpui Task that drains ViewModels from the background signal loop.
+    /// Kept alive for the entity's lifetime — dropping it would cancel the task.
+    pub(crate) viewmodel_task: Option<gpui::Task<()>>,
+    /// Held gpui Task for in-flight policy save/delete operations.
+    /// Kept alive until the D-Bus call completes — dropping it would cancel.
+    pub(crate) policy_task: Option<gpui::Task<()>>,
 }
 
 impl App {
     pub fn new(state: Arc<tokio::sync::Mutex<AppState>>) -> Self {
-        let is_admin = state.try_lock().map(|s| s.mode.is_admin()).unwrap_or(false);
-        let default_range = DateRange::last_n_days(1);
+        // Build initial ViewModels from the (already-populated) state cache so
+        // the first render shows real data instead of a loading spinner. Falls
+        // back to None if the lock is contended (should never happen at init).
+        let (dashboard_vm, policies_vm, reports_vm) = if let Ok(s) = state.try_lock() {
+            let db_vm = dashboard::build_dashboard_viewmodel(
+                s.selected_range,
+                &s.range_cache,
+                &s.category_cache,
+                &s.app_category_cache,
+                s.block_cards.clone(),
+            );
+            let pol_vm = policies::build_policies_viewmodel(
+                &s.policy_cache,
+                &s.category_cache,
+                &[],
+                s.mode.is_admin(),
+            );
+            let rep_vm = reports::build_reports_viewmodel(
+                s.selected_range,
+                &s.range_cache,
+                &s.category_cache,
+                &s.app_category_cache,
+            );
+            (Some(db_vm), Some(pol_vm), Some(rep_vm))
+        } else {
+            (None, None, None)
+        };
+
         Self {
             active_tab: Tab::Dashboard,
             state,
-            dashboard_vm: Some(dashboard::DashboardViewModel {
-                date_range: default_range,
-                bar_chart: Vec::new(),
-                pie_app: Vec::new(),
-                pie_category: Vec::new(),
-                top_apps: Vec::new(),
-                block_cards: Vec::new(),
-            }),
-            policies_vm: Some(policies::PoliciesViewModel {
-                app_list: Vec::new(),
-                selected_policy: None,
-                categories: Vec::new(),
-                policies: Vec::new(),
-                validation_errors: Vec::new(),
-                is_admin,
-            }),
-            reports_vm: Some(reports::ReportsViewModel {
-                date_range: default_range,
-                bar_chart: Vec::new(),
-                pie_app: Vec::new(),
-                total_minutes: 0,
-                top_app: String::new(),
-            }),
+            dashboard_vm,
+            policies_vm,
+            reports_vm,
             policy_edit: None,
             policy_edit_id: None,
             last_synced_policy_edit_id: None,
             time_limit_input: None,
             extra_secs_input: None,
             app_id_input: None,
+            show_custom_range: false,
+            custom_start_input: None,
+            custom_end_input: None,
+            viewmodel_task: None,
+            policy_task: None,
         }
     }
 
     pub fn switch_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.active_tab = tab;
         cx.notify();
+    }
+
+    /// Store a gpui Task handle to keep it alive. Dropping a Task cancels the
+    /// underlying future — the handle must outlive the operation.
+    pub fn set_viewmodel_task(&mut self, task: gpui::Task<()>) {
+        self.viewmodel_task = Some(task);
+    }
+
+    /// Store a policy Task handle (save/delete) to keep it alive.
+    pub fn set_policy_task(&mut self, task: gpui::Task<()>) {
+        self.policy_task = Some(task);
     }
 
     /// Apply ViewModels received from the background refresh channel.
@@ -227,6 +260,23 @@ impl App {
             .unwrap_or_else(|_| "Unknown".into())
     }
 
+    /// Create or reset InputState entities for the custom date range inputs.
+    /// Should be called from render() where &mut Window is available.
+    pub(crate) fn ensure_custom_range_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.custom_start_input.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD"));
+            self.custom_start_input = Some(entity);
+        }
+        if self.custom_end_input.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD"));
+            self.custom_end_input = Some(entity);
+        }
+    }
+
     /// Create or reset InputState entities for the policy editor fields.
     /// Should be called from render() where &mut Window is available.
     pub(crate) fn ensure_policy_editor_inputs(
@@ -234,14 +284,13 @@ impl App {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.policy_edit.is_none() {
+        let Some((_, form)) = &self.policy_edit else {
             self.time_limit_input = None;
             self.extra_secs_input = None;
             self.app_id_input = None;
             return;
-        }
-        let form = self.policy_edit.as_ref().map(|(_, f)| f.clone());
-        let Some(form) = form else { return };
+        };
+        let form = form.clone();
 
         let needs_sync = self.last_synced_policy_edit_id != self.policy_edit_id;
         if needs_sync {
@@ -374,8 +423,9 @@ impl App {
 /// Top-level app view.
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Lazily create policy editor input entities.
+        // Lazily create policy editor and custom date range input entities.
         self.ensure_policy_editor_inputs(window, cx);
+        self.ensure_custom_range_inputs(window, cx);
 
         let mode = self.mode_label();
         let active = self.active_tab;
@@ -406,6 +456,7 @@ fn sidebar(
     entity: Entity<App>,
 ) -> AnyElement {
     let items = Tab::all();
+    let conn_label = app.connection_status_label();
     v_flex()
         .w(px(220.0))
         .h_full()
@@ -462,8 +513,7 @@ fn sidebar(
                         .gap_2()
                         .items_center()
                         .child(div().size(px(8.0)).rounded(rad::full()).bg({
-                            let status = app.connection_status_label();
-                            if status.starts_with("Connected") {
+                            if conn_label.starts_with("Connected") {
                                 success(cx)
                             } else {
                                 danger(cx)
@@ -473,7 +523,7 @@ fn sidebar(
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().sidebar_foreground)
-                                .child(app.connection_status_label()),
+                                .child(conn_label.clone()),
                         ),
                 )
                 // ── Mode badge ────────────────────────────────────────
@@ -636,7 +686,123 @@ fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
 impl App {
     fn content_area(&mut self, cx: &mut Context<Self>, active_tab: Tab) -> AnyElement {
         let state = self.state.clone();
-        let weak_app = cx.entity().downgrade();
+        let show_custom = self.show_custom_range;
+        let custom_start = self.custom_start_input.clone();
+        let custom_end = self.custom_end_input.clone();
+        let app_entity = cx.entity();
+
+        // Factory that creates a range-change callback bound to an entity.
+        let make_on_range = |app_entity: Entity<Self>| {
+            let state = state.clone();
+            move |new_range: DateRange, gpui_app: &mut gpui::App| {
+                let state = state.clone();
+                let entity = app_entity.clone();
+
+                // IMMEDIATE: rebuild reports ViewModel from existing cache so the
+                // range label updates right away (no waiting for D-Bus round-trip).
+                if let Ok(s) = state.try_lock() {
+                    let rep_vm = crate::reports::build_reports_viewmodel(
+                        new_range,
+                        &s.range_cache,
+                        &s.category_cache,
+                        &s.app_category_cache,
+                    );
+                    entity.update(gpui_app, |app, cx| {
+                        app.reports_vm = Some(rep_vm);
+                        app.show_custom_range = false;
+                        cx.notify();
+                    });
+                }
+
+                // ASYNC: Update persistent state + fetch fresh data in background.
+                std::mem::drop(gpui::App::spawn(gpui_app, async move |cx| {
+                    // 1. Update selected range
+                    state.lock().await.selected_range = new_range;
+
+                    // 2. Fetch fresh usage data for the new range
+                    let uid;
+                    let start;
+                    let end;
+                    let client;
+                    {
+                        let s = state.lock().await;
+                        uid = s.uid;
+                        start = s.selected_range.start_str();
+                        end = s.selected_range.end_str();
+                        client = s.client.clone();
+                    }
+                    client.invalidate_range_cache();
+                    if client.connection_status().is_connected()
+                        && let Ok(entries) = client.get_usage_range(&start, &end, uid).await
+                    {
+                        state.lock().await.range_cache = entries;
+                    }
+
+                    // 3. Rebuild ViewModels from updated cache. Also close custom
+                    //    mode so preset buttons highlight on next render. This runs
+                    //    in a single entity update — no race with toggle_custom.
+                    let (db, pol, rep) = App::refresh_viewmodels(&state).await;
+                    entity.update(cx, |app, cx| {
+                        app.apply_viewmodels(AppViewModels {
+                            dashboard: db,
+                            policies: pol,
+                            reports: rep,
+                        });
+                        app.show_custom_range = false;
+                        cx.notify();
+                    });
+                }));
+            }
+        };
+
+        let toggle_custom = {
+            let state = state.clone();
+            let entity = app_entity.clone();
+            move |app: &mut gpui::App| {
+                let was_custom = entity.read(app).show_custom_range;
+
+                // Toggle synchronously.
+                entity.update(app, |this, cx| {
+                    this.show_custom_range = !this.show_custom_range;
+                    cx.notify();
+                });
+
+                // Toggling OFF → revert to Today + refresh data.
+                if was_custom {
+                    let state = state.clone();
+                    let entity = entity.clone();
+                    std::mem::drop(gpui::App::spawn(app, async move |cx| {
+                        state.lock().await.selected_range = DateRange::last_n_days(1);
+
+                        let (uid, start, end, client) = {
+                            let s = state.lock().await;
+                            (
+                                s.uid,
+                                s.selected_range.start_str(),
+                                s.selected_range.end_str(),
+                                s.client.clone(),
+                            )
+                        };
+                        client.invalidate_range_cache();
+                        if client.connection_status().is_connected()
+                            && let Ok(entries) = client.get_usage_range(&start, &end, uid).await
+                        {
+                            state.lock().await.range_cache = entries;
+                        }
+
+                        let (db, pol, rep) = App::refresh_viewmodels(&state).await;
+                        entity.update(cx, |app, cx| {
+                            app.apply_viewmodels(AppViewModels {
+                                dashboard: db,
+                                policies: pol,
+                                reports: rep,
+                            });
+                            cx.notify();
+                        });
+                    }));
+                }
+            }
+        };
 
         div()
             .flex_1()
@@ -644,60 +810,21 @@ impl App {
             .overflow_y_scrollbar()
             .p(sp::LG)
             .child(match active_tab {
-                Tab::Dashboard => {
-                    let state = state.clone();
-                    let weak_app = weak_app.clone();
-                    dashboard_content(cx, &self.dashboard_vm, move |new_range: DateRange, app| {
-                        let state = state.clone();
-                        let weak_app = weak_app.clone();
-                        app.spawn(async move |cx| {
-                            state.lock().await.selected_range = new_range;
-                            let (db, pol, rep) = App::refresh_viewmodels(&state).await;
-                            let vms = AppViewModels {
-                                dashboard: db,
-                                policies: pol,
-                                reports: rep,
-                            };
-                            weak_app
-                                .update(cx, |app, cx| {
-                                    app.apply_viewmodels(vms);
-                                    cx.notify();
-                                })
-                                .ok();
-                        })
-                        .detach();
-                    })
-                    .into_any_element()
-                }
+                Tab::Dashboard => dashboard_content(cx, &self.dashboard_vm).into_any_element(),
                 Tab::Policies => {
                     let vm = self.policies_vm.clone();
                     self.policies_content(cx, &vm).into_any_element()
                 }
-                Tab::Reports => {
-                    let state = state.clone();
-                    let weak_app = weak_app.clone();
-                    reports_content(cx, &self.reports_vm, move |new_range: DateRange, app| {
-                        let state = state.clone();
-                        let weak_app = weak_app.clone();
-                        app.spawn(async move |cx| {
-                            state.lock().await.selected_range = new_range;
-                            let (db, pol, rep) = App::refresh_viewmodels(&state).await;
-                            let vms = AppViewModels {
-                                dashboard: db,
-                                policies: pol,
-                                reports: rep,
-                            };
-                            weak_app
-                                .update(cx, |app, cx| {
-                                    app.apply_viewmodels(vms);
-                                    cx.notify();
-                                })
-                                .ok();
-                        })
-                        .detach();
-                    })
-                    .into_any_element()
-                }
+                Tab::Reports => reports_content(
+                    cx,
+                    &self.reports_vm,
+                    show_custom,
+                    custom_start.clone(),
+                    custom_end.clone(),
+                    make_on_range(app_entity.clone()),
+                    toggle_custom.clone(),
+                )
+                .into_any_element(),
             })
             .into_any_element()
     }
@@ -709,7 +836,7 @@ impl App {
     ) -> impl IntoElement {
         match vm.as_ref() {
             Some(vm) => self.render_policies(cx, vm).into_any_element(),
-            None => loading_state(cx, "Loading policies…").into_any_element(),
+            None => loading_state(cx).into_any_element(),
         }
     }
 }
@@ -717,37 +844,44 @@ impl App {
 fn dashboard_content(
     cx: &gpui::App,
     vm: &Option<dashboard::DashboardViewModel>,
-    on_range_change: impl Fn(DateRange, &mut gpui::App) + 'static,
 ) -> impl IntoElement {
     match vm.as_ref() {
-        Some(vm) => dashboard::render_dashboard_view(cx, vm, on_range_change).into_any_element(),
-        None => loading_state(cx, "Loading dashboard…").into_any_element(),
+        Some(vm) => dashboard::render_dashboard_view(cx, vm).into_any_element(),
+        None => loading_state(cx).into_any_element(),
     }
 }
 
 fn reports_content(
     cx: &gpui::App,
     vm: &Option<reports::ReportsViewModel>,
-    on_range_change: impl Fn(DateRange, &mut gpui::App) + 'static,
+    show_custom: bool,
+    custom_start: Option<Entity<InputState>>,
+    custom_end: Option<Entity<InputState>>,
+    on_preset: impl Fn(DateRange, &mut gpui::App) + 'static,
+    on_toggle_custom: impl Fn(&mut gpui::App) + 'static,
 ) -> impl IntoElement {
     match vm.as_ref() {
-        Some(vm) => reports::render_reports_view(cx, vm, on_range_change).into_any_element(),
-        None => loading_state(cx, "Loading reports…").into_any_element(),
+        Some(vm) => reports::render_reports_view(
+            cx,
+            vm,
+            show_custom,
+            custom_start,
+            custom_end,
+            on_preset,
+            on_toggle_custom,
+        )
+        .into_any_element(),
+        None => loading_state(cx).into_any_element(),
     }
 }
 
-/// Centered placeholder shown while a ViewModel is being built.
-fn loading_state(cx: &gpui::App, message: &str) -> AnyElement {
+/// Centered spinner shown while content is loading.
+fn loading_state(cx: &gpui::App) -> AnyElement {
     v_flex()
         .h_full()
         .items_center()
         .justify_center()
         .gap_2()
-        .child(
-            div()
-                .text_base()
-                .text_color(text_secondary(cx))
-                .child(message.to_string()),
-        )
+        .child(Spinner::new().color(cx.theme().primary))
         .into_any_element()
 }

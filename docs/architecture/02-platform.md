@@ -50,13 +50,13 @@ plugin reads the D-Bus property independently.
 Platform events are the sole input to the system state machine. No platform
 knowledge leaks beyond PlatformEvent.
 
-| Event         | Fields                                   | Source                                                    | Consumer                                                         |
-| ------------- | ---------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------- |
-| WindowFocused | {app_id, title, pid, uid, overlay_shown} | Plugin FocusChanged signal                                | EnforcerActor (policy evaluation), TrackerActor (session timing) |
-| Unfocused     | —                                        | Plugin FocusChanged signal (Desktop variant)              | EnforcerActor (close interval)                                   |
-| Idle          | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Idle)    | EnforcerActor (pause interval)                                   |
-| Resumed       | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Resumed) | EnforcerActor (resume interval)                                  |
-| UserAction    | {app_id, action}                         | Plugin UserAction signal                                  | EnforcerActor (grant extension / close overlay)                  |
+| Event         | Fields                                   | Source                                                    | Consumer                                             |
+| ------------- | ---------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------- |
+| WindowFocused | {app_id, title, pid, uid, overlay_shown} | Plugin FocusChanged signal                                | EnforcerActor (policy evaluation, interval tracking) |
+| Unfocused     | —                                        | Plugin FocusChanged signal (Desktop variant)              | EnforcerActor (close interval)                       |
+| Idle          | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Idle)    | EnforcerActor (pause interval)                       |
+| Resumed       | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Resumed) | EnforcerActor (resume interval)                      |
+| UserAction    | {app_id, action}                         | Plugin UserAction signal                                  | EnforcerActor (grant extension / close overlay)      |
 
 Locked, LoggedOut, Slept, and ShutDown are not PlatformEvent variants. They are
 emitted directly into the event log by the session / power watcher

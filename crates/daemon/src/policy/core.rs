@@ -16,10 +16,11 @@ pub fn app_state(usage: (i64, bool), policy: &PolicyConfig) -> TrackedApp {
             extra_minutes,
             ..
         } => {
+            // usage.0 is already in minutes (converted from ms at policy boundary)
             let app = if usage.1 {
-                TimeLimitedApp::Extended(usage.0, (*time_limit_minutes + *extra_minutes) * 60)
+                TimeLimitedApp::Extended(usage.0, *time_limit_minutes + *extra_minutes)
             } else {
-                TimeLimitedApp::Normal(usage.0, *time_limit_minutes * 60)
+                TimeLimitedApp::Normal(usage.0, *time_limit_minutes)
             };
             TrackedApp::TimeLimited(app)
         }
@@ -27,7 +28,7 @@ pub fn app_state(usage: (i64, bool), policy: &PolicyConfig) -> TrackedApp {
             time_limit_minutes, ..
         } => TrackedApp::TimeTracked(TimeTrackedApp {
             used: usage.0,
-            limit: *time_limit_minutes * 60,
+            limit: *time_limit_minutes,
         }),
     }
 }
@@ -160,180 +161,31 @@ pub fn filter_policies_by_schedule(policies: Vec<Policy>, now: DateTime<Utc>) ->
 
 #[cfg(test)]
 mod tests {
-    use wellbeing_core::{AppId, CategoryId, PolicyId, PolicyKind, TimeWindow};
+    use wellbeing_core::{AppId, CategoryId, PolicyId, TimeWindow};
 
     use super::*;
 
-    fn make_policy(id: i64, kind: PolicyKind, app: bool, limit: Option<i64>) -> PolicyConfig {
-        let app_id = if app {
-            Some(AppId::new("test.app").unwrap())
-        } else {
-            None
-        };
-        let category_id = if app { None } else { Some(CategoryId(1)) };
-        match kind {
-            PolicyKind::Block => PolicyConfig::Block {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                active: true,
-            },
-            PolicyKind::TimeLimit => PolicyConfig::TimeLimit {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                time_limit_minutes: limit.unwrap_or(60),
-                extra_minutes: 300,
-                active: true,
-            },
-            PolicyKind::Notify => PolicyConfig::Notify {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                time_limit_minutes: limit.unwrap_or(60),
-                notification_repeat_interval_minutes: None,
-                active: true,
-            },
-        }
-    }
-
-    fn make_policy_full(
-        id: i64,
-        kind: PolicyKind,
-        app: bool,
-        limit: Option<i64>,
-        extra: i64,
-        repeat: Option<i64>,
-        active: bool,
-    ) -> PolicyConfig {
-        let app_id = if app {
-            Some(AppId::new("test.app").unwrap())
-        } else {
-            None
-        };
-        let category_id = if app { None } else { Some(CategoryId(1)) };
-        match kind {
-            PolicyKind::Block => PolicyConfig::Block {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                active,
-            },
-            PolicyKind::TimeLimit => PolicyConfig::TimeLimit {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                time_limit_minutes: limit.unwrap_or(60),
-                extra_minutes: extra,
-                active,
-            },
-            PolicyKind::Notify => PolicyConfig::Notify {
-                id: PolicyId(id),
-                app_id,
-                category_id,
-                time_limit_minutes: limit.unwrap_or(60),
-                notification_repeat_interval_minutes: repeat,
-                active,
-            },
-        }
-    }
-
-    fn make_domain_policy(
-        id: i64,
-        name: &str,
-        action: PolicyKind,
-        app_id: &str,
-        cat_id: i64,
-        limit: i64,
-        extra: i64,
-        repeat: i64,
-        schedule_start_hour: Option<u8>,
-        schedule_end_hour: Option<u8>,
-        schedule_days: &[u8],
-        active: bool,
-    ) -> Policy {
-        let time_windows = match (schedule_start_hour, schedule_end_hour) {
-            (Some(start), Some(end)) => Some(TimeWindow {
-                start_hour: start,
-                end_hour: end,
-                days: schedule_days.to_vec(),
-            }),
-            _ => None,
-        };
-        let meta = PolicyMeta {
-            id: PolicyId(id),
-            name: name.into(),
-            time_windows,
-            active,
-            created_by: 1000,
-            owner_id: 1000,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        match (action, app_id.is_empty()) {
-            (PolicyKind::Block, false) => Policy::App(Box::new(AppPolicy {
-                target: AppTarget {
-                    app_id: AppId::new(app_id).unwrap(),
-                },
-                meta,
-                action: AppAction::Block,
-            })),
-            (PolicyKind::TimeLimit, false) => Policy::App(Box::new(AppPolicy {
-                target: AppTarget {
-                    app_id: AppId::new(app_id).unwrap(),
-                },
-                meta,
-                action: AppAction::TimeLimit {
-                    limit_minutes: limit.max(1),
-                    extra_minutes: extra,
-                },
-            })),
-            (PolicyKind::Notify, false) => Policy::App(Box::new(AppPolicy {
-                target: AppTarget {
-                    app_id: AppId::new(app_id).unwrap(),
-                },
-                meta,
-                action: AppAction::Notify {
-                    limit_minutes: limit.max(1),
-                    repeat_interval_minutes: if repeat == 0 { None } else { Some(repeat) },
-                },
-            })),
-            (PolicyKind::Block, true) => Policy::Category(Box::new(CategoryPolicy {
-                target: CategoryTarget {
-                    category_id: CategoryId(cat_id),
-                },
-                meta,
-                action: CategoryAction::Block,
-            })),
-            (PolicyKind::TimeLimit, true) => Policy::Category(Box::new(CategoryPolicy {
-                target: CategoryTarget {
-                    category_id: CategoryId(cat_id),
-                },
-                meta,
-                action: CategoryAction::TimeLimit {
-                    limit_minutes: limit.max(1),
-                    extra_minutes: extra,
-                },
-            })),
-            (PolicyKind::Notify, true) => Policy::Category(Box::new(CategoryPolicy {
-                target: CategoryTarget {
-                    category_id: CategoryId(cat_id),
-                },
-                meta,
-                action: CategoryAction::Notify {
-                    limit_minutes: limit.max(1),
-                    repeat_interval_minutes: if repeat == 0 { None } else { Some(repeat) },
-                },
-            })),
-        }
-    }
+    // PolicyConfig test helpers removed — callers construct variants directly.
 
     #[test]
     fn test_evaluate_all_pass() {
         let policies = vec![
-            make_policy(1, PolicyKind::TimeLimit, true, Some(60)),
-            make_policy(2, PolicyKind::Notify, true, Some(120)),
+            PolicyConfig::TimeLimit {
+                id: PolicyId(1),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                time_limit_minutes: 60,
+                extra_minutes: 300,
+                active: true,
+            },
+            PolicyConfig::Notify {
+                id: PolicyId(2),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                time_limit_minutes: 120,
+                notification_repeat_interval_minutes: None,
+                active: true,
+            },
         ];
         let verdict = evaluate(&policies, 50, false);
         assert!(matches!(verdict, PolicyVerdict::Ok));
@@ -347,7 +199,12 @@ mod tests {
 
     #[test]
     fn test_evaluate_block_unconditional() {
-        let policies = vec![make_policy(1, PolicyKind::Block, true, None)];
+        let policies = vec![PolicyConfig::Block {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            active: true,
+        }];
         let verdict = evaluate(&policies, 0, false);
         assert!(matches!(
             verdict,
@@ -360,7 +217,12 @@ mod tests {
 
     #[test]
     fn test_evaluate_block_category() {
-        let policies = vec![make_policy(1, PolicyKind::Block, false, None)];
+        let policies = vec![PolicyConfig::Block {
+            id: PolicyId(1),
+            app_id: None,
+            category_id: Some(CategoryId(1)),
+            active: true,
+        }];
         let verdict = evaluate(&policies, 0, false);
         assert!(matches!(
             verdict,
@@ -373,7 +235,14 @@ mod tests {
 
     #[test]
     fn test_evaluate_time_limit_block() {
-        let policies = vec![make_policy(1, PolicyKind::TimeLimit, true, Some(60))];
+        let policies = vec![PolicyConfig::TimeLimit {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            extra_minutes: 300,
+            active: true,
+        }];
         let verdict = evaluate(&policies, 4000, false);
         assert!(matches!(
             verdict,
@@ -386,7 +255,14 @@ mod tests {
 
     #[test]
     fn test_evaluate_time_limit_category_block() {
-        let policies = vec![make_policy(1, PolicyKind::TimeLimit, false, Some(60))];
+        let policies = vec![PolicyConfig::TimeLimit {
+            id: PolicyId(1),
+            app_id: None,
+            category_id: Some(CategoryId(1)),
+            time_limit_minutes: 60,
+            extra_minutes: 300,
+            active: true,
+        }];
         let verdict = evaluate(&policies, 4000, false);
         assert!(matches!(
             verdict,
@@ -399,7 +275,14 @@ mod tests {
 
     #[test]
     fn test_evaluate_notify_exceeded() {
-        let policies = vec![make_policy(1, PolicyKind::Notify, true, Some(60))];
+        let policies = vec![PolicyConfig::Notify {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            notification_repeat_interval_minutes: None,
+            active: true,
+        }];
         let verdict = evaluate(&policies, 4000, false);
         assert!(matches!(verdict, PolicyVerdict::Notify { .. }));
     }
@@ -407,8 +290,20 @@ mod tests {
     #[test]
     fn test_evaluate_block_wins_over_notify() {
         let policies = vec![
-            make_policy(1, PolicyKind::Notify, true, Some(60)),
-            make_policy(2, PolicyKind::Block, true, None),
+            PolicyConfig::Notify {
+                id: PolicyId(1),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                time_limit_minutes: 60,
+                notification_repeat_interval_minutes: None,
+                active: true,
+            },
+            PolicyConfig::Block {
+                id: PolicyId(2),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                active: true,
+            },
         ];
         let verdict = evaluate(&policies, 4000, false);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
@@ -417,8 +312,20 @@ mod tests {
     #[test]
     fn test_evaluate_block_wins_over_time_limit() {
         let policies = vec![
-            make_policy(1, PolicyKind::Block, true, None),
-            make_policy(2, PolicyKind::TimeLimit, true, Some(100)),
+            PolicyConfig::Block {
+                id: PolicyId(1),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                active: true,
+            },
+            PolicyConfig::TimeLimit {
+                id: PolicyId(2),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                time_limit_minutes: 100,
+                extra_minutes: 300,
+                active: true,
+            },
         ];
         let verdict = evaluate(&policies, 0, false);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
@@ -427,8 +334,20 @@ mod tests {
     #[test]
     fn test_evaluate_first_block_wins() {
         let policies = vec![
-            make_policy(1, PolicyKind::TimeLimit, true, Some(2)),
-            make_policy(2, PolicyKind::Block, false, None),
+            PolicyConfig::TimeLimit {
+                id: PolicyId(1),
+                app_id: Some(AppId::new("test.app").unwrap()),
+                category_id: None,
+                time_limit_minutes: 2,
+                extra_minutes: 300,
+                active: true,
+            },
+            PolicyConfig::Block {
+                id: PolicyId(2),
+                app_id: None,
+                category_id: Some(CategoryId(1)),
+                active: true,
+            },
         ];
         let verdict = evaluate(&policies, 200, false);
         assert!(
@@ -438,7 +357,12 @@ mod tests {
 
     #[test]
     fn test_evaluate_inactive_policy_skipped() {
-        let p = make_policy(1, PolicyKind::Block, true, None);
+        let p = PolicyConfig::Block {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            active: true,
+        };
         let policies = match p {
             PolicyConfig::Block {
                 id,
@@ -461,16 +385,15 @@ mod tests {
 
     #[test]
     fn test_evaluate_notify_with_repeat() {
-        let policies = vec![make_policy_full(
-            1,
-            PolicyKind::Notify,
-            true,
-            Some(60),
-            0,
-            Some(5),
-            true,
-        )];
-        let verdict = evaluate(&policies, 4000, false);
+        let policies = vec![PolicyConfig::Notify {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            notification_repeat_interval_minutes: Some(5),
+            active: true,
+        }];
+        let verdict = evaluate(&policies, 60, false);
         assert!(matches!(
             verdict,
             PolicyVerdict::Notify {
@@ -482,34 +405,63 @@ mod tests {
 
     #[test]
     fn test_evaluate_time_limit_at_exact_boundary() {
-        let policies = vec![make_policy(1, PolicyKind::TimeLimit, true, Some(60))];
-        let verdict = evaluate(&policies, 3600, false);
+        let policies = vec![PolicyConfig::TimeLimit {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            extra_minutes: 300,
+            active: true,
+        }];
+        // elapsed_usage in minutes: 60 minutes used, limit 60 minutes → blocked
+        let verdict = evaluate(&policies, 60, false);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
     }
 
     #[test]
     fn test_evaluate_notify_at_exact_boundary() {
-        let policies = vec![make_policy(1, PolicyKind::Notify, true, Some(60))];
-        let verdict = evaluate(&policies, 3600, false);
+        let policies = vec![PolicyConfig::Notify {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            notification_repeat_interval_minutes: None,
+            active: true,
+        }];
+        // elapsed_usage in minutes: 60 minutes used, limit 60 minutes → notify
+        let verdict = evaluate(&policies, 60, false);
         assert!(matches!(verdict, PolicyVerdict::Notify { .. }));
     }
 
     #[test]
     #[should_panic(expected = "Block policy has no tracked state")]
     fn test_app_state_block_panics() {
-        let policy = make_policy(1, PolicyKind::Block, true, None);
+        let policy = PolicyConfig::Block {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            active: true,
+        };
         app_state((0, false), &policy);
     }
 
     #[test]
     fn test_app_state_time_limit_normal() {
-        let policy = make_policy(1, PolicyKind::TimeLimit, true, Some(60));
-        let state = app_state((100, false), &policy);
+        let policy = PolicyConfig::TimeLimit {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            extra_minutes: 300,
+            active: true,
+        };
+        // usage in minutes: 30 min used, 60 min limit → 30 min remaining
+        let state = app_state((30, false), &policy);
         match state {
             TrackedApp::TimeLimited(app) => {
-                assert_eq!(app.remaining(), 3500);
+                assert_eq!(app.remaining(), 30);
                 assert!(app.can_extend());
-                assert_eq!(app.effective_limit(), 3600);
+                assert_eq!(app.effective_limit(), 60);
             }
             _ => panic!("expected TimeLimited"),
         }
@@ -525,12 +477,13 @@ mod tests {
             extra_minutes: 10,
             active: true,
         };
-        let state = app_state((4000, true), &policy);
+        // usage in minutes: 50 min used, 70 min effective limit → 20 min remaining
+        let state = app_state((50, true), &policy);
         match state {
             TrackedApp::TimeLimited(app) => {
-                assert_eq!(app.remaining(), 200);
+                assert_eq!(app.remaining(), 20);
                 assert!(!app.can_extend());
-                assert_eq!(app.effective_limit(), 4200);
+                assert_eq!(app.effective_limit(), 70);
             }
             _ => panic!("expected TimeLimited"),
         }
@@ -538,11 +491,19 @@ mod tests {
 
     #[test]
     fn test_app_state_notify() {
-        let policy = make_policy(1, PolicyKind::Notify, true, Some(60));
-        let state = app_state((100, false), &policy);
+        let policy = PolicyConfig::Notify {
+            id: PolicyId(1),
+            app_id: Some(AppId::new("test.app").unwrap()),
+            category_id: None,
+            time_limit_minutes: 60,
+            notification_repeat_interval_minutes: None,
+            active: true,
+        };
+        // usage in minutes: 30 min used, 60 min limit → 30 min remaining
+        let state = app_state((30, false), &policy);
         match state {
             TrackedApp::TimeTracked(app) => {
-                assert_eq!(app.remaining(), 3500);
+                assert_eq!(app.remaining(), 30);
                 assert!(!app.is_exceeded());
             }
             _ => panic!("expected TimeTracked"),
@@ -551,60 +512,77 @@ mod tests {
 
     #[test]
     fn test_filter_policies_empty_schedule_kept() {
-        let p = make_domain_policy(
-            1,
-            "AlwaysActive",
-            PolicyKind::TimeLimit,
-            "test",
-            0,
-            3600,
-            0,
-            0,
-            None,
-            None,
-            &[],
-            true,
-        );
+        let p = Policy::App(Box::new(AppPolicy {
+            target: AppTarget {
+                app_id: AppId::new("test").unwrap(),
+            },
+            meta: PolicyMeta {
+                id: PolicyId(1),
+                name: "AlwaysActive".into(),
+                time_windows: None,
+                active: true,
+                created_by: 1000,
+                owner_id: 1000,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            action: AppAction::TimeLimit {
+                limit_minutes: 3600,
+                extra_minutes: 0,
+            },
+        }));
         let result = filter_policies_by_schedule(vec![p], Utc::now());
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn test_filter_policies_with_schedule_active() {
-        let p = make_domain_policy(
-            1,
-            "Scheduled",
-            PolicyKind::Block,
-            "test",
-            0,
-            0,
-            0,
-            0,
-            Some(0),
-            Some(23),
-            &[],
-            true,
-        );
+        let p = Policy::App(Box::new(AppPolicy {
+            target: AppTarget {
+                app_id: AppId::new("test").unwrap(),
+            },
+            meta: PolicyMeta {
+                id: PolicyId(1),
+                name: "Scheduled".into(),
+                time_windows: Some(TimeWindow {
+                    start_hour: 0,
+                    end_hour: 23,
+                    days: vec![],
+                }),
+                active: true,
+                created_by: 1000,
+                owner_id: 1000,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            action: AppAction::Block,
+        }));
         let result = filter_policies_by_schedule(vec![p], Utc::now());
         assert_eq!(result.len(), 1);
     }
 
     #[test]
     fn test_filter_policies_with_schedule_inactive() {
-        let p = make_domain_policy(
-            1,
-            "NightOnly",
-            PolicyKind::Block,
-            "test",
-            0,
-            0,
-            0,
-            0,
-            Some(0),
-            Some(1),
-            &[],
-            true,
-        );
+        let p = Policy::App(Box::new(AppPolicy {
+            target: AppTarget {
+                app_id: AppId::new("test").unwrap(),
+            },
+            meta: PolicyMeta {
+                id: PolicyId(1),
+                name: "NightOnly".into(),
+                time_windows: Some(TimeWindow {
+                    start_hour: 0,
+                    end_hour: 1,
+                    days: vec![],
+                }),
+                active: true,
+                created_by: 1000,
+                owner_id: 1000,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            },
+            action: AppAction::Block,
+        }));
         let now = chrono::DateTime::parse_from_rfc3339("2026-07-17T10:00:00Z")
             .unwrap()
             .with_timezone(&Utc);

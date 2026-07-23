@@ -40,15 +40,15 @@ events — never a synthetic Unfocused:
 - Session removed → LoggedOut
 
 Slept/ShutDown/Locked/LoggedOut are close events: they credit the active
-interval (minus any enclosed idle) via accumulate_interval and clear the
-in-memory FocusState. They carry no app_id.
+interval via `accumulate_daily_usage` and clear the in-memory FocusState. They
+carry no app_id.
 
 Flow (suspend/shutdown example; lock/logout are analogous):
 
 logind signal (PrepareForSleep / PrepareForShutdown = TRUE) │ ▼
 PowerStateWatcher (platform/linux/suspend.rs) │ │ INSERT Slept / ShutDown into
-events table │ (accumulate_interval credits active time, clears focus state) ▼
-Dropped inhibitor → power state change proceeds
+events table │ (accumulate_daily_usage credits elapsed time, clears focus state)
+▼ Dropped inhibitor → power state change proceeds
 
 | State     | Signal                   | Event emitted |
 | --------- | ------------------------ | ------------- |

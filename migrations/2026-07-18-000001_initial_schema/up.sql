@@ -32,9 +32,9 @@ CREATE TABLE daily_usage (
     date           TEXT NOT NULL,
     user_id        INTEGER NOT NULL,
     app_id         TEXT NOT NULL,
-    total_minutes  INTEGER NOT NULL DEFAULT 0 CHECK(total_minutes >= 0),
+    closed_millis  INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
+    open_millis    INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
     extended       INTEGER NOT NULL DEFAULT 0 CHECK(extended IN (0, 1)),
-    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (date, user_id, app_id)
 );
 

@@ -11,9 +11,11 @@ use crate::bus_resolution::BusMode;
 use crate::platform::{Platform, PlatformEvent};
 
 mod manager;
+mod screen_lock;
 mod suspend;
 
 pub use manager::{ManagerProxy, PluginRegistry};
+pub use screen_lock::{ScreenLockEvent, ScreenLockWatcher};
 pub use suspend::{PowerEvent, PowerStateWatcher};
 
 #[proxy(
@@ -74,12 +76,6 @@ impl LinuxPlatform {
 
 pub struct LinuxPlatformBuilder;
 
-impl Default for LinuxPlatformBuilder {
-    fn default() -> Self {
-        Self
-    }
-}
-
 impl LinuxPlatformBuilder {
     pub fn new() -> Self {
         Self
@@ -110,5 +106,11 @@ impl LinuxPlatformBuilder {
             platform,
             tokio_stream::wrappers::UnboundedReceiverStream::new(event_rx),
         ))
+    }
+}
+
+impl Default for LinuxPlatformBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }

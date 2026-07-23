@@ -28,6 +28,13 @@ pub(crate) struct PolicyRow {
 
 impl PolicyRow {
     pub(crate) fn into_domain_policy(self) -> policy::Policy {
+        let tlm = self.time_limit_minutes.map_or(1, |v| (v as i64).max(1));
+        let extra = self.extra_minutes as i64;
+        let repeat = self
+            .notification_repeat_interval_minutes
+            .map(|v| v as i64)
+            .filter(|v| *v > 0);
+
         let meta = policy::PolicyMeta {
             id: PolicyId(self.id as i64),
             name: self.name,
@@ -50,17 +57,7 @@ impl PolicyRow {
             updated_at: self.updated_at.parse().ok().unwrap_or_else(Utc::now),
         };
 
-        let action_code = self.action;
-        let app_id = self.app_id;
-        let category_id = self.category_id;
-        let tlm = self.time_limit_minutes.unwrap_or(0) as i64;
-        let extra = self.extra_minutes as i64;
-        let repeat = self
-            .notification_repeat_interval_minutes
-            .map(|v| v as i64)
-            .filter(|v| *v > 0);
-
-        match (action_code, app_id) {
+        match (self.action, self.app_id) {
             (0, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
                 target: policy::AppTarget {
                     app_id: AppId::new(&aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()),
@@ -74,7 +71,7 @@ impl PolicyRow {
                 },
                 meta,
                 action: policy::AppAction::TimeLimit {
-                    limit_minutes: tlm.max(1),
+                    limit_minutes: tlm,
                     extra_minutes: extra,
                 },
             })),
@@ -84,45 +81,45 @@ impl PolicyRow {
                 },
                 meta,
                 action: policy::AppAction::Notify {
-                    limit_minutes: tlm.max(1),
+                    limit_minutes: tlm,
                     repeat_interval_minutes: repeat,
                 },
             })),
             (0, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(category_id.unwrap_or(0) as i64),
+                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
                 },
                 meta,
                 action: policy::CategoryAction::Block,
             })),
             (1, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(category_id.unwrap_or(0) as i64),
+                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
                 },
                 meta,
                 action: policy::CategoryAction::TimeLimit {
-                    limit_minutes: tlm.max(1),
+                    limit_minutes: tlm,
                     extra_minutes: extra,
                 },
             })),
             (2, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(category_id.unwrap_or(0) as i64),
+                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
                 },
                 meta,
                 action: policy::CategoryAction::Notify {
-                    limit_minutes: tlm.max(1),
+                    limit_minutes: tlm,
                     repeat_interval_minutes: repeat,
                 },
             })),
             _ => {
                 tracing::error!(
-                    action = action_code,
+                    action = self.action,
                     "invalid policy action, defaulting to Block"
                 );
                 policy::Policy::Category(Box::new(policy::CategoryPolicy {
                     target: policy::CategoryTarget {
-                        category_id: CategoryId(category_id.unwrap_or(0) as i64),
+                        category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
                     },
                     meta,
                     action: policy::CategoryAction::Block,
@@ -138,8 +135,7 @@ pub(crate) struct DailyUsageRow {
     pub(crate) date: String,
     pub(crate) user_id: i32,
     pub(crate) app_id: String,
-    pub(crate) total_minutes: i32,
+    pub(crate) closed_millis: i32,
+    pub(crate) open_millis: i32,
     pub(crate) extended: bool,
-    #[allow(dead_code)]
-    pub(crate) updated_at: String,
 }

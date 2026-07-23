@@ -21,8 +21,7 @@ pub struct DailyUsageRow {
     pub date: String,
     pub user_id: i32,
     pub app_id: String,
-    pub total_minutes: i32,
+    pub closed_millis: i32,
+    pub open_millis: i32,
     pub extended: bool,
-    #[allow(dead_code)]
-    pub updated_at: String,
 }

@@ -58,7 +58,7 @@ from the JSON payload at insert time via json_extract. This keeps all field data
 in the JSON payload as the single source of truth while making the extracted
 values physically present in the row so indexes on timestamp and app_id work
 without function-wrapped lookups. Interval accumulation is handled in Rust via
-accumulate_interval() called in the same transaction as the event INSERT, so
+`accumulate_daily_usage` called in the same transaction as the event INSERT, so
 business logic stays in application code instead of SQL triggers.
 
 Payload field names are shortened to one character (`t` for timestamp, `a` for
@@ -70,21 +70,11 @@ A CHECK constraint enforces that the payload must contain string fields `t` and
 absent `a` for Unfocused and the close-event types. No other event_type values
 are accepted.
 
-Interval computation happens at query time. Tracked time for an app equals the
-sum of active (non-idle) diff segments between consecutive events where the
-earlier event is WindowFocused{app_id=X} and the interval is open. WindowFocused
-to the next WindowFocused or close event counts the whole span as active time.
-WindowFocused to Idle counts the span up to Idle as active; the Idle to Resumed
-span is idle and is not counted, then Resumed to the next event resumes active
-counting. Idle and Resumed carry no app_id; the app they pause is the open
-interval from the most recent WindowFocused. Unfocused, Locked, LoggedOut,
-Slept, and ShutDown all close the interval; the span from the last WindowFocused
-to the close event minus any enclosed idle is the final active time for that
-app, and the span after a close event belongs to no app.
-
-Open intervals exist when the last event is WindowFocused, Idle, or Resumed with
-no subsequent close event. The current time is the implicit end. Active time
-excludes any currently-open Idle pause.
+Interval computation happens at write time. Tracked time for an app equals
+the wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
+`Locked`, `LoggedOut`, `Slept`, `ShutDown`). Idle spans are included in tracked
+time; the GUI can derive idle breakdown from the raw `Idle`/`Resumed` event
+sequence if needed.
 
 The id column uses AUTOINCREMENT because it serves as an ordering token for the
 reactive watch channel; consumers track last seen event id to avoid
@@ -99,18 +89,18 @@ parse it directly for query-time duration math.
 
 This materialized view holds per-app daily usage totals maintained by
 application-level transactions that wrap each event INSERT in an explicit
-BEGIN/COMMIT pair. The same transaction calls accumulate_interval to update the
-materialized view, so the event write and the usage update are atomic.
+BEGIN/COMMIT pair. The same transaction calls `accumulate_daily_usage` to update
+the materialized view, so the event write and the usage update are atomic.
 
-Focus state is maintained in-memory by the TrackerActor as a HashMap per user,
-never persisted in the database. The events log is the source of truth; the
-in-memory state is just the live accumulator.
+Focus state is maintained in-memory by the `EnforcerActor` as a `HashMap` per
+user, never persisted in the database. The events log is the source of truth;
+the in-memory state is just the live accumulator.
 
-The accumulate_interval function computes active duration from the focus state,
-skips durations that are zero or entirely idle, derives the date from the focus
-start time, and upserts into daily_usage within the same transaction as the
-event INSERT. The extended flag is set by the EnforcerActor after granting extra
-time via a direct UPDATE; it is not set by a trigger.
+`accumulate_daily_usage` computes elapsed minutes from the focus state
+(wall-clock time including idle), derives the date from the focus start time,
+and upserts into `daily_usage` within the same transaction as the event INSERT.
+The extended flag is set by the `EnforcerActor` after granting extra time via a
+direct UPDATE; it is not set by a trigger.
 
 Application-level transactions provide the same atomicity that SQL triggers
 would while keeping business logic in Rust. If the daemon crashes
@@ -212,10 +202,10 @@ retention window.
 
 ### Open Interval Tracking
 
-The currently focused app is tracked in-memory by the TrackerActor as a HashMap
-per user. The dashboard and policy engine query this actor state directly rather
-than hitting the database, because the in-memory state reflects the latest focus
-event without waiting for a transaction round-trip.
+The currently focused app is tracked in-memory by the `EnforcerActor` as a
+`HashMap` per user. The dashboard and policy engine query this actor state
+directly rather than hitting the database, because the in-memory state reflects
+the latest focus event without waiting for a transaction round-trip.
 
 For historical consistency checks at startup after a process restart, the last
 event in the events table is used. If the most recent event is WindowFocused the
