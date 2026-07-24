@@ -8,30 +8,15 @@ use chrono::{DateTime, Utc};
 use diesel::QueryResult;
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use serde_json::json;
-use wellbeing_core::{AppId, CategoryId, Clock, PolicyId, Uid};
+use wellbeing_core::{
+    AppId, CategoryId, Clock, Uid,
+    event_types::{EVENT_IDLE, EVENT_RESUMED, EVENT_WINDOW_FOCUSED, is_close_event_type},
+};
 
 use super::super::buffer::BufferedEvent;
 
-use crate::policy::{DieselPolicyRepo, Policy, PolicyConfig, PolicyRepo as _};
+use crate::policy::{DieselPolicyRepo, Policy, PolicyRepo as _};
 use crate::store::{DbPool, schema};
-
-pub const EVENT_WINDOW_FOCUSED: i32 = 0;
-pub const EVENT_UNFOCUSED: i32 = 1;
-pub const EVENT_IDLE: i32 = 2;
-pub const EVENT_RESUMED: i32 = 3;
-pub const EVENT_SLEPT: i32 = 4;
-pub const EVENT_SHUT_DOWN: i32 = 5;
-pub const EVENT_LOCKED: i32 = 6;
-pub const EVENT_LOGGED_OUT: i32 = 7;
-
-pub const CLOSE_EVENT_TYPES: &[i32] = &[
-    EVENT_UNFOCUSED,
-    EVENT_SLEPT,
-    EVENT_SHUT_DOWN,
-    EVENT_LOCKED,
-    EVENT_LOGGED_OUT,
-];
 
 /// Repository for blocking-feature persistence operations.
 pub(crate) struct BlockingRepo {
@@ -102,33 +87,24 @@ impl BlockingRepo {
         Ok((closed as i64 + open as i64, extended))
     }
 
-    /// Fetch a single policy by id, returning `PolicyConfig` or `None`.
-    #[allow(dead_code)]
-    pub async fn fetch_policy_config(
-        &self,
-        policy_id: PolicyId,
-    ) -> anyhow::Result<Option<PolicyConfig>> {
-        let mut conn = self.pool.get().await?;
-        let row = DieselPolicyRepo
-            .get_policy(&mut conn, policy_id.0 as i32)
-            .await?;
-        Ok(row.map(|r| PolicyConfig::from(r.into_domain_policy())))
-    }
-
     // ── event writes ───────────────────────────────────────────────
 
     pub async fn write_event(
         &self,
         event_type: i32,
-        payload: &str,
         user_id: i32,
+        timestamp: i64,
+        app_id: Option<&str>,
+        title: Option<&str>,
     ) -> anyhow::Result<()> {
         let mut conn = self.pool.get().await?;
         diesel::insert_into(schema::events::table)
             .values((
                 schema::events::event_type.eq(event_type),
-                schema::events::payload.eq(payload),
                 schema::events::user_id.eq(user_id),
+                schema::events::timestamp.eq(timestamp),
+                schema::events::app_id.eq(app_id),
+                schema::events::title.eq(title),
             ))
             .execute(&mut conn)
             .await?;
@@ -147,20 +123,24 @@ impl BlockingRepo {
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
         for event in events {
-            let now_str = event.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-            let payload = match event.event_type {
-                EVENT_WINDOW_FOCUSED => {
-                    json!({"t": &now_str, "a": event.app_id.as_ref()}).to_string()
-                }
-                _ => json!({"t": &now_str}).to_string(),
+            let app_id = if event.event_type == EVENT_WINDOW_FOCUSED
+                || event.event_type == EVENT_IDLE
+                || event.event_type == EVENT_RESUMED
+            {
+                Some(event.app_id.as_ref())
+            } else {
+                None
             };
+            let title = event.title.as_ref().map(|t| t.as_str());
             diesel::insert_into(schema::events::table)
                 .values((
                     schema::events::event_type.eq(event.event_type),
-                    schema::events::payload.eq(&payload),
                     schema::events::user_id.eq(event.uid.0 as i32),
+                    schema::events::timestamp.eq(event.timestamp.timestamp_millis()),
+                    schema::events::app_id.eq(app_id),
+                    schema::events::title.eq(title),
                 ))
-                .execute(&mut *conn)
+                .execute(conn)
                 .await?;
         }
         Ok(())
@@ -225,19 +205,23 @@ impl BlockingRepo {
             return Ok(());
         }
 
-        let today = now.format("%Y-%m-%d").to_string();
-        let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let today_start_millis = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
+        let now_millis = now.timestamp_millis();
 
         let mut open_focus: std::collections::HashMap<Uid, &BufferedEvent> =
             std::collections::HashMap::new();
 
         for event in events {
-            if CLOSE_EVENT_TYPES.contains(&event.event_type) {
+            if is_close_event_type(event.event_type) {
                 let uid = event.uid;
                 if let Some(focus) = open_focus.remove(&uid) {
                     Self::upsert_closed_delta_for_pair(
                         conn,
-                        &today,
                         uid,
                         &focus.app_id,
                         &focus.timestamp,
@@ -245,7 +229,8 @@ impl BlockingRepo {
                     )
                     .await?;
                 } else {
-                    Self::apply_pre_buffer_close(conn, &today, &now_str, uid, event).await?;
+                    Self::apply_pre_buffer_close(conn, uid, event, today_start_millis, now_millis)
+                        .await?;
                 }
             } else if event.event_type == EVENT_WINDOW_FOCUSED {
                 open_focus.insert(event.uid, event);
@@ -253,7 +238,8 @@ impl BlockingRepo {
         }
 
         for (uid, focus) in open_focus {
-            Self::ensure_row_for_open(conn, &today, uid, &focus.app_id).await?;
+            let date = focus.timestamp.format("%Y-%m-%d").to_string();
+            Self::ensure_row_for_open(conn, &date, uid, &focus.app_id).await?;
         }
 
         Ok(())
@@ -276,7 +262,13 @@ impl BlockingRepo {
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
         let today = now.format("%Y-%m-%d").to_string();
-        let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let today_start_millis = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
+        let now_millis = now.timestamp_millis();
 
         // Read the last WindowFocused event timestamp for this uid+app today.
         let open_ms = match schema::events::table
@@ -286,15 +278,15 @@ impl BlockingRepo {
             // time to this app when the last WindowFocused happens to be for a
             // different app (which would produce a negative or wrong duration).
             .filter(schema::events::app_id.eq(app_id.as_ref()))
-            .filter(schema::events::timestamp.ge(&format!("{} 00:00:00", today)))
-            .filter(schema::events::timestamp.le(&now_str))
-            .order(schema::events::id.desc())
+            .filter(schema::events::timestamp.ge(today_start_millis))
+            .filter(schema::events::timestamp.le(now_millis))
+            .order(schema::events::timestamp.desc())
             .limit(1)
             .select(schema::events::timestamp)
-            .first::<String>(conn)
+            .first::<i64>(conn)
             .await
         {
-            Ok(ts) => Self::duration_millis(&ts, &now_str),
+            Ok(ts) => Self::duration_millis(ts, now_millis),
             Err(diesel::result::Error::NotFound) => 0,
             Err(e) => return Err(e.into()),
         };
@@ -324,6 +316,10 @@ impl BlockingRepo {
     // ── helpers ────────────────────────────────────────────────────
 
     /// Upsert a closed-interval delta: add to closed_millis, zero open_millis.
+    ///
+    /// Uses `ON CONFLICT DO UPDATE` to atomically increment `closed_millis`
+    /// without a prior SELECT — the UPSERT handles both insert and update
+    /// in a single round-trip.
     async fn upsert_closed_delta<Conn>(
         conn: &mut Conn,
         today: &str,
@@ -334,29 +330,14 @@ impl BlockingRepo {
     where
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
-        let existing: Option<(i32, bool)> = schema::daily_usage::table
-            .filter(schema::daily_usage::date.eq(today))
-            .filter(schema::daily_usage::user_id.eq(uid.0 as i32))
-            .filter(schema::daily_usage::app_id.eq(app_id.as_ref()))
-            .select((
-                schema::daily_usage::closed_millis,
-                schema::daily_usage::extended,
-            ))
-            .first(conn)
-            .await
-            .ok();
-
-        let current_closed = existing.map(|(c, _)| c).unwrap_or(0);
-        let extended = existing.map(|(_, e)| e).unwrap_or(false);
-
         diesel::insert_into(schema::daily_usage::table)
             .values((
                 schema::daily_usage::date.eq(today),
                 schema::daily_usage::user_id.eq(uid.0 as i32),
                 schema::daily_usage::app_id.eq(app_id.as_ref()),
-                schema::daily_usage::closed_millis.eq((current_closed as i64 + delta_ms) as i32),
+                schema::daily_usage::closed_millis.eq(delta_ms as i32),
                 schema::daily_usage::open_millis.eq(0),
-                schema::daily_usage::extended.eq(extended),
+                schema::daily_usage::extended.eq(false),
             ))
             .on_conflict((
                 schema::daily_usage::date,
@@ -409,32 +390,18 @@ impl BlockingRepo {
             .await
     }
 
-    /// Return the raw millisecond difference between two
-    /// `YYYY-MM-DD HH:MM:SS` UTC timestamps.
+    /// Return the raw millisecond difference between two epoch-millis timestamps.
     ///
     /// No rounding — caller accumulates milliseconds and converts to
     /// minutes only at policy/display boundaries.
-    pub(crate) fn duration_millis(start: &str, end: &str) -> i64 {
-        let fmt = "%Y-%m-%d %H:%M:%S";
-        let parse = |ts: &str| {
-            DateTime::parse_from_rfc3339(&format!("{}Z", ts))
-                .or_else(|_| DateTime::parse_from_str(ts, fmt))
-        };
-        let Ok(s) = parse(start) else {
-            tracing::warn!("Failed to parse start timestamp: {start}");
-            return 0;
-        };
-        let Ok(e) = parse(end) else {
-            tracing::warn!("Failed to parse end timestamp: {end}");
-            return 0;
-        };
-        let diff_secs = e.signed_duration_since(s).num_seconds();
-        diff_secs.max(0) * 1000
+    pub(crate) fn duration_millis(start: i64, end: i64) -> i64 {
+        (end - start).max(0)
     }
 
+    /// Upsert a closed interval into daily_usage, splitting across UTC-day
+    /// boundaries when the interval spans midnight.
     async fn upsert_closed_delta_for_pair<Conn>(
         conn: &mut Conn,
-        today: &str,
         uid: Uid,
         app_id: &AppId,
         focus_ts: &DateTime<Utc>,
@@ -443,71 +410,108 @@ impl BlockingRepo {
     where
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
-        let dur = Self::duration_millis(
-            &focus_ts.format("%Y-%m-%d %H:%M:%S").to_string(),
-            &close_ts.format("%Y-%m-%d %H:%M:%S").to_string(),
-        );
-        Self::upsert_closed_delta(conn, today, uid, app_id, dur).await?;
+        Self::upsert_interval_split_days(conn, uid, app_id, focus_ts, close_ts).await
+    }
+
+    /// Split a focus interval across UTC-day boundaries and upsert each day
+    /// segment into daily_usage.
+    ///
+    /// A focus interval starting at 23:30 and ending at 00:30 the next day
+    /// produces two rows: 30 min attributed to the start day, 30 min to the end
+    /// day.
+    async fn upsert_interval_split_days<Conn>(
+        conn: &mut Conn,
+        uid: Uid,
+        app_id: &AppId,
+        focus_ts: &DateTime<Utc>,
+        close_ts: &DateTime<Utc>,
+    ) -> anyhow::Result<()>
+    where
+        Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
+    {
+        let mut seg_start = *focus_ts;
+
+        loop {
+            let next_boundary = (seg_start.date_naive() + chrono::TimeDelta::days(1))
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc();
+
+            if next_boundary >= *close_ts {
+                let dur = Self::duration_millis(
+                    seg_start.timestamp_millis(),
+                    close_ts.timestamp_millis(),
+                );
+                let date = seg_start.format("%Y-%m-%d").to_string();
+                Self::upsert_closed_delta(conn, &date, uid, app_id, dur).await?;
+                break;
+            }
+
+            let dur = Self::duration_millis(
+                seg_start.timestamp_millis(),
+                next_boundary.timestamp_millis(),
+            );
+            let date = seg_start.format("%Y-%m-%d").to_string();
+            Self::upsert_closed_delta(conn, &date, uid, app_id, dur).await?;
+            seg_start = next_boundary;
+        }
+
         Ok(())
     }
 
     /// Query the last WindowFocused event before the buffer for a uid,
-    /// returning `(timestamp, app_id)` in a single round-trip.
+    /// returning `(timestamp_millis, app_id)` in a single round-trip.
     async fn resolve_pre_buffer_focus<Conn>(
         conn: &mut Conn,
         uid: Uid,
-        today: &str,
-        now_str: &str,
-    ) -> Option<(String, Option<String>)>
+        today_start_millis: i64,
+        now_millis: i64,
+    ) -> Option<(i64, Option<String>)>
     where
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
         schema::events::table
             .filter(schema::events::user_id.eq(uid.0 as i32))
             .filter(schema::events::event_type.eq(EVENT_WINDOW_FOCUSED))
-            .filter(schema::events::timestamp.ge(&format!("{} 00:00:00", today)))
-            .filter(schema::events::timestamp.le(&now_str))
-            .order(schema::events::id.desc())
+            .filter(schema::events::timestamp.ge(today_start_millis))
+            .filter(schema::events::timestamp.le(now_millis))
+            .order(schema::events::timestamp.desc())
             .limit(1)
             .select((schema::events::timestamp, schema::events::app_id))
-            .first::<(String, Option<String>)>(conn)
+            .first::<(i64, Option<String>)>(conn)
             .await
             .ok()
     }
 
     /// Handle a close event whose interval started before the buffer:
     /// query the last focus event, resolve the app_id, and upsert.
+    ///
+    /// app_id is always resolved from the events table (the last
+    /// WindowFocused for this uid). The close event's own `app_id` is
+    /// ignored — Unfocused events no longer carry one.
     async fn apply_pre_buffer_close<Conn>(
         conn: &mut Conn,
-        today: &str,
-        now_str: &str,
         uid: Uid,
         event: &BufferedEvent,
+        today_start_millis: i64,
+        now_millis: i64,
     ) -> anyhow::Result<()>
     where
         Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
     {
         let Some((start_ts, db_app_id)) =
-            Self::resolve_pre_buffer_focus(conn, uid, today, now_str).await
+            Self::resolve_pre_buffer_focus(conn, uid, today_start_millis, now_millis).await
         else {
             return Ok(());
         };
-
-        let dur = Self::duration_millis(
-            &start_ts,
-            &event.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
-        );
-
-        let app_id_str = event.app_id.as_ref();
-        let resolved = if !app_id_str.is_empty() {
-            app_id_str
-        } else if let Some(ref db_id) = db_app_id {
-            db_id.as_str()
-        } else {
+        let Some(ref resolved) = db_app_id else {
             return Ok(());
         };
         let valid = AppId::new(resolved).unwrap_or_else(|_| AppId::new("unknown").unwrap());
-        Self::upsert_closed_delta(conn, today, uid, &valid, dur).await?;
+
+        let start_dt = DateTime::from_timestamp_millis(start_ts)
+            .ok_or_else(|| anyhow::anyhow!("resolved focus timestamp must be valid: {start_ts}"))?;
+        Self::upsert_interval_split_days(conn, uid, &valid, &start_dt, &event.timestamp).await?;
 
         Ok(())
     }
@@ -516,78 +520,31 @@ impl BlockingRepo {
 #[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
 #[diesel(table_name = crate::store::schema::events)]
 pub struct EventRow {
+    pub id: i32,
     pub event_type: i32,
     pub user_id: i32,
-    pub timestamp: String,
+    pub timestamp: i64,
     pub app_id: Option<String>,
+    pub title: Option<String>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::blocking::EnforcerActor;
-    use crate::platform::{Platform, PlatformEvent};
+    use crate::blocking::test_support::{MockPlatform, app, dt, setup};
+    use crate::platform::PlatformEvent;
     use crate::signal::DaemonSignal;
     use crate::store::StoreBuilder;
 
-    use chrono::TimeZone;
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::SystemTime;
-    use tempfile::TempDir;
     use tokio::sync::RwLock;
     use tokio::sync::mpsc;
     use wellbeing_core::{ActiveBlockEntry, Pid, SystemClock, VirtualClock, WindowTitle};
-
-    // ── mock platform ──
-
-    struct MockPlatform;
-
-    impl Platform for MockPlatform {
-        type EventStream = tokio_stream::wrappers::UnboundedReceiverStream<PlatformEvent>;
-
-        async fn notify(&self, _title: &str, _body: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    // ── helpers ──
-
-    fn app(s: &str) -> AppId {
-        AppId::new(s).unwrap()
-    }
-
-    fn dt(secs: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(secs, 0).unwrap()
-    }
-
-    /// Create an EnforcerActor with a real SQLite database and mocks.
-    async fn setup() -> (
-        TempDir,
-        DbPool,
-        EnforcerActor<MockPlatform, VirtualClock>,
-        mpsc::UnboundedReceiver<DaemonSignal>,
-    ) {
-        let tmp = TempDir::new().expect("temp dir");
-        let db_path = tmp.path().join("test.db");
-        let pool = StoreBuilder::new(db_path)
-            .build()
-            .await
-            .expect("build store");
-        let (signal_tx, signal_rx) = mpsc::unbounded_channel();
-        let platform = Arc::new(MockPlatform);
-        let clock = VirtualClock::new(dt(1_000_000));
-        let active_blocks = Arc::new(RwLock::new(
-            HashMap::<Uid, HashMap<AppId, ActiveBlockEntry>>::new(),
-        ));
-
-        let (actor, _) =
-            EnforcerActor::new(pool.clone(), platform, clock, signal_tx, active_blocks);
-
-        (tmp, pool, actor, signal_rx)
-    }
 
     // ── flush emits signal ──
 
@@ -600,12 +557,14 @@ mod tests {
             app_id: app("firefox"),
             event_type: 0, // EVENT_WINDOW_FOCUSED
             timestamp: dt(1_000_000),
+            title: None,
         });
         actor.event_buffer.push(BufferedEvent {
             uid: Uid(1000),
             app_id: app("firefox"),
             event_type: 1, // EVENT_UNFOCUSED
             timestamp: dt(1_000_100),
+            title: None,
         });
 
         actor.flush_buffer().await.expect("flush should succeed");
@@ -684,12 +643,18 @@ mod tests {
         );
 
         let uid = Uid(1000);
-        let today = SystemClock.now().format("%Y-%m-%d").to_string();
-        let ts = format!("{} 10:00:00", today);
-        let payload = json!({"t": ts, "a": "firefox"}).to_string();
+        let now = SystemClock.now();
+        let today_date = now.format("%Y-%m-%d").to_string();
+        let ts_millis = chrono::NaiveDateTime::parse_from_str(
+            &format!("{} 10:00:00", today_date),
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
         enforcer
             .repo
-            .write_event(0, &payload, uid.0 as i32)
+            .write_event(0, uid.0 as i32, ts_millis, Some("firefox"), None)
             .await
             .unwrap();
 
@@ -907,10 +872,14 @@ mod tests {
         );
 
         let uid = Uid(1000);
-        let payload = json!({"t": "2025-01-01 10:00:00"}).to_string();
+        let ts_millis =
+            chrono::NaiveDateTime::parse_from_str("2025-01-01 10:00:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp_millis();
         enforcer
             .repo
-            .write_event(1, &payload, uid.0 as i32)
+            .write_event(1, uid.0 as i32, ts_millis, Some("firefox"), None)
             .await
             .unwrap();
 

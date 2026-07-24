@@ -4,11 +4,11 @@
 diesel::table! {
     events (id) {
         id -> Integer,
-        user_id -> Integer,
         event_type -> Integer,
-        payload -> Text,
-        timestamp -> Text,
+        user_id -> Integer,
+        timestamp -> BigInt,
         app_id -> Nullable<Text>,
+        title -> Nullable<Text>,
     }
 }
 

@@ -158,18 +158,13 @@ pub fn color_from_str(seed: &str) -> Hsla {
     let hash: u32 = seed
         .bytes()
         .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    let r = (hash & 0xFF) as u8;
-    let g = ((hash >> 8) & 0xFF) as u8;
-    let b = ((hash >> 16) & 0xFF) as u8;
-    rgb_to_hsla(r, g, b)
-}
 
-/// Resolve a color: explicit hex wins, otherwise a deterministic seed color.
-pub fn resolve_color(hex: &str, fallback_seed: &str) -> Hsla {
-    if hex.is_empty() {
-        return color_from_str(fallback_seed);
-    }
-    parse_hex(hex).unwrap_or_else(|| color_from_str(fallback_seed))
+    // Map 32-bit hash to 0.0..1.0 (gpui's hsla expects 0-1 range)
+    let hue = (hash % 360) as f32 / 360.0;
+    let saturation = 0.7; // Keep fixed for nice, vibrant colors
+    let lightness = 0.5; // Keep fixed for good contrast against text
+
+    hsla(hue, saturation, lightness, 1.0)
 }
 
 /// Parse `#rrggbb` into `Hsla`. Returns `None` on malformed input.
@@ -190,21 +185,24 @@ fn rgb_to_hsla(r: u8, g: u8, b: u8) -> Hsla {
     let min = rf.min(gf).min(bf);
     let l = (max + min) / 2.0;
     let delta = max - min;
+
     let h = if delta == 0.0 {
         0.0
     } else if max == rf {
-        60.0 * (((gf - bf) / delta) % 6.0)
+        60.0 * ((gf - bf) / delta)
     } else if max == gf {
         60.0 * (((bf - rf) / delta) + 2.0)
     } else {
         60.0 * (((rf - gf) / delta) + 4.0)
     };
+
     let s = if delta == 0.0 {
         0.0
-    } else if l <= 0.5 {
-        delta / (max + min)
     } else {
-        delta / (2.0 - max - min)
+        delta / (1.0 - (2.0 * l - 1.0).abs())
     };
-    hsla(h.rem_euclid(360.0), s, l, 1.0)
+
+    // rem_euclid here smoothly handles negative degree angles (e.g. -30.0 -> 330.0)
+    // Divide by 360 because gpui's hsla expects hue in 0..1 range
+    hsla(h.rem_euclid(360.0) / 360.0, s, l, 1.0)
 }

@@ -38,8 +38,15 @@ impl std::fmt::Display for AppId {
 pub struct WindowTitle(String);
 
 impl WindowTitle {
+    /// Construct with character-aware trimming to a maximum of 256 characters.
+    ///
+    /// Uses `.chars().take(256)` so multi-byte / multi-code-point
+    /// characters are never truncated mid-sequence. Titles exceeding
+    /// 256 characters (not bytes) are silently truncated at the char boundary.
+    /// An additional 1024-byte CHECK constraint in the database acts as
+    /// a safety ceiling for unusually wide characters.
     pub fn new(s: &str) -> Self {
-        Self(s.to_string())
+        Self(s.chars().take(256).collect::<String>())
     }
 
     pub fn as_str(&self) -> &str {
@@ -62,7 +69,7 @@ pub struct PolicyId(pub i64);
 #[zvariant(signature = "t")]
 pub struct CategoryId(pub i64);
 
-/// Duration in minutes.
+/// Duration in seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
 #[zvariant(signature = "t")]
 pub struct DurationSecs(pub i64);

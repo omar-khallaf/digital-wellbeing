@@ -2,17 +2,16 @@
 
 use std::collections::BTreeMap;
 
-use wellbeing_core::{AppCategoryRow, Category, DailySummary, DailyUsageEntry, DateRange};
+use wellbeing_core::{AppCategoryRow, DailySummary, DailyUsageEntry, DateRange};
 
-use crate::chart::Bar;
+use crate::chart::HasBarData;
 
-use super::domain::{ReportAppEntry, ReportsViewModel};
+use super::domain::{DailyBar, ReportAppEntry, ReportsViewModel};
 
 /// Build a [`ReportsViewModel`] from cached usage data over the given [`DateRange`].
 pub fn build_reports_viewmodel(
     range: DateRange,
     summaries: &[DailySummary],
-    _: &[Category],
     app_categories: &[AppCategoryRow],
 ) -> ReportsViewModel {
     let usage: Vec<DailyUsageEntry> = summaries
@@ -20,23 +19,25 @@ pub fn build_reports_viewmodel(
         .flat_map(|s| s.entries.iter().cloned())
         .collect();
 
-    // Bars — per-day totals (format_duration converts at display).
     let mut by_date: BTreeMap<String, f64> = BTreeMap::new();
     for entry in &usage {
         let ms = entry.total_millis as f64;
         *by_date.entry(entry.date.clone()).or_insert(0.0) += ms;
     }
-    let bar_chart: Vec<Bar> = by_date
-        .into_iter()
-        .filter_map(|(d, m)| {
-            chrono::NaiveDate::parse_from_str(&d, "%Y-%m-%d")
-                .ok()
-                .map(|date| Bar {
-                    date,
-                    total_millis: m,
-                })
-        })
-        .collect();
+    let today = chrono::Utc::now().date_naive();
+    let day_count = (range.end - range.start).num_days() as usize + 1;
+    let mut bar_chart: Vec<DailyBar> = Vec::with_capacity(day_count);
+    let mut cursor = range.start;
+    while cursor <= range.end {
+        let key = cursor.format("%Y-%m-%d").to_string();
+        let millis = by_date.get(&key).copied().unwrap_or(0.0);
+        bar_chart.push(DailyBar {
+            date: cursor,
+            hours_tracked: millis / 3_600_000.0,
+            is_today: cursor == today,
+        });
+        cursor = cursor + chrono::Days::new(1);
+    }
 
     let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
     let mut total: f64 = 0.0;
@@ -76,8 +77,6 @@ pub fn build_reports_viewmodel(
     for (i, entry) in app_list.iter_mut().enumerate() {
         entry.rank = i + 1;
     }
-    // No truncation — show ALL apps.
-
     let total_millis = total as i64;
     let top_app = app_list
         .first()
@@ -90,5 +89,14 @@ pub fn build_reports_viewmodel(
         app_list,
         total_millis,
         top_app,
+    }
+}
+
+impl HasBarData for DailyBar {
+    fn date(&self) -> chrono::NaiveDate {
+        self.date
+    }
+    fn total_millis(&self) -> f64 {
+        self.hours_tracked * 3_600_000.0
     }
 }

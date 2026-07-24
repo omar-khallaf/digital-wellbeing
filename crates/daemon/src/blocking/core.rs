@@ -12,7 +12,6 @@ use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
 use diesel_async::{AsyncConnection, RunQueryDsl};
-use serde_json::json;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use wellbeing_core::*;
@@ -23,9 +22,10 @@ use crate::signal::DaemonSignal;
 use crate::store::DbPool;
 
 use super::buffer::{BufferedEvent, EventBuffer};
-use super::data::{BlockingRepo, CLOSE_EVENT_TYPES, EVENT_IDLE, EVENT_RESUMED, EventRow};
+use super::data::{BlockingRepo, EventRow};
 use super::domain::*;
 use super::overlay::OverlayManager;
+use wellbeing_core::event_types::{CLOSE_EVENT_TYPES, EVENT_IDLE, EVENT_RESUMED};
 
 /// Core enforcement actor, generic over [`Platform`] and [`Clock`].
 pub struct EnforcerActor<P: Platform, C: Clock> {
@@ -33,6 +33,9 @@ pub struct EnforcerActor<P: Platform, C: Clock> {
     platform: Arc<P>,
     overlay: OverlayManager,
     pub(crate) current_focus: HashMap<Uid, AppId>,
+    /// Last known window title per uid, used to propagate title to
+    /// synthetic events (e.g. extension-granted WindowFocused).
+    pub(crate) last_titles: HashMap<Uid, WindowTitle>,
     pub(crate) clock: C,
     signal_tx: mpsc::UnboundedSender<DaemonSignal>,
     pub(crate) event_buffer: EventBuffer,
@@ -55,6 +58,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 platform,
                 overlay: OverlayManager::new(active_blocks, signal_tx.clone()),
                 current_focus: HashMap::new(),
+                last_titles: HashMap::new(),
                 clock,
                 signal_tx,
                 event_buffer: EventBuffer::default(),
@@ -72,7 +76,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         self.recover_rebuild_focus(&events);
         self.recover_buffer_stale(&events, now);
 
-        // Signal DailyUsageChanged for all uids with events today.
         let mut seen_uids: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for e in &events {
             seen_uids.insert(e.user_id as u32);
@@ -89,14 +92,23 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     /// Query today's events from the database in chronological order.
     async fn recover_read_events(&self) -> anyhow::Result<Vec<EventRow>> {
         let now = self.clock.now();
-        let today = now.format("%Y-%m-%d").to_string();
-        let day_start = format!("{} 00:00:00", today);
-        let day_end = format!("{} 23:59:59", today);
+        let day_start = now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
+        let day_end = now
+            .date_naive()
+            .and_hms_opt(23, 59, 59)
+            .unwrap()
+            .and_utc()
+            .timestamp_millis();
 
         let mut conn = self.repo.pool().get().await?;
         let events: Vec<EventRow> = crate::store::schema::events::table
-            .filter(crate::store::schema::events::timestamp.ge(&day_start))
-            .filter(crate::store::schema::events::timestamp.le(&day_end))
+            .filter(crate::store::schema::events::timestamp.ge(day_start))
+            .filter(crate::store::schema::events::timestamp.le(day_end))
             .order(crate::store::schema::events::timestamp.asc())
             .select(EventRow::as_select())
             .load(&mut conn)
@@ -119,7 +131,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     }
                 }
                 t if CLOSE_EVENT_TYPES.contains(&t) => {
-                    // Close events match a subset, but any close event should clear focus
                     self.current_focus.remove(&Uid(event.user_id as u32));
                 }
                 _ => {}
@@ -142,12 +153,10 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 app_id: app_id.clone(),
                 event_type: 1, // EVENT_UNFOCUSED
                 timestamp: now,
+                title: None,
             });
         }
 
-        // Clear in-memory focus map after buffering synthetic Unfocused events.
-        // The enforcer starts with no open intervals — the next focus events
-        // (from reconcile or the compositor) will open new ones.
         self.current_focus.clear();
     }
 
@@ -170,9 +179,11 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 app_id,
                 uid,
                 overlay_shown,
+                title,
                 ..
             } => {
-                self.handle_window_focused(app_id, uid, overlay_shown).await;
+                self.handle_window_focused(app_id, uid, title, overlay_shown)
+                    .await;
             }
             PlatformEvent::Unfocused => self.handle_unfocused().await,
             PlatformEvent::IdleActivity => self.handle_idle_activity().await,
@@ -192,7 +203,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             } => self.handle_user_action(app_id, action, uid).await,
         }
 
-        // Count-triggered flush: if buffer >= 100 events, flush to DB
+        // Buffer threshold flush
         if self.event_buffer.len() >= 100
             && let Err(e) = self.flush_buffer().await
         {
@@ -201,8 +212,17 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     }
 
     /// Handle a window focus switch: dedup, unfocus previous, buffer events.
-    async fn handle_window_focused(&mut self, app_id: AppId, uid: Uid, _overlay_shown: bool) {
+    async fn handle_window_focused(
+        &mut self,
+        app_id: AppId,
+        uid: Uid,
+        title: WindowTitle,
+        _overlay_shown: bool,
+    ) {
         if matches!(self.current_focus.get(&uid), Some(prev) if *prev == app_id) {
+            // Update the last known title even when the app hasn't changed,
+            // so synthetic events (extension grants) get the current title.
+            self.last_titles.insert(uid, title);
             return;
         }
         if let Some(prev) = self.current_focus.insert(uid, app_id.clone()) {
@@ -211,50 +231,58 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 app_id: prev,
                 event_type: 1, // EVENT_UNFOCUSED
                 timestamp: self.clock.now(),
+                title: None,
             });
         }
+        self.last_titles.insert(uid, title.clone());
         self.event_buffer.push(BufferedEvent {
             uid,
             app_id,
             event_type: 0, // EVENT_WINDOW_FOCUSED
             timestamp: self.clock.now(),
+            title: Some(title),
         });
+    }
+
+    /// Push a [`BufferedEvent`] for each entry in `current_focus` with the given
+    /// `event_type`. If `drain` is true, the focus map is cleared after buffering.
+    fn buffer_event_for_all_focused(&mut self, event_type: i32, drain: bool) {
+        if drain {
+            for (uid, app_id) in self.current_focus.drain() {
+                self.event_buffer.push(BufferedEvent {
+                    uid,
+                    app_id,
+                    event_type,
+                    timestamp: self.clock.now(),
+                    title: None,
+                });
+            }
+        } else {
+            for (uid, app_id) in &self.current_focus {
+                self.event_buffer.push(BufferedEvent {
+                    uid: *uid,
+                    app_id: app_id.clone(),
+                    event_type,
+                    timestamp: self.clock.now(),
+                    title: None,
+                });
+            }
+        }
     }
 
     /// Handle global unfocused: drain all current focus entries.
     async fn handle_unfocused(&mut self) {
-        for (uid, app_id) in self.current_focus.drain() {
-            self.event_buffer.push(BufferedEvent {
-                uid,
-                app_id,
-                event_type: 1, // EVENT_UNFOCUSED
-                timestamp: self.clock.now(),
-            });
-        }
+        self.buffer_event_for_all_focused(1, true);
     }
 
     /// Handle idle transition: buffer idle for all focused apps.
     async fn handle_idle_activity(&mut self) {
-        for (uid, app_id) in &self.current_focus {
-            self.event_buffer.push(BufferedEvent {
-                uid: *uid,
-                app_id: app_id.clone(),
-                event_type: EVENT_IDLE,
-                timestamp: self.clock.now(),
-            });
-        }
+        self.buffer_event_for_all_focused(EVENT_IDLE, false);
     }
 
     /// Handle resume from idle: buffer resumed for all focused apps.
     async fn handle_resumed_activity(&mut self) {
-        for (uid, app_id) in &self.current_focus {
-            self.event_buffer.push(BufferedEvent {
-                uid: *uid,
-                app_id: app_id.clone(),
-                event_type: EVENT_RESUMED,
-                timestamp: self.clock.now(),
-            });
-        }
+        self.buffer_event_for_all_focused(EVENT_RESUMED, false);
     }
 
     /// Handle session events (sleep, lock, logout): drain focus with
@@ -266,26 +294,12 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             PlatformEvent::LoggedOut => 7,
             _ => unreachable!(),
         };
-        for (uid, app_id) in self.current_focus.drain() {
-            self.event_buffer.push(BufferedEvent {
-                uid,
-                app_id,
-                event_type,
-                timestamp: self.clock.now(),
-            });
-        }
+        self.buffer_event_for_all_focused(event_type, true);
     }
 
     /// Handle shut down: drain focus with shut-down event type.
     async fn handle_shut_down(&mut self) {
-        for (uid, app_id) in self.current_focus.drain() {
-            self.event_buffer.push(BufferedEvent {
-                uid,
-                app_id,
-                event_type: 5, // EVENT_SHUT_DOWN
-                timestamp: self.clock.now(),
-            });
-        }
+        self.buffer_event_for_all_focused(5, true);
     }
 
     /// Current blocking state (delegated to overlay manager).
@@ -366,11 +380,21 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         match action {
             0 => {
                 let now = self.clock.now();
-                let now_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
                 let today = now.format("%Y-%m-%d").to_string();
 
-                let payload = json!({"t": &now_str, "a": app_id.as_ref()}).to_string();
-                if let Err(e) = self.repo.write_event(0, &payload, uid.0 as i32).await {
+                let title_opt = self.last_titles.get(&uid).map(|t| t.as_str());
+
+                if let Err(e) = self
+                    .repo
+                    .write_event(
+                        0,
+                        uid.0 as i32,
+                        now.timestamp_millis(),
+                        Some(app_id.as_ref()),
+                        title_opt,
+                    )
+                    .await
+                {
                     error!(%app_id, error = %e, "Failed to write synthetic WindowFocused");
                     return;
                 }
@@ -425,15 +449,12 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             .await?;
         }
 
-        // Materialize open intervals: for each currently focused app,
-        // compute elapsed time since the last WindowFocused event.
         for (&uid, app_id) in &self.current_focus {
             self.repo
                 .increment_open_ms(&mut conn, uid, app_id.clone(), now)
                 .await?;
         }
 
-        // Collect UIDs to notify: from new events + from open intervals.
         // Use a set to avoid duplicate signals when multiple events share a UID.
         let mut seen_uids: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for e in &events {
@@ -516,63 +537,12 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blocking::test_support::{MockPlatform, app, dt, setup};
     use crate::store::StoreBuilder;
 
-    use chrono::TimeZone;
     use diesel::{ExpressionMethods, QueryDsl};
     use diesel_async::RunQueryDsl;
-    use tempfile::TempDir;
     use tokio::sync::RwLock;
-
-    // ── mock platform ──
-
-    struct MockPlatform;
-
-    impl Platform for MockPlatform {
-        type EventStream = tokio_stream::wrappers::UnboundedReceiverStream<PlatformEvent>;
-
-        async fn notify(&self, _title: &str, _body: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    // ── helpers ──
-
-    fn app(s: &str) -> AppId {
-        AppId::new(s).unwrap()
-    }
-
-    fn dt(secs: i64) -> DateTime<Utc> {
-        Utc.timestamp_opt(secs, 0).unwrap()
-    }
-
-    /// Create an EnforcerActor with a real SQLite database and mocks.
-    async fn setup() -> (
-        TempDir,
-        DbPool,
-        EnforcerActor<MockPlatform, VirtualClock>,
-        mpsc::UnboundedReceiver<DaemonSignal>,
-    ) {
-        let tmp = TempDir::new().expect("temp dir");
-        let db_path = tmp.path().join("test.db");
-        let pool = StoreBuilder::new(db_path)
-            .build()
-            .await
-            .expect("build store");
-        let (signal_tx, signal_rx) = mpsc::unbounded_channel();
-        let platform = Arc::new(MockPlatform);
-        let clock = VirtualClock::new(dt(1_000_000));
-        let active_blocks = Arc::new(RwLock::new(
-            HashMap::<Uid, HashMap<AppId, ActiveBlockEntry>>::new(),
-        ));
-
-        let (actor, _) =
-            EnforcerActor::new(pool.clone(), platform, clock, signal_tx, active_blocks);
-
-        (tmp, pool, actor, signal_rx)
-    }
-
-    // ── flush emits signal ──
 
     #[tokio::test]
     async fn test_flush_emits_signal() {
@@ -583,12 +553,14 @@ mod tests {
             app_id: app("firefox"),
             event_type: 0, // EVENT_WINDOW_FOCUSED
             timestamp: dt(1_000_000),
+            title: None,
         });
         actor.event_buffer.push(BufferedEvent {
             uid: Uid(1000),
             app_id: app("firefox"),
             event_type: 1, // EVENT_UNFOCUSED
             timestamp: dt(1_000_100),
+            title: None,
         });
 
         actor.flush_buffer().await.expect("flush should succeed");
@@ -601,8 +573,6 @@ mod tests {
         assert!(signal_rx.try_recv().is_err());
     }
 
-    // ── empty flush produces no signal ──
-
     #[tokio::test]
     async fn test_empty_flush_no_signal() {
         let (_tmp, _pool, mut actor, mut signal_rx) = setup().await;
@@ -612,8 +582,6 @@ mod tests {
         assert!(result.is_ok(), "empty flush should succeed");
         assert!(signal_rx.try_recv().is_err(), "no signal on empty flush");
     }
-
-    // ── count trigger flushes at 100 events ──
 
     #[tokio::test]
     async fn test_count_trigger_flushes_at_100_events() {
@@ -646,8 +614,6 @@ mod tests {
         assert!(actor.event_buffer.is_empty());
     }
 
-    // ── recover emits daily usage changed ──
-
     #[tokio::test]
     async fn test_recover_emits_daily_usage_changed() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -667,12 +633,18 @@ mod tests {
         );
 
         let uid = Uid(1000);
-        let today = SystemClock.now().format("%Y-%m-%d").to_string();
-        let ts = format!("{} 10:00:00", today);
-        let payload = json!({"t": ts, "a": "firefox"}).to_string();
+        let now = SystemClock.now();
+        let today_date = now.format("%Y-%m-%d").to_string();
+        let ts_millis = chrono::NaiveDateTime::parse_from_str(
+            &format!("{} 10:00:00", today_date),
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
         enforcer
             .repo
-            .write_event(0, &payload, uid.0 as i32)
+            .write_event(0, uid.0 as i32, ts_millis, Some("firefox"), None)
             .await
             .unwrap();
 
@@ -683,8 +655,6 @@ mod tests {
             other => panic!("Expected DailyUsageChanged, got {:?}", other),
         }
     }
-
-    // ── grant extension writes immediately ──
 
     #[tokio::test]
     async fn test_grant_extension_writes_immediately() {
@@ -751,8 +721,6 @@ mod tests {
 
         assert!(enforcer.event_buffer.is_empty());
     }
-
-    // ── daily usage equivalence ──
 
     #[tokio::test]
     async fn test_daily_usage_equivalence() {
@@ -840,8 +808,6 @@ mod tests {
         }
     }
 
-    // ── idempotent focus switches ──
-
     #[tokio::test]
     async fn test_same_app_focus_does_not_buffer_unfocused() {
         let (_tmp, _pool, mut actor, _signal_rx) = setup().await;
@@ -870,8 +836,6 @@ mod tests {
         assert_eq!(actor.current_focus.get(&Uid(1000)), Some(&app("firefox")));
     }
 
-    // ── recover handles no open intervals ──
-
     #[tokio::test]
     async fn test_recover_no_open_intervals() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
@@ -891,10 +855,14 @@ mod tests {
         );
 
         let uid = Uid(1000);
-        let payload = json!({"t": "2025-01-01 10:00:00"}).to_string();
+        let ts_millis =
+            chrono::NaiveDateTime::parse_from_str("2025-01-01 10:00:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap()
+                .and_utc()
+                .timestamp_millis();
         enforcer
             .repo
-            .write_event(1, &payload, uid.0 as i32)
+            .write_event(1, uid.0 as i32, ts_millis, Some("firefox"), None)
             .await
             .unwrap();
 

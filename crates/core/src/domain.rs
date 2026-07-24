@@ -10,10 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use zvariant::{OwnedValue, Type, Value};
 
-// ═════════════════════════════════════════════════════════════════════════════
-// D-Bus wire types
-// ═════════════════════════════════════════════════════════════════════════════
-
 /// Policy action discriminant — maps to DB integer.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, Type)]
@@ -82,10 +78,6 @@ pub struct PolicyInput {
     pub active: bool,
     pub owner_id: u32,
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Wire types consumed by GUI / plugin
-// ═════════════════════════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct DailyUsageEntry {
@@ -179,6 +171,22 @@ pub struct SessionState {
     pub title: String,
     pub pid: u32,
     pub overlay_shown: bool,
+}
+
+/// A single row from the `events` table, exposed over D-Bus.
+///
+/// Returned by `get_day_events` — raw event data for a user+day.
+///
+/// D-Bus structs have no optional fields, so missing `app_id`/`title` are
+/// represented as empty strings (matching the codebase sentinel convention).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DayEventRow {
+    pub id: u64,
+    pub event_type: u8,
+    pub timestamp: i64,
+    pub app_id: String,
+    pub title: String,
+    pub user_id: u64,
 }
 
 #[cfg(test)]
@@ -303,7 +311,6 @@ mod tests {
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
     // Cross-language D-Bus contract tests
     //
     // These tests pin D-Bus type signatures and binary encodings that the C++
@@ -313,7 +320,6 @@ mod tests {
     // between Rust daemon and C++ plugin diverged.
     //
     // The C++ side mirrors these in test/dbus_serialization_test.cpp.
-    // ═════════════════════════════════════════════════════════════════════════
 
     #[test]
     fn active_block_entry_dbus_signature_matches_cpp() {
@@ -380,12 +386,12 @@ mod tests {
         use zvariant::Structure;
 
         let app_val: OwnedValue = Value::Structure(Structure::from((
-            FOCUS_TAG_APP, // FocusVariantTag::App
-            "code",        // app_id
-            "main.rs",     // title
-            9999u32,       // pid
-            1000u32,       // uid
-            true,          // overlay_shown
+            FOCUS_TAG_APP,
+            "code",
+            "main.rs",
+            9999u32,
+            1000u32,
+            true,
         )))
         .try_into()
         .expect("convert Value to OwnedValue");

@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 use tracing::warn;
-use wellbeing_core::{AppId, Uid};
+use wellbeing_core::{AppId, Uid, WindowTitle};
 
 /// Maximum number of buffered events before the oldest is dropped.
 const CAPACITY: usize = 10_000;
@@ -29,6 +29,7 @@ pub struct BufferedEvent {
     /// `EVENT_UNFOCUSED = 1` constants in `data/persistence.rs`.
     pub event_type: i32,
     pub timestamp: DateTime<Utc>,
+    pub title: Option<WindowTitle>,
 }
 
 /// Bounded FIFO buffer of [`BufferedEvent`]s.
@@ -47,13 +48,13 @@ impl EventBuffer {
     /// and the oldest event was evicted.
     pub fn push(&mut self, event: BufferedEvent) -> Option<BufferedEvent> {
         let dropped = if self.events.len() >= CAPACITY {
-            let dropped = self.events.pop_front();
+            let old = self.events.pop_front();
             warn!(
-                dropped_app = dropped.as_ref().map(|e| e.app_id.as_ref()).unwrap_or("?"),
-                dropped_uid = dropped.as_ref().map(|e| e.uid.0).unwrap_or(0),
+                dropped_app = old.as_ref().map(|e| e.app_id.as_ref()).unwrap_or("?"),
+                dropped_uid = old.as_ref().map(|e| e.uid.0).unwrap_or(0),
                 "event buffer overflow, oldest dropped",
             );
-            dropped
+            old
         } else {
             None
         };
@@ -107,6 +108,7 @@ mod tests {
             app_id: app(app_name),
             event_type,
             timestamp: dt(ts),
+            title: None,
         }
     }
 
@@ -147,9 +149,7 @@ mod tests {
 
         let drained = buf.drain();
         assert_eq!(drained.len(), CAPACITY);
-        // First event should be ts=1 (ts=0 was dropped)
         assert_eq!(drained[0].timestamp, dt(1));
-        // Last event should be the newly pushed one
         assert_eq!(drained[CAPACITY - 1].timestamp, dt(CAPACITY as i64));
     }
 
@@ -233,7 +233,7 @@ mod tests {
             buf.push(event(1000, "firefox", 0, i as i64));
         }
 
-        // Then — only CAPACITY remain, oldest 5 dropped
+        // Then
         assert_eq!(buf.len(), CAPACITY);
         let drained = buf.drain();
         assert_eq!(drained.len(), CAPACITY);

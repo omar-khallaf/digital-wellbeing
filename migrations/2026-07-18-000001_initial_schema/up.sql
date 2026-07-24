@@ -3,25 +3,28 @@
 
 CREATE TABLE events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  INTEGER NOT NULL CHECK(event_type IN (0, 1, 2, 3, 4, 5, 6, 7)),
-    payload     TEXT NOT NULL,
+    event_type  INTEGER NOT NULL CHECK(event_type >= 0 AND event_type <= 7),
     user_id     INTEGER NOT NULL,
+    timestamp   INTEGER NOT NULL,                -- epoch milliseconds (i64)
+    app_id      TEXT,
+    title       TEXT,
 
-    -- STORED generated columns: materialized from payload JSON at insert time
-    timestamp   TEXT GENERATED ALWAYS AS (json_extract(payload, '$.t')) STORED NOT NULL,
-    app_id      TEXT GENERATED ALWAYS AS (json_extract(payload, '$.a')) STORED,
-
+    -- Per-event-type shape enforcement:
+    --   WindowFocused (0): requires app_id NOT NULL (identifies the app)
+    --   Unfocused (1): app_id is optional — the interval's app is implied by
+    --     the preceding WindowFocused event (derived by timeline builder and
+    --     pre-buffer close resolver). Storing app_id here is redundant.
+    --   Activity events (2: idle, 3: resumed): app_id identifies the focused app
+    --   Power events (4-7: slept, shutdown, locked, loggedout):
+    --     require app_id IS NULL AND title IS NULL
     CHECK (
-        (event_type = 0
-            AND json_type(payload) IS 'object'
-            AND json_type(payload, '$.t') IS 'text'
-            AND json_type(payload, '$.a') IS 'text')
+        (event_type = 0 AND app_id IS NOT NULL)
         OR
-        (event_type IN (1, 2, 3, 4, 5, 6, 7)
-            AND json_type(payload) IS 'object'
-            AND json_type(payload, '$.t') IS 'text'
-            AND json_extract(payload, '$.a') IS NULL)
-    )
+        (event_type IN (1, 2, 3))
+        OR
+        (event_type >= 4 AND event_type <= 7 AND app_id IS NULL AND title IS NULL)
+    ),
+    CHECK (title IS NULL OR length(title) <= 1024)
 );
 
 CREATE INDEX idx_events_ts ON events(timestamp);

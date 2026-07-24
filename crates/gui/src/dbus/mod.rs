@@ -107,17 +107,16 @@ async fn name_owner_watch_on_bus(conn: Connection, tx: mpsc::UnboundedSender<Dae
         while let Some(msg) = stream.next().await {
             match msg.args() {
                 Ok(args) if args.name == DAEMON_BUS_NAME => {
-                    let event = if args.old_owner.is_empty() && !args.new_owner.is_empty() {
-                        DaemonPresenceEvent::Appeared
-                    } else if !args.old_owner.is_empty() && args.new_owner.is_empty() {
-                        DaemonPresenceEvent::Disappeared
-                    } else if !args.old_owner.is_empty() && !args.new_owner.is_empty() {
-                        // Owner changed while still present (daemon reconnected
-                        // on same bus after transient disconnect) — treat as
-                        // appearance so the loop re-resolves and reattaches.
+                    // Both empty → spurious signal, no state change.
+                    if args.new_owner.is_empty() && args.old_owner.is_empty() {
+                        continue;
+                    }
+                    // new_owner present → appeared (or reconnected on same bus).
+                    // new_owner absent → disappeared.
+                    let event = if !args.new_owner.is_empty() {
                         DaemonPresenceEvent::Appeared
                     } else {
-                        continue;
+                        DaemonPresenceEvent::Disappeared
                     };
                     let _ = tx.send(event);
                 }
@@ -142,7 +141,7 @@ pub enum BusType {
     Session,
 }
 
-/// Connection status with the daemon daemon.
+/// Connection status with the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionStatus {
     Connected(BusType),
@@ -184,6 +183,13 @@ trait Daemon {
         user_id: u32,
     ) -> zbus::Result<Vec<DailySummary>>;
 
+    async fn get_day_events(
+        &self,
+        uid: u32,
+        start_millis: i64,
+        end_millis: i64,
+    ) -> zbus::Result<Vec<DayEventRow>>;
+
     async fn list_categories(&self) -> zbus::Result<Vec<Category>>;
     async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
     async fn set_app_category(&self, app_id: &str, category_id: CategoryId) -> zbus::Result<()>;
@@ -207,9 +213,9 @@ trait Daemon {
 /// Coalesces rapid-fire D-Bus signals into periodic cache invalidations.
 #[derive(Debug)]
 pub struct SignalCoalescer {
-    blocked_dirty: Arc<AtomicBool>,
-    usage_dirty: Arc<AtomicBool>,
-    policy_dirty: Arc<AtomicBool>,
+    blocked_dirty: AtomicBool,
+    usage_dirty: AtomicBool,
+    policy_dirty: AtomicBool,
 }
 
 /// Bitmask of dirty flags returned by `SignalCoalescer::drain()`.
@@ -229,9 +235,9 @@ impl CoalescedNotifications {
 impl SignalCoalescer {
     pub fn new() -> Self {
         Self {
-            blocked_dirty: Arc::new(AtomicBool::new(false)),
-            usage_dirty: Arc::new(AtomicBool::new(false)),
-            policy_dirty: Arc::new(AtomicBool::new(false)),
+            blocked_dirty: AtomicBool::new(false),
+            usage_dirty: AtomicBool::new(false),
+            policy_dirty: AtomicBool::new(false),
         }
     }
 
@@ -264,7 +270,7 @@ impl Default for SignalCoalescer {
 
 // ── DaemonClient ────────────────────────────────────────────────────────────
 
-/// Thin wrapper around the daemon's `org.wellbeing.v1.Daemon` D-Bus API.
+/// Thin wrapper around the daemon's `org.wellbeing.v1.Controller` D-Bus API.
 ///
 /// Holds connections to BOTH system and session busses simultaneously.
 /// Uses 4-step resolution to select which connection hosts the daemon
@@ -277,6 +283,7 @@ pub struct DaemonClient {
     active_conn: Connection,
     status: ConnectionStatus,
     range_cache: Arc<ClientCache<String, Vec<DailySummary>>>,
+    day_events_cache: Arc<ClientCache<String, Vec<DayEventRow>>>,
     policy_cache: Arc<ClientCache<String, Vec<PolicyData>>>,
     category_cache: Arc<ClientCache<String, Vec<Category>>>,
     app_category_cache: Arc<ClientCache<String, Vec<AppCategoryRow>>>,
@@ -313,6 +320,7 @@ impl DaemonClient {
             sess_conn,
             active_conn,
             range_cache: Arc::new(ClientCache::new()),
+            day_events_cache: Arc::new(ClientCache::new()),
             policy_cache: Arc::new(ClientCache::new()),
             category_cache: Arc::new(ClientCache::new()),
             app_category_cache: Arc::new(ClientCache::new()),
@@ -347,6 +355,7 @@ impl DaemonClient {
             sess_conn,
             active_conn,
             range_cache: Arc::new(ClientCache::new()),
+            day_events_cache: Arc::new(ClientCache::new()),
             policy_cache: Arc::new(ClientCache::new()),
             category_cache: Arc::new(ClientCache::new()),
             app_category_cache: Arc::new(ClientCache::new()),
@@ -379,8 +388,8 @@ impl DaemonClient {
     /// restarted on a different bus. Returns true if the active bus changed.
     pub async fn re_resolve_bus(&mut self) -> bool {
         let result = select_daemon_bus(&self.sys_conn, &self.sess_conn).await;
-        match (result, self.status) {
-            (Some((conn, bt)), _) => {
+        match result {
+            Some((conn, bt)) => {
                 let changed = !matches!(self.status, ConnectionStatus::Connected(b) if b == bt);
                 // Re-create proxy on the (possibly new) active connection first.
                 // Only update status + active_conn if the proxy succeeds — a dead
@@ -393,7 +402,7 @@ impl DaemonClient {
                 }
                 changed
             }
-            (None, _) => {
+            None => {
                 self.status = ConnectionStatus::Disconnected;
                 false
             }
@@ -446,6 +455,24 @@ impl DaemonClient {
         Ok(summaries)
     }
 
+    pub async fn get_day_events(
+        &self,
+        uid: u32,
+        start_millis: i64,
+        end_millis: i64,
+    ) -> Result<Vec<DayEventRow>> {
+        let key = format!("day_events:{}:{}:{}", uid, start_millis, end_millis);
+        if let Some(cached) = self.day_events_cache.get(&key) {
+            return Ok(cached);
+        }
+        let events = self
+            .proxy
+            .get_day_events(uid, start_millis, end_millis)
+            .await?;
+        self.day_events_cache.set(key, events.clone());
+        Ok(events)
+    }
+
     pub async fn list_categories(&self) -> Result<Vec<Category>> {
         let key = "categories".into();
         if let Some(cached) = self.category_cache.get(&key) {
@@ -472,6 +499,9 @@ impl DaemonClient {
 
     pub fn invalidate_range_cache(&self) {
         self.range_cache.clear();
+    }
+    pub fn invalidate_day_events_cache(&self) {
+        self.day_events_cache.clear();
     }
     pub fn invalidate_policy_cache(&self) {
         self.policy_cache.clear();

@@ -27,5 +27,8 @@ pub mod data;
 mod domain;
 mod overlay;
 
+#[cfg(test)]
+mod test_support;
+
 pub use core::*;
 pub use domain::*;

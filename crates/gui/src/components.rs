@@ -151,14 +151,6 @@ pub fn time_range_selector(
     let on_change = std::sync::Arc::new(on_change);
     let on_toggle_custom = std::sync::Arc::new(on_toggle_custom);
 
-    let start_str = selected.start.format("%b %d").to_string();
-    let end_str = selected.end.format("%b %d, %Y").to_string();
-    let range_label = SharedString::from(format!("{start_str} — {end_str}"));
-
-    // ── Preset buttons ────────────────────────────────────────────────────
-    // Note: closing custom mode on preset click is handled by make_on_range
-    // in app.rs (sets show_custom_range = false). Presets only fire on_change.
-
     let preset_specs: &[(&str, &str, u32)] = &[
         ("1d", "Today", 1),
         ("7d", "7d", 7),
@@ -180,8 +172,6 @@ pub fn time_range_selector(
         })
         .collect();
 
-    // ── Custom toggle button ──────────────────────────────────────────────
-
     let btn_custom = {
         let mut btn = Button::new("custom-range").label("Custom");
         if show_custom {
@@ -189,8 +179,6 @@ pub fn time_range_selector(
         }
         btn.on_click(move |_, _, cx| (on_toggle_custom.as_ref())(cx))
     };
-
-    // ── Custom date inputs (only rendered when custom mode is active) ────────
 
     let custom_inputs: Option<AnyElement> = if show_custom {
         Some(
@@ -258,11 +246,5 @@ pub fn time_range_selector(
         .children(preset_buttons)
         .child(btn_custom)
         .when_some(custom_inputs, |el, inputs| el.child(inputs))
-        .child(
-            div()
-                .text_sm()
-                .text_color(text_muted(cx))
-                .child(range_label),
-        )
         .into_any_element()
 }

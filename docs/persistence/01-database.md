@@ -53,22 +53,26 @@ migration because SQLite DDL is transactional for most DDL statements.
 Eight event types cover every focus switch and state change. Every focus switch
 or state change writes exactly one row.
 
-The table uses STORED generated columns for timestamp and app_id, materialized
-from the JSON payload at insert time via json_extract. This keeps all field data
-in the JSON payload as the single source of truth while making the extracted
-values physically present in the row so indexes on timestamp and app_id work
-without function-wrapped lookups. Interval accumulation is handled in Rust via
-`accumulate_daily_usage` called in the same transaction as the event INSERT, so
-business logic stays in application code instead of SQL triggers.
+The schema uses direct typed columns rather than a JSON payload. Each event row
+carries: an integer `event_type` discriminant (0-7), the `user_id`, a `timestamp`
+as epoch milliseconds (i64), optional `app_id` (nullable text), and optional
+`title` (nullable text, up to 256 chars). Interval computation happens in Rust
+via `apply_closed_deltas_from_buffer` called in the same transaction as the
+event INSERT, so business logic stays in application code instead of SQL
+triggers.
 
-Payload field names are shortened to one character (`t` for timestamp, `a` for
-app_id) to reduce per-row JSON storage overhead. At the expected event volume
-the shortened keys save several megabytes per year in JSON key names alone.
+| Column     | Type         | Notes                                         |
+|------------|-------------|-----------------------------------------------|
+| id         | INTEGER      | AUTOINCREMENT primary key                     |
+| event_type | INTEGER      | 0=WindowFocused, 1=Unfocused, 2=Idle, …       |
+| user_id    | INTEGER      | UID of the user this event belongs to          |
+| timestamp  | BIGINT       | Epoch milliseconds (UTC) — indexed for queries |
+| app_id     | TEXT?        | Non-null for WindowFocused/Idle/Resumed        |
+| title      | TEXT?        | Window title, present on WindowFocused events  |
 
-A CHECK constraint enforces that the payload must contain string fields `t` and
-`a` when event_type indicates WindowFocused, and only string `t` with null or
-absent `a` for Unfocused and the close-event types. No other event_type values
-are accepted.
+The `id` column uses AUTOINCREMENT because it serves as an ordering token for
+the reactive watch channel; consumers track last seen event id to avoid
+re-processing known events.
 
 Interval computation happens at write time. Tracked time for an app equals
 the wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
@@ -76,14 +80,19 @@ the wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
 time; the GUI can derive idle breakdown from the raw `Idle`/`Resumed` event
 sequence if needed.
 
-The id column uses AUTOINCREMENT because it serves as an ordering token for the
-reactive watch channel; consumers track last seen event id to avoid
-re-processing known events.
+| Code | Event           | Description                          |
+|------|-----------------|--------------------------------------|
+| 0    | WindowFocused   | An app window gained focus           |
+| 1    | Unfocused       | No window is focused (desktop)       |
+| 2    | Idle            | User became idle                     |
+| 3    | Resumed         | User resumed from idle               |
+| 4    | Slept           | System entered sleep                 |
+| 5    | ShutDown        | System shut down                     |
+| 6    | Locked          | Session locked                       |
+| 7    | LoggedOut       | User logged out                      |
 
-Timestamps are stored as YYYY-MM-DD HH:MM:SS in UTC, space-separated, with no
-timezone offset. This single format gives lexicographic ordering equal to
-chronological ordering because all values are UTC, and SQLite date functions
-parse it directly for query-time duration math.
+The event type constants are shared across the daemon and GUI via
+`wellbeing_core::event_types`.
 
 ### `daily_usage` — Materialized Daily Usage Per App
 
@@ -93,8 +102,7 @@ BEGIN/COMMIT pair. The same transaction calls `accumulate_daily_usage` to update
 the materialized view, so the event write and the usage update are atomic.
 
 Focus state is maintained in-memory by the `EnforcerActor` as a `HashMap` per
-user, never persisted in the database. The events log is the source of truth;
-the in-memory state is just the live accumulator.
+user, never persisted in the database.
 
 `accumulate_daily_usage` computes elapsed minutes from the focus state
 (wall-clock time including idle), derives the date from the focus start time,
@@ -103,8 +111,7 @@ The extended flag is set by the `EnforcerActor` after granting extra time via a
 direct UPDATE; it is not set by a trigger.
 
 Application-level transactions provide the same atomicity that SQL triggers
-would while keeping business logic in Rust. If the daemon crashes
-mid-transaction the entire operation rolls back, preserving crash consistency.
+would while keeping business logic in Rust.
 
 ### `policies` — Blocking, Time Limit & Notify Rules
 

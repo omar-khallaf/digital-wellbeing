@@ -1,8 +1,8 @@
 //! D-Bus interface methods — each public method is ≤20 lines.
 
 use wellbeing_core::{
-    ActiveBlockEntry, AppCategoryRow, Category, DailySummary, DailyUsageEntry, PluginInstanceId,
-    PolicyData, PolicyInput, Uid,
+    ActiveBlockEntry, AppCategoryRow, Category, DailySummary, DailyUsageEntry, DayEventRow,
+    PluginInstanceId, PolicyData, PolicyInput, Uid,
 };
 use zbus::fdo;
 use zbus::interface;
@@ -245,6 +245,24 @@ impl DaemonInterface {
             })
     }
 
+    async fn get_day_events(
+        &self,
+        uid: u32,
+        start_millis: i64,
+        end_millis: i64,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<Vec<DayEventRow>> {
+        let caller = authenticate(conn, header).await?;
+        let resolved_uid = resolve_uid(caller, uid);
+        data::get_day_events(&self.pool, resolved_uid as i32, start_millis, end_millis)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "query failed");
+                fdo::Error::Failed("internal error".into())
+            })
+    }
+
     async fn list_categories(&self) -> fdo::Result<Vec<Category>> {
         data::list_categories(&self.pool).await.map_err(|e| {
             tracing::error!(error = %e, "query failed");
@@ -310,16 +328,17 @@ pub(crate) async fn sync_focus_on_register(
     use diesel::SelectableHelper;
     use diesel_async::RunQueryDsl;
 
-    // 1. Query CurrentFocus from the plugin
     let current = {
         let reg = registry.read().await;
         reg.query_current_focus().await
     };
 
-    // 2. Read the last event from the database
+    // Read the last event — order by timestamp, not id, because synthetic
+    // events during recovery may have timestamps that don't correlate with
+    // insertion order.
     let last_event: Option<EventRow> = match pool.get().await {
         Ok(mut conn) => events
-            .order(id.desc())
+            .order(timestamp.desc())
             .select(EventRow::as_select())
             .first(&mut conn)
             .await
@@ -330,7 +349,6 @@ pub(crate) async fn sync_focus_on_register(
         }
     };
 
-    // 3. Compare and act
     match (last_event, current) {
         // Empty DB or last event is a close → no open interval
         (None, Some(focus)) => {
@@ -350,10 +368,7 @@ pub(crate) async fn sync_focus_on_register(
                 app_id: ref cur_app_id,
                 ..
             }),
-        ) if last_app.as_deref() == Some(cur_app_id.as_str()) => {
-            // Same app — interval is already open, nothing to do.
-        }
-        // Last event is WindowFocused but CurrentFocus is different → close old, open new
+        ) if last_app.as_deref() == Some(cur_app_id.as_str()) => {}
         (
             Some(EventRow {
                 event_type: EVENT_WINDOW_FOCUSED,
@@ -378,7 +393,6 @@ pub(crate) async fn sync_focus_on_register(
         (_, Some(focus)) => {
             event_tx.send(focus).ok();
         }
-        // No app focused and no open interval — nothing to do.
         (_, None) => {}
     }
 }

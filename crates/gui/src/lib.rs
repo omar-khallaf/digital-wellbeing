@@ -10,6 +10,7 @@
 //! - `reports/` — Reports ViewModel + gpui components
 
 pub mod app;
+pub mod appshell;
 pub mod cache;
 pub mod chart;
 pub mod components;

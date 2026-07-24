@@ -334,7 +334,7 @@ void registerWindowHooks() {
                     g_ctx->lockManager->setFocusedApp(appId);
 
                     // Re-sync ActiveBlocks on focus change for low-latency
-                    // overlay state updates (see subscribeToDaemonSignals notes).
+                    // overlay state updates (currently polling-based).
                     if (g_ctx->manager) {
                         g_ctx->manager->readActiveBlocksAsync();
                     }

@@ -5,16 +5,15 @@ use std::collections::HashMap;
 use diesel::{ExpressionMethods, QueryDsl, insert_into, update};
 use diesel_async::RunQueryDsl;
 use wellbeing_core::{
-    AppCategoryRow, Category, CategoryId, DailySummary, DailyUsageEntry, PolicyData, PolicyInput,
-    TimeWindow,
+    AppCategoryRow, Category, CategoryId, DailySummary, DailyUsageEntry, DayEventRow, PolicyData,
+    PolicyInput, TimeWindow,
 };
 
 use crate::policy::data::{NewPolicy, UpdatePolicy};
 use crate::policy::{DieselPolicyRepo, PolicyRepo};
 use crate::store::DbPool;
-use crate::store::schema::{app_categories, categories, daily_usage};
+use crate::store::schema::{app_categories, categories, daily_usage, events};
 
-/// Fetch all policies (optionally filtered by owner).
 pub(crate) async fn list_policies(
     pool: &DbPool,
     caller_root: bool,
@@ -29,7 +28,6 @@ pub(crate) async fn list_policies(
         .collect())
 }
 
-/// Create a new policy.
 pub(crate) async fn create_policy(
     pool: &DbPool,
     input: PolicyInput,
@@ -79,7 +77,6 @@ pub(crate) async fn create_policy(
     Ok(id.0 as i64)
 }
 
-/// Update an existing policy.
 pub(crate) async fn update_policy(
     pool: &DbPool,
     id: wellbeing_core::PolicyId,
@@ -138,7 +135,6 @@ pub(crate) async fn update_policy(
     repo.update_policy(&mut conn, id.0 as i32, changes).await
 }
 
-/// Delete a policy.
 pub(crate) async fn delete_policy(pool: &DbPool, id: i32) -> anyhow::Result<bool> {
     let mut conn = pool.get().await?;
     let repo = DieselPolicyRepo;
@@ -174,16 +170,18 @@ pub(crate) async fn get_daily_usage(
         .load(&mut conn)
         .await?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| DailyUsageEntry {
-            date: r.date,
-            user_id: r.user_id as u32,
-            app_id: r.app_id,
-            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
-            extended: r.extended,
-        })
-        .collect())
+    Ok(rows.into_iter().map(daily_usage_row_to_entry).collect())
+}
+
+/// Convert a `DailyUsageRow` to a `DailyUsageEntry` for D-Bus transport.
+fn daily_usage_row_to_entry(r: crate::policy::DailyUsageRow) -> DailyUsageEntry {
+    DailyUsageEntry {
+        date: r.date,
+        user_id: r.user_id as u32,
+        app_id: r.app_id,
+        total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+        extended: r.extended,
+    }
 }
 
 /// Get daily usage grouped by date for a date range.
@@ -215,13 +213,7 @@ pub(crate) async fn get_usage_range(
         grouped
             .entry(r.date.clone())
             .or_default()
-            .push(DailyUsageEntry {
-                date: r.date,
-                user_id: r.user_id as u32,
-                app_id: r.app_id,
-                total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
-                extended: r.extended,
-            });
+            .push(daily_usage_row_to_entry(r));
     }
 
     let mut summaries: Vec<DailySummary> = grouped
@@ -237,7 +229,6 @@ pub(crate) async fn get_usage_range(
     Ok(summaries)
 }
 
-/// List all categories.
 pub(crate) async fn list_categories(pool: &DbPool) -> anyhow::Result<Vec<Category>> {
     let mut conn = pool.get().await?;
 
@@ -349,4 +340,45 @@ pub(crate) async fn set_app_category(
     }
 
     Ok(())
+}
+
+/// Get raw events for a user within a millisecond-range.
+///
+/// Queries the `events` table directly. Returns `DayEventRow` for D-Bus transport.
+type EventRowRaw = (i32, i32, i32, i64, Option<String>, Option<String>);
+pub(crate) async fn get_day_events(
+    pool: &DbPool,
+    uid: i32,
+    start_millis: i64,
+    end_millis: i64,
+) -> anyhow::Result<Vec<DayEventRow>> {
+    let mut conn = pool.get().await?;
+
+    let rows: Vec<EventRowRaw> = events::table
+        .filter(events::user_id.eq(uid))
+        .filter(events::timestamp.ge(start_millis))
+        .filter(events::timestamp.lt(end_millis))
+        .order_by(events::timestamp.asc())
+        .select((
+            events::id,
+            events::event_type,
+            events::user_id,
+            events::timestamp,
+            events::app_id,
+            events::title,
+        ))
+        .load(&mut conn)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, event_type, user_id, ts, app_id, title)| DayEventRow {
+            id: id as u64,
+            event_type: event_type as u8,
+            timestamp: ts,
+            app_id: app_id.unwrap_or_default(),
+            title: title.unwrap_or_default(),
+            user_id: user_id as u64,
+        })
+        .collect())
 }

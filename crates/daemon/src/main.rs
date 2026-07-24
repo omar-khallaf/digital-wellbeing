@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -154,6 +155,13 @@ async fn main() -> Result<()> {
     });
     info!("enforcer actor ready");
 
+    // Start screen-lock watcher BEFORE power-state watcher so the
+    // lock-state flag is available when the resume handler runs.
+    let (screen_lock_rx, screen_is_locked) =
+        wellbeing_daemon::platform::linux::ScreenLockWatcher::watch()
+            .await
+            .context("failed to start ScreenLockWatcher")?;
+
     let power_rx = wellbeing_daemon::platform::linux::PowerStateWatcher::watch()
         .await
         .context("failed to start PowerStateWatcher")?;
@@ -161,6 +169,7 @@ async fn main() -> Result<()> {
     let power_tx = platform.event_tx();
     let shutdown_tx = power_tx.clone();
     let power_registry = registry.clone();
+    let resume_is_locked = screen_is_locked.clone();
     tokio::spawn(async move {
         use futures::StreamExt;
         use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -189,7 +198,9 @@ async fn main() -> Result<()> {
             }
             // After ResumedSystem, reconcile focus so intervals are
             // reopened for whatever app the user is actually using.
-            if is_resume {
+            // Skip if the screen is still locked — the unlock handler
+            // will run reconcile_focus when the user unlocks.
+            if is_resume && !resume_is_locked.load(Ordering::Acquire) {
                 let reconcile_events = reconcile_focus(&power_registry).await;
                 for ev in reconcile_events {
                     if power_tx.send(ev).is_err() {
@@ -201,9 +212,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    let screen_lock_rx = wellbeing_daemon::platform::linux::ScreenLockWatcher::watch()
-        .await
-        .context("failed to start ScreenLockWatcher")?;
     let sl_tx = platform.event_tx();
     let sl_registry = registry.clone();
     tokio::spawn(async move {

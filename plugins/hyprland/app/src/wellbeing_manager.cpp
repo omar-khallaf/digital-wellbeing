@@ -160,7 +160,6 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
                     sdbus::registerSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL).withParameters<uint32_t>({"activity"}))
         .forInterface(wellbeing::MANAGER_INTERFACE);
 
-    // Wire LockManager button clicks → our emitUserAction.
     m_lockManager->setUserActionCallback(
         [this](const AppId &appId, ActionType action) -> void { emitUserAction(appId.value(), action); });
 
@@ -200,7 +199,6 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
     if (m_daemonProxy) {
         registerWithDaemonAsync();
         readActiveBlocksAsync();
-        subscribeToDaemonSignals();
     } else {
         logInfo("WellbeingManager: daemon not reachable on either bus — waiting for NameOwnerChanged");
     }
@@ -213,24 +211,6 @@ WellbeingManager::~WellbeingManager() {
     m_sysConn->leaveEventLoop();
     m_sessConn->leaveEventLoop();
 }
-
-// ── Reverse discovery ──────────────────────────────────────────────
-
-void WellbeingManager::registerWithDaemon() {
-    if (!m_daemonProxy) {
-        logErr("registerWithDaemon: no daemon proxy available");
-        return;
-    }
-    try {
-        m_daemonProxy->callMethod(wellbeing::REGISTER_PLUGIN_METHOD).onInterface(wellbeing::DAEMON_INTERFACE);
-        logInfo("registerWithDaemon: registered plugin instance");
-    } catch (const sdbus::Error &e) {
-        logInfo("registerWithDaemon: daemon not reachable (" + std::string(e.what()) +
-                ") — will be discovered via NameOwnerChanged");
-    }
-}
-
-// ── Async registration (coroutine-based) ───────────────────────────
 
 auto WellbeingManager::registerWithDaemonAsync() -> FireAndForget {
     if (!m_daemonProxy) {
@@ -247,9 +227,6 @@ auto WellbeingManager::registerWithDaemonAsync() -> FireAndForget {
     }
 }
 
-// ── Daemon state consumption (declarative) ─────────────────────────
-
-// ── Async readActiveBlocks (coroutine-based, non-blocking) ───────
 auto WellbeingManager::readActiveBlocksAsync() -> FireAndForget {
     if (!m_daemonProxy) {
         logErr("readActiveBlocksAsync: no daemon proxy");
@@ -303,32 +280,6 @@ auto WellbeingManager::readActiveBlocksAsync() -> FireAndForget {
         }
     } catch (const sdbus::Error &e) {
         logInfo("readActiveBlocksAsync: daemon not available yet (" + std::string(e.what()) + ")");
-    }
-}
-
-/// Subscribe to the daemon's BlockStateChanged signal.
-///
-/// BlockStateChanged signature: (uid: u32, app_id: s, blocked: b, reason: u32)
-/// We subscribe via PropertiesChanged on org.wellbeing.v1.Controller or via
-/// a dedicated signal match. sdbus-c++ doesn't natively support signal
-/// subscription on a proxy, so we use the connection-level sd-bus match.
-void WellbeingManager::subscribeToDaemonSignals() {
-    if (!m_daemonProxy) {
-        logErr("subscribeToDaemonSignals: no daemon proxy");
-        return;
-    }
-
-    try {
-        logInfo("subscribeToDaemonSignals: ActiveBlocks sync registered "
-                "(full signal subscription requires sdbus-c++ signal API)");
-
-        // TODO: In a future iteration, use the native sd-bus API directly:
-        //   sd_bus_match_signal(m_conn->get(), nullptr, DAEMON_INTERFACE,
-        //                       DAEMON_OBJECT_PATH, DAEMON_INTERFACE,
-        //                       "BlockStateChanged", onBlockStateChanged, nullptr);
-        // For now, readActiveBlocksAsync() is called on focus changes and periodically.
-    } catch (const sdbus::Error &e) {
-        logErr("subscribeToDaemonSignals: failed: " + std::string(e.what()));
     }
 }
 
@@ -429,13 +380,14 @@ void WellbeingManager::reconnectToDaemon() {
     }
 
     // Re-register plugin instance — the daemon may have restarted.
-    registerWithDaemon();
+    // Uses the async variant to avoid a D-Bus deadlock: the daemon calls
+    // back to the plugin (CurrentFocus property) during registration, and a
+    // synchronous callMethod would block the event loop thread, preventing
+    // that callback from being dispatched.
+    registerWithDaemonAsync();
 
     // Re-read all active blocks to synchronise overlay state (non-blocking coroutine).
     readActiveBlocksAsync();
-
-    // Re-subscribe to daemon signals.
-    subscribeToDaemonSignals();
 }
 
 void WellbeingManager::onDaemonAppeared() {

@@ -16,7 +16,7 @@ use gpui_component::{ActiveTheme, Root, theme::Theme};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use wellbeing_core::DateRange;
 use wellbeing_gui::app::{App, AppState, AppViewModels, RenderMode};
 use wellbeing_gui::dashboard::BlockCardInfo;
@@ -58,6 +58,7 @@ async fn main() {
         category_cache: Vec::new(),
         app_category_cache: Vec::new(),
         block_cards: Vec::new(),
+        day_events_cache: Vec::new(),
         daemon_available,
         connection_status,
     }));
@@ -94,7 +95,6 @@ async fn main() {
         // Button, Input, charts, ...). Visible wiring — no hidden init.
         gpui_component::init(app);
 
-        // Respect system dark/light preference.
         Theme::sync_system_appearance(None, app);
 
         let state = state.clone();
@@ -115,8 +115,6 @@ async fn main() {
         app.open_window(window_options, move |window, cx| {
             let app_view = cx.new(|_cx| App::new(state.clone()));
 
-            // Drain VM events from the background loop and apply them to the
-            // App entity — this is the foreground half of the StateFlow.
             // MUST store the Task handle in the entity — dropping it cancels
             // the future (including vm_rx) before it ever processes a message.
             let entity = app_view.clone();
@@ -204,6 +202,7 @@ async fn background_loop(
                     s.policy_cache.clear();
                     s.category_cache.clear();
                     s.app_category_cache.clear();
+                    s.day_events_cache.clear();
                     drop(s);
                     dbus::spawn_signal_listener(&client, coalescer.clone(), signal_tx.clone());
                     // Refresh immediately so the UI shows data
@@ -225,6 +224,7 @@ async fn background_loop(
                 // or reconnect) explicitly wants fresh data.
                 if notif.usage {
                     client.invalidate_range_cache();
+                    client.invalidate_day_events_cache();
                 }
                 if notif.policy {
                     client.invalidate_policy_cache();
@@ -253,6 +253,19 @@ async fn refresh_and_emit(
     });
 }
 
+/// Set a state field from a Result, logging a warning on error.
+fn set_or_warn<T, E: std::fmt::Display>(
+    s: &mut AppState,
+    result: Result<T, E>,
+    setter: impl FnOnce(&mut AppState, T),
+    name: &str,
+) {
+    match result {
+        Ok(value) => setter(s, value),
+        Err(e) => warn!(error = %e, "failed to fetch {name}"),
+    }
+}
+
 async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &DaemonClient) {
     let (uid, range) = {
         let s = state.lock().await;
@@ -261,34 +274,50 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
     let start = range.start_str();
     let end = range.end_str();
 
+    // Day events for today's timeline chart: midnight → midnight tomorrow UTC.
+    let today_start = chrono::Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let today_end = today_start + Duration::days(1);
+    let day_start_ms = today_start.and_utc().timestamp_millis();
+    let day_end_ms = today_end.and_utc().timestamp_millis();
+
     let usage_fut = client.get_usage_range(&start, &end, uid);
     let policy_fut = client.list_policies(uid);
     let cat_fut = client.list_categories();
     let app_cat_fut = client.get_app_categories();
     let blocks_fut = client.get_active_blocks();
+    let day_events_fut = client.get_day_events(uid, day_start_ms, day_end_ms);
 
-    let (usage, policies, categories, app_categories, blocks) =
-        tokio::join!(usage_fut, policy_fut, cat_fut, app_cat_fut, blocks_fut);
+    let (usage, policies, categories, app_categories, blocks, day_events) = tokio::join!(
+        usage_fut,
+        policy_fut,
+        cat_fut,
+        app_cat_fut,
+        blocks_fut,
+        day_events_fut
+    );
 
     let mut s = state.lock().await;
-    match usage {
-        Ok(entries) => s.range_cache = entries,
-        Err(e) => warn!(error = %e, "failed to fetch usage range"),
-    }
-    match policies {
-        Ok(p) => s.policy_cache = p,
-        Err(e) => warn!(error = %e, "failed to fetch policies"),
-    }
-    match categories {
-        Ok(c) => s.category_cache = c,
-        Err(e) => warn!(error = %e, "failed to fetch categories"),
-    }
-    match app_categories {
-        Ok(a) => s.app_category_cache = a,
-        Err(e) => warn!(error = %e, "failed to fetch app categories"),
-    }
-    match blocks {
-        Ok(entries) => {
+    set_or_warn(&mut s, usage, |s, v| s.range_cache = v, "usage range");
+    set_or_warn(&mut s, policies, |s, v| s.policy_cache = v, "policies");
+    set_or_warn(
+        &mut s,
+        categories,
+        |s, v| s.category_cache = v,
+        "categories",
+    );
+    set_or_warn(
+        &mut s,
+        app_categories,
+        |s, v| s.app_category_cache = v,
+        "app categories",
+    );
+    set_or_warn(
+        &mut s,
+        blocks,
+        |s, entries| {
             s.block_cards = entries
                 .into_iter()
                 .map(|b| BlockCardInfo {
@@ -298,7 +327,13 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
                         .unwrap_or(Utc::now()),
                 })
                 .collect();
-        }
-        Err(e) => warn!(error = %e, "failed to fetch active blocks"),
-    }
+        },
+        "active blocks",
+    );
+    set_or_warn(
+        &mut s,
+        day_events,
+        |s, v| s.day_events_cache = v,
+        "day events",
+    );
 }
