@@ -5,6 +5,7 @@ pub mod blocking;
 pub mod bus_resolution;
 pub mod categorization;
 pub mod dbus;
+pub mod logind;
 pub mod platform;
 pub mod policy;
 pub mod reports;

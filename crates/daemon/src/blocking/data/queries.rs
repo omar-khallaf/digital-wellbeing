@@ -7,7 +7,7 @@ use wellbeing_core::{AppId, CategoryId, Clock, Uid};
 use crate::policy::{DieselPolicyRepo, Policy, PolicyRepo as _};
 use crate::store::schema;
 
-use super::events::BlockingRepo;
+use super::repo::BlockingRepo;
 
 impl BlockingRepo {
     /// Resolve category ids for an app (user-specific then fallback).
@@ -46,7 +46,7 @@ impl BlockingRepo {
     ) -> anyhow::Result<i64> {
         let mut conn = self.pool.get().await?;
         let today = clock.now().format("%Y-%m-%d").to_string();
-        let row: Option<(i32, i32)> = schema::daily_usage::table
+        let row: Option<(i64, i64)> = schema::daily_usage::table
             .filter(schema::daily_usage::date.eq(&today))
             .filter(schema::daily_usage::user_id.eq(uid.0 as i32))
             .filter(schema::daily_usage::app_id.eq(app_id.as_ref()))
@@ -59,6 +59,6 @@ impl BlockingRepo {
             .ok();
 
         let (closed, open) = row.unwrap_or((0, 0));
-        Ok(closed as i64 + open as i64)
+        Ok(closed + open)
     }
 }

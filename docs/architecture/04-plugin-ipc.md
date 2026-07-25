@@ -27,16 +27,15 @@ consumer of daemon block state.
 
 Signals (plugin -> daemon):
 
-| Signal          | Payload                                         | When                                     |
-| --------------- | ----------------------------------------------- | ---------------------------------------- |
-| FocusChanged    | v — variant: u32(0) = Desktop, u32(1) + struct{app_id, title, pid, uid} = WindowFocused, u32(2) + struct{app_id, title, pid, uid} = WindowBlocked | On every compositor focus switch         |
-| ActivityChanged | FocusActivityTag — Idle=0, Resumed=1            | User idle state changes                  |
+| Signal | Payload                                                                                                                                                      | When                                                   |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| Event  | (u32, u32, String, String, u32, u32) — (tag, variant, app_id, title, pid, uid); tag=0=Desktop, tag=1=Focus, tag=2=Block; variant sub-tag encodes idle/resume | On every compositor focus switch and idle state change |
 
 Property (readable):
 
-| Property     | Type | Returns                                                                 |
-| ------------ | ---- | ----------------------------------------------------------------------- |
-| CurrentFocus | v    | Same variant as FocusChanged — Desktop / WindowFocused / WindowBlocked   |
+| Property     | Type | Returns                                                                           |
+| ------------ | ---- | --------------------------------------------------------------------------------- |
+| CurrentFocus | v    | Same tag encoding as Event signal — Desktop (tag=0), Focus (tag=1), Block (tag=2) |
 
 Close button handling is entirely local to the plugin. The plugin calls
 `LockManager::hideOverlay()` to dismiss the overlay without sending any signal
@@ -46,17 +45,17 @@ to the daemon.
 
 D-Bus signals are fire-and-forget — they do not persist their last value, so a
 GUI that subscribes after the fact misses the current state. CurrentFocus is a
-readable D-Bus property that returns the same variant as the FocusChanged
-signal, giving clients a queryable, always-current source of truth on startup.
-The signal remains useful as a lightweight change notification.
+readable D-Bus property that returns the same tag encoding as the Event signal,
+giving clients a queryable, always-current source of truth on startup. The
+signal remains useful as a lightweight change notification.
 
 The daemon also uses CurrentFocus after termination events (suspend, lock,
-logout) to resync focus tracking. On resume (if screen unlocked), screen
-unlock, or login, the daemon queries each registered plugin's CurrentFocus
-property and buffers the appropriate event — WindowFocused, WindowBlocked,
-or Unfocused (when the property returns Desktop). This restores tracking
-without waiting for a compositor focus switch. The property-query path gates
-on login + unlock state; signal delivery already implies both.
+logout) to resync focus tracking. On resume (if screen unlocked), screen unlock,
+or login, the daemon queries each registered plugin's CurrentFocus property and
+buffers the appropriate event — Focus, Block, or Unfocus (when the property
+returns Desktop). This restores tracking without waiting for a compositor focus
+switch. The property-query path gates on login + unlock state; signal delivery
+already implies both.
 
 ## Declarative Block State — org.wellbeing.v1.Controller
 
@@ -125,7 +124,7 @@ triggers overlay removal.
 
 Idle/Resumed are produced by the compositor plugin, not logind. The plugin
 tracks user activity (keyboard, mouse, touchpad, and video-player playback) and
-exposes it via the ActivityChanged D-Bus signal on org.wellbeing.v1.Manager. The
+exposes it via the unified Event D-Bus signal on org.wellbeing.v1.Manager. The
 daemon subscribes and maps Idle -> Idle (pause), Resumed -> Resumed (unpause)
 PlatformEvents.
 
@@ -135,7 +134,7 @@ breakdown display, not daily usage or limit enforcement.
 Key points:
 
 - Idle/Resumed carry no app_id; the app they pause is the open interval from the
-  most recent WindowFocused.
+  most recent Focus.
 - Idle is the ONLY event that pauses an interval. Suspend/lock/logout/shutdown
   CLOSE it instead (see
   [03-linux-platform.md](./03-linux-platform.md#power--session-state-handling)).
@@ -175,10 +174,10 @@ or session |-- Call RegisterPlugin on the selected connection
 
 Daemon receives RegisterPlugin: |-- Reads caller's unique bus name from
 header.sender() |-- Reads SO_PEERCRED uid from connection credentials |--
-Creates proxy to plugin via its unique bus name |-- Subscribes to FocusChanged +
-ActivityChanged streams |-- Plugin reads ActiveBlocks property
-(initial state sync) |-- Plugin subscribes to BlockStateChanged signal (live
-updates) |-- Plugin reconciles overlays: shows for any app in ActiveBlocks
+Creates proxy to plugin via its unique bus name |-- Subscribes to Event stream
+|-- Plugin reads ActiveBlocks property (initial state sync) |-- Plugin
+subscribes to BlockStateChanged signal (live updates) |-- Plugin reconciles
+overlays: shows for any app in ActiveBlocks
 
 Plugin disconnects (one connection drops): |-- If the dropped connection was the
 active one: | |-- Daemon drops signal subscriptions for that unique bus name |
@@ -215,10 +214,9 @@ blocked: true} | v Plugin (via signal subscription + property read) | |--
 Receives BlockStateChanged -> updates local overlay set |-- Reads ActiveBlocks
 for full block details (reason, actions, etc.) |-- Renders overlay on all
 windows of app X | |-- Focus changes to app X -> overlay already present |--
-Focus changes to app Y -> overlay for X persists | |-- User clicks Close
-button -> Plugin calls LockManager::hideOverlay() locally -> Daemon state
-unchanged (block resolves when app no longer focused, or on next policy
-re-evaluation)
+Focus changes to app Y -> overlay for X persists | |-- User clicks Close button
+-> Plugin calls LockManager::hideOverlay() locally -> Daemon state unchanged
+(block resolves when app no longer focused, or on next policy re-evaluation)
 
 ## Degraded Operation
 

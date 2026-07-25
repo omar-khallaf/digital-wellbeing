@@ -54,42 +54,42 @@ Eight event types cover every focus switch and state change. Every focus switch
 or state change writes exactly one row.
 
 The schema uses direct typed columns rather than a JSON payload. Each event row
-carries: an integer `event_type` discriminant (0-7), the `user_id`, a `timestamp`
-as epoch milliseconds (i64), optional `app_id` (nullable text), and optional
-`title` (nullable text, up to 256 chars). Interval computation happens in Rust
-via `apply_closed_deltas_from_buffer` called in the same transaction as the
-event INSERT, so business logic stays in application code instead of SQL
+carries: an integer `event_type` discriminant (0-7), the `user_id`, a
+`timestamp` as epoch milliseconds (i64), optional `app_id` (nullable text), and
+optional `title` (nullable text, up to 256 chars). Interval computation happens
+in Rust via `apply_closed_deltas_from_buffer` called in the same transaction as
+the event INSERT, so business logic stays in application code instead of SQL
 triggers.
 
-| Column     | Type         | Notes                                         |
-|------------|-------------|-----------------------------------------------|
-| id         | INTEGER      | AUTOINCREMENT primary key                     |
-| event_type | INTEGER      | 0=WindowFocused, 1=Unfocused, 2=Idle, …       |
-| user_id    | INTEGER      | UID of the user this event belongs to          |
-| timestamp  | BIGINT       | Epoch milliseconds (UTC) — indexed for queries |
-| app_id     | TEXT?        | Non-null for WindowFocused/Idle/Resumed        |
-| title      | TEXT?        | Window title, present on WindowFocused events  |
+| Column     | Type    | Notes                                          |
+| ---------- | ------- | ---------------------------------------------- |
+| id         | INTEGER | AUTOINCREMENT primary key                      |
+| event_type | INTEGER | 0=WindowFocused, 1=Unfocused, 2=Idle, …        |
+| user_id    | INTEGER | UID of the user this event belongs to          |
+| timestamp  | BIGINT  | Epoch milliseconds (UTC) — indexed for queries |
+| app_id     | TEXT?   | Non-null for WindowFocused/Idle/Resumed        |
+| title      | TEXT?   | Window title, present on WindowFocused events  |
 
 The `id` column uses AUTOINCREMENT because it serves as an ordering token for
 the reactive watch channel; consumers track last seen event id to avoid
 re-processing known events.
 
-Interval computation happens at write time. Tracked time for an app equals
-the wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
+Interval computation happens at write time. Tracked time for an app equals the
+wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
 `Locked`, `LoggedOut`, `Slept`, `ShutDown`). Idle spans are included in tracked
 time; the GUI can derive idle breakdown from the raw `Idle`/`Resumed` event
 sequence if needed.
 
-| Code | Event           | Description                          |
-|------|-----------------|--------------------------------------|
-| 0    | WindowFocused   | An app window gained focus           |
-| 1    | Unfocused       | No window is focused (desktop)       |
-| 2    | Idle            | User became idle                     |
-| 3    | Resumed         | User resumed from idle               |
-| 4    | Slept           | System entered sleep                 |
-| 5    | ShutDown        | System shut down                     |
-| 6    | Locked          | Session locked                       |
-| 7    | LoggedOut       | User logged out                      |
+| Code | Event         | Description                    |
+| ---- | ------------- | ------------------------------ |
+| 0    | WindowFocused | An app window gained focus     |
+| 1    | Unfocused     | No window is focused (desktop) |
+| 2    | Idle          | User became idle               |
+| 3    | Resumed       | User resumed from idle         |
+| 4    | Slept         | System entered sleep           |
+| 5    | ShutDown      | System shut down               |
+| 6    | Locked        | Session locked                 |
+| 7    | LoggedOut     | User logged out                |
 
 The event type constants are shared across the daemon and GUI via
 `wellbeing_core::event_types`.
@@ -182,8 +182,8 @@ re-fetches.
 
 The policy engine reads daily_usage by date and app_id to obtain the total
 minutes. This is a point lookup on the materialized table. The calling code
-constructs the appropriate domain type from the result depending on
-whether the policy is TimeLimit or Notify.
+constructs the appropriate domain type from the result depending on whether the
+policy is TimeLimit or Notify.
 
 ### Daily Usage Report for Dashboard
 
@@ -235,24 +235,24 @@ are pruned independently in the same loop.
 ### Power State-Aware Flush
 
 When the system is about to suspend, hibernate, shut down, or log out, the open
-focus interval must be closed so wall-clock time during the power state change is
-not counted. A PowerStateWatcher subscribes to systemd-logind PrepareForSleep and
-PrepareForShutdown signals via D-Bus. On PrepareForSleep(TRUE) it emits a real
-Slept event; on PrepareForShutdown(TRUE) it emits a real ShutDown event. These
-are genuine occurrences, so the event log stays truthful and the interval is
-simply closed by the existing accumulation logic.
+focus interval must be closed so wall-clock time during the power state change
+is not counted. A PowerStateWatcher subscribes to systemd-logind PrepareForSleep
+and PrepareForShutdown signals via D-Bus. On PrepareForSleep(TRUE) it emits a
+real Slept event; on PrepareForShutdown(TRUE) it emits a real ShutDown event.
+These are genuine occurrences, so the event log stays truthful and the interval
+is simply closed by the existing accumulation logic.
 
 Session lifecycle events such as Locked and LoggedOut are emitted by the same
 watcher from logind Session Lock and session-removed signals.
 
-The daemon creates a **logind delay inhibitor** (`inhibit("sleep:shutdown", "delay")`)
-for each sleep, shutdown, and logout event. It then sends the close event to the
-enforcer actor and waits for the flush acknowledgement before releasing the
-inhibitor. This guarantees that the close event and its interval deltas are
-persisted to the database before the power state change completes. If the flush
-fails, the error is logged and the inhibitor is released anyway. Losing a few
-seconds of usage data is acceptable; blocking a power state change indefinitely
-is not.
+The daemon creates a **logind delay inhibitor**
+(`inhibit("sleep:shutdown", "delay")`) for each sleep, shutdown, and logout
+event. It then sends the close event to the enforcer actor and waits for the
+flush acknowledgement before releasing the inhibitor. This guarantees that the
+close event and its interval deltas are persisted to the database before the
+power state change completes. If the flush fails, the error is logged and the
+inhibitor is released anyway. Losing a few seconds of usage data is acceptable;
+blocking a power state change indefinitely is not.
 
 ### Process Termination Handling
 

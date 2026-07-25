@@ -7,4 +7,4 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Blocked apps shared across the daemon.
-pub(crate) type BlockedAppsMap = Arc<RwLock<HashMap<Uid, HashMap<AppId, BlockedAppEntry>>>>;
+pub type BlockedAppsMap = Arc<RwLock<HashMap<Uid, HashMap<AppId, BlockedAppEntry>>>>;

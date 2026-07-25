@@ -334,11 +334,11 @@ mod tests {
         assert_eq!(buckets[10].fragments[0].millis, 1_800_000);
         assert_eq!(buckets[10].total_millis, 1_800_000);
         // All other hours should be empty
-        for h in 0..10 {
-            assert!(buckets[h].fragments.is_empty(), "hour {h} should be empty");
+        for (h, bucket) in buckets.iter().enumerate().take(10) {
+            assert!(bucket.fragments.is_empty(), "hour {h} should be empty");
         }
-        for h in 11..24 {
-            assert!(buckets[h].fragments.is_empty(), "hour {h} should be empty");
+        for (h, bucket) in buckets.iter().enumerate().take(24).skip(11) {
+            assert!(bucket.fragments.is_empty(), "hour {h} should be empty");
         }
     }
 

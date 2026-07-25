@@ -15,7 +15,7 @@ behavior covers both root-installed and user-only installations.
 
 Resolved. On startup the daemon reads the most recent event from the events
 table and compares it with the compositor plugin's current focus state obtained
-from the FocusChanged signal. From that comparison it determines whether the
+from the CurrentFocus property. From that comparison it determines whether the
 previous session ended while a window was focused, whether focus changed while
 the daemon was down, and whether any overlay was active at the time of the
 crash. If an overlay was active for an app that is still focused, the daemon

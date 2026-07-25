@@ -55,26 +55,24 @@ impl PolicyRow {
             updated_at: self.updated_at.parse().ok().unwrap_or_else(Utc::now),
         };
         let default_cat_id = CategoryId(self.category_id.unwrap_or(0) as i64);
+        let app_id = self
+            .app_id
+            .as_deref()
+            .map(|aid| AppId::new(aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()));
 
-        match (self.action, self.app_id) {
+        match (self.action, app_id) {
             (0, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
-                target: policy::AppTarget {
-                    app_id: AppId::new(&aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()),
-                },
+                target: policy::AppTarget { app_id: aid },
                 meta,
                 action: policy::AppAction::Block,
             })),
             (1, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
-                target: policy::AppTarget {
-                    app_id: AppId::new(&aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()),
-                },
+                target: policy::AppTarget { app_id: aid },
                 meta,
                 action: policy::AppAction::TimeLimit { limit_minutes: tlm },
             })),
             (2, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
-                target: policy::AppTarget {
-                    app_id: AppId::new(&aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()),
-                },
+                target: policy::AppTarget { app_id: aid },
                 meta,
                 action: policy::AppAction::Notify {
                     limit_minutes: tlm,
@@ -128,6 +126,6 @@ pub(crate) struct DailyUsageRow {
     pub(crate) date: String,
     pub(crate) user_id: i32,
     pub(crate) app_id: String,
-    pub(crate) closed_millis: i32,
-    pub(crate) open_millis: i32,
+    pub(crate) closed_millis: i64,
+    pub(crate) open_millis: i64,
 }

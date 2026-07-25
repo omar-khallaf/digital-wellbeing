@@ -46,8 +46,7 @@ enum class LockManagerError : std::uint8_t {
     NoActiveOverlay,
 };
 
-// Carried in FocusChanged signal variants and returned by the CurrentFocus
-// D-Bus property.
+// Returned by the CurrentFocus D-Bus property.
 // See docs/architecture/04-plugin-ipc.md §D-Bus Interface.
 struct WindowInfo {
     AppId appId;
@@ -74,13 +73,13 @@ class LockManager {
   public:
     LockManager() = default;
 
-    /// Show overlay for `appId`. All fields come from the daemon's
-    /// BlockedApps entry. Captures window geometry for button positioning.
+    /// All fields come from the daemon's BlockedApps entry. Captures window
+    /// geometry for button positioning.
     void showOverlay(const AppId &appId, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
                      const std::vector<ActionType> &actions);
 
-    /// Hide overlay for `appId`. Erases the stored ActiveOverlay.
-    /// Returns AppIdMismatch if appId is not currently blocked.
+    /// Erases the stored ActiveOverlay. Returns AppIdMismatch if appId is
+    /// not currently blocked.
     auto hideOverlay(const AppId &appId) -> LockManagerError;
 
     /// Set or clear the currently-focused app. Passing std::nullopt clears
@@ -89,7 +88,6 @@ class LockManager {
     /// g_ctx->focusState as the single source of truth.
     void setFocusedApp(std::optional<AppId> appId);
 
-    /// Get the currently-focused app, if any.
     [[nodiscard]] auto getFocusedApp() const -> const std::optional<AppId> & { return m_focusedApp; }
 
     /// Post-render: draw dark backdrop + prompt + action buttons over all
@@ -106,10 +104,8 @@ class LockManager {
     /// the compositor swallows all keys.
     auto onKey() -> bool;
 
-    /// True when `windowHandle` belongs to any blocked app.
     [[nodiscard]] auto isTarget(uint64_t windowHandle) const -> bool;
 
-    /// True when the given app_id currently has an active overlay.
     [[nodiscard]] auto isOverlayShown(const AppId &appId) const -> bool { return m_overlays.contains(appId); }
 
   private:

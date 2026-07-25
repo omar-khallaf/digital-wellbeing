@@ -16,7 +16,7 @@ fn daily_usage_row_to_entry(r: crate::policy::DailyUsageRow) -> DailyUsageByAppE
         date: r.date,
         user_id: r.user_id as u32,
         app_id: r.app_id,
-        total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+        total_millis: r.closed_millis + r.open_millis,
     }
 }
 
@@ -50,7 +50,7 @@ pub(crate) async fn get_daily_usage_by_title(
 ) -> anyhow::Result<Vec<DailyUsageByTitleEntry>> {
     let mut conn = pool.get().await?;
 
-    let rows: Vec<(String, i32, String, String, i32, i32)> = daily_usage_by_title::table
+    let rows: Vec<(String, i32, String, String, i64, i64)> = daily_usage_by_title::table
         .filter(daily_usage_by_title::date.eq(date))
         .filter(daily_usage_by_title::user_id.eq(uid as i32))
         .select((
@@ -72,7 +72,7 @@ pub(crate) async fn get_daily_usage_by_title(
                 user_id: user_id as u32,
                 app_id,
                 title,
-                total_millis: (closed as i64) + (open as i64),
+                total_millis: closed + open,
             },
         )
         .collect())
@@ -86,7 +86,7 @@ pub(crate) async fn get_usage_range_by_title(
 ) -> anyhow::Result<Vec<DailyUsageByTitleSummary>> {
     let mut conn = pool.get().await?;
 
-    let rows: Vec<(String, i32, String, String, i32, i32)> = daily_usage_by_title::table
+    let rows: Vec<(String, i32, String, String, i64, i64)> = daily_usage_by_title::table
         .filter(daily_usage_by_title::date.ge(start_date))
         .filter(daily_usage_by_title::date.le(end_date))
         .filter(daily_usage_by_title::user_id.eq(uid as i32))
@@ -108,7 +108,7 @@ pub(crate) async fn get_usage_range_by_title(
             user_id: user_id as u32,
             app_id,
             title,
-            total_millis: (closed as i64) + (open as i64),
+            total_millis: closed + open,
         };
 
         if let Some(s) = summaries.last_mut()

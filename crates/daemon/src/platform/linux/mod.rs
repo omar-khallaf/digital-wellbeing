@@ -11,12 +11,8 @@ use crate::bus_resolution::BusMode;
 use crate::platform::{Platform, PlatformEvent};
 
 mod manager;
-mod screen_lock;
-mod suspend;
 
 pub use manager::{ManagerProxy, PluginRegistry};
-pub use screen_lock::{ScreenLockEvent, ScreenLockWatcher};
-pub use suspend::{PowerEvent, PowerStateWatcher, inhibit_shutdown};
 
 #[proxy(
     interface = "org.freedesktop.Notifications",

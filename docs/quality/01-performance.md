@@ -7,11 +7,11 @@
 Window events arrive as D-Bus signal payloads and are parsed directly from the
 zbus message without copying. Zero allocations beyond the event payload.
 
-Event parsing converts the D-Bus FocusChanged payload directly into a
-PlatformEvent::WindowFocused by constructing the strongly-typed newtypes (AppId,
+Event parsing converts the D-Bus Event payload directly into a
+PlatformEvent::Focus by constructing the strongly-typed newtypes (AppId,
 WindowTitle, Pid, Uid) from the payload fields. The only allocation is the
-app_id string inside AppId::new. Unfocused events require no string allocation
-at all.
+app_id string inside AppId::new. Unfocus events require no string allocation at
+all.
 
 Parsing avoids regex entirely. Compositor event parsing uses str::split and
 str::starts_with rather than compiled patterns. Compiled regex on D-Bus args is
@@ -80,12 +80,12 @@ Flush triggers:
   boundary, regardless of buffer occupancy.
 
 When a flush fires, all buffered events are written in a single batch INSERT
-inside a `conn.transaction()`. After a successful commit, a
-`DailyUsageChanged` D-Bus signal is emitted to notify the GUI. An empty flush
-(no events in the buffer) is a no-op — zero DB writes and no signal emission.
+inside a `conn.transaction()`. After a successful commit, a `DailyUsageChanged`
+D-Bus signal is emitted to notify the GUI. An empty flush (no events in the
+buffer) is a no-op — zero DB writes and no signal emission.
 
-Shutdown and suspend paths force an immediate flush so no events are lost.
-When the daemon resumes from suspend, any accumulated events in the buffer are
+Shutdown and suspend paths force an immediate flush so no events are lost. When
+the daemon resumes from suspend, any accumulated events in the buffer are
 flushed on the next tick or count trigger.
 
 ### inline Policy
@@ -145,7 +145,7 @@ drains, limiting transient latency to under 16ms (one render frame). The 16ms
 decoupled render loop coalesces bursts, so the consumer always catches up within
 one frame. This prevents unbounded memory growth from compositor event floods
 (rapid alt-tabbing, window storms) while guaranteeing no event loss — dropping a
-WindowFocused/Unfocused pair would corrupt an interval.
+Focus/Unfocus pair would corrupt an interval.
 
 ### Profiling Requirements
 

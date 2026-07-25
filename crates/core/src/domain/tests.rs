@@ -1,12 +1,14 @@
 use super::*;
 use crate::dbus_constants::{
-    ACTIVITY_TAG_IDLE, ACTIVITY_TAG_RESUMED, BLOCKED_APP_SIGNATURE, FOCUS_FIELD_APP_ID,
-    FOCUS_FIELD_PID, FOCUS_FIELD_TAG, FOCUS_FIELD_TITLE, FOCUS_FIELD_UID, FOCUS_STRUCT_FIELD_COUNT,
-    FOCUS_STRUCT_SIGNATURE, FOCUS_TAG_APP, FOCUS_TAG_DESKTOP,
+    BLOCKED_APP_SIGNATURE, EVENT_FIELD_APP_ID, EVENT_FIELD_PID, EVENT_FIELD_POWER_TAG,
+    EVENT_FIELD_TAG, EVENT_FIELD_TITLE, EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN,
+    EVENT_POWER_SUSPEND, EVENT_STRUCT_FIELD_COUNT, EVENT_STRUCT_SIGNATURE, EVENT_TAG_BLOCK,
+    EVENT_TAG_FOCUS, EVENT_TAG_IDLE, EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT, EVENT_TAG_POWER,
+    EVENT_TAG_RESUME, EVENT_TAG_UNFOCUS,
 };
 use crate::valuetypes::*;
 use chrono::Utc;
-use zvariant::{DynamicType, LE, OwnedValue, Value, to_bytes};
+use zvariant::{DynamicType, LE, Structure, Value, to_bytes};
 
 #[test]
 fn policy_kind_roundtrips_as_u8() {
@@ -73,50 +75,7 @@ fn block_reason_roundtrips_as_u32() {
     assert_eq!(decoded, BlockReason::AppTimeLimit);
 }
 
-#[test]
-fn window_info_variant_desktop_none() {
-    let val = Value::U32(FOCUS_TAG_DESKTOP);
-    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-    let bytes = to_bytes(ctxt, &val).expect("serialize desktop variant");
-    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize desktop variant");
-    assert_eq!(decoded, Value::U32(FOCUS_TAG_DESKTOP));
-}
-
-#[test]
-fn window_info_variant_app_some() {
-    use zvariant::Structure;
-    let val = Value::Structure(Structure::from((
-        FOCUS_TAG_APP,
-        "firefox",
-        "Mozilla Firefox",
-        12345u32,
-        1000u32,
-    )));
-    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-    let bytes = to_bytes(ctxt, &val).expect("serialize app variant");
-    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize app variant");
-    match decoded {
-        Value::Structure(ref fields) => {
-            let f = fields.fields();
-            assert_eq!(
-                f.len(),
-                FOCUS_STRUCT_FIELD_COUNT,
-                "expected {FOCUS_STRUCT_FIELD_COUNT} fields"
-            );
-            assert_eq!(
-                f[FOCUS_FIELD_TAG],
-                Value::U32(FOCUS_TAG_APP),
-                "tag should be App"
-            );
-            assert_eq!(f[FOCUS_FIELD_APP_ID], Value::Str("firefox".into()));
-            assert_eq!(f[FOCUS_FIELD_TITLE], Value::Str("Mozilla Firefox".into()));
-            assert_eq!(f[FOCUS_FIELD_PID], Value::U32(12345u32));
-            assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32));
-        }
-        _ => panic!("expected Value::Structure variant"),
-    }
-}
-
+// ═════════════════════════════════════════════════════════════════════════════
 // Cross-language D-Bus contract tests
 //
 // These tests pin D-Bus type signatures and binary encodings that the C++
@@ -126,6 +85,7 @@ fn window_info_variant_app_some() {
 // between Rust daemon and C++ plugin diverged.
 //
 // The C++ side mirrors these in test/dbus_serialization_test.cpp.
+// ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
 fn blocked_app_entry_dbus_signature_matches_cpp() {
@@ -160,151 +120,195 @@ fn blocked_app_entry_binary_roundtrip() {
     assert_eq!(decoded.blocked_since, entry.blocked_since);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Unified event struct tests  (replaces old FocusChanged + ActivityChanged)
+//
+// The `Event` D-Bus signal carries a struct with signature `(ussuu)`:
+//
+//   field | type   | contents
+//   ------+--------+-----------------------------------------------
+//   0     | u32    | event tag (EVENT_TAG_FOCUS / …)
+//   1     | string | app_id
+//   2     | string | title
+//   3     | u32    | pid
+//   4     | u32    | power_tag
+// ═════════════════════════════════════════════════════════════════════════════
+
 #[test]
-fn focus_changed_desktop_variant_matches_cpp_encoding() {
-    // C++ emits: sdbus::Variant{uint32_t(FocusVariantTag::Desktop)}   → U32(FOCUS_TAG_DESKTOP)
-    // Rust handler in manager.rs checks Value::U32(FOCUS_TAG_DESKTOP) for unfocused.
-    let val = Value::U32(FOCUS_TAG_DESKTOP);
-    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-    let bytes = to_bytes(ctxt, &val).expect("serialize desktop variant");
-    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize desktop variant");
+fn event_struct_raw_signature() {
+    let s = Structure::from((
+        EVENT_TAG_FOCUS, // u32
+        "code",          // string
+        "main.rs",       // string
+        9999u32,         // u32 (pid)
+        0u32,            // u32 (power_tag, unused for Focus)
+    ));
     assert_eq!(
-        decoded,
-        Value::U32(FOCUS_TAG_DESKTOP),
-        "Desktop variant must be U32({FOCUS_TAG_DESKTOP}) to match C++ FocusVariantTag::Desktop={FOCUS_TAG_DESKTOP}"
+        s.signature().to_string(),
+        EVENT_STRUCT_SIGNATURE,
+        "Event struct signature must match C++ sdbus::Struct encoding. \
+         Update event.rs and the C++ compositor plugin if this fails."
     );
 }
 
 #[test]
-fn focus_changed_app_variant_matches_cpp_struct_encoding() {
-    // C++ emits: sdbus::Variant{sdbus::Struct{uint32_t(App), str, str, uint32, uint32}}
-    // D-Bus wire: variant containing struct(u32, string, string, u32, u32) = v(ussuu)
-    // Rust handler in manager.rs destructures this as:
-    //   f[FOCUS_FIELD_TAG]     → Value::U32(FOCUS_TAG_APP)
-    //   f[FOCUS_FIELD_APP_ID]  → Value::Str(app_id)
-    //   f[FOCUS_FIELD_TITLE]   → Value::Str(title)
-    //   f[FOCUS_FIELD_PID]     → Value::U32(pid)
-    //   f[FOCUS_FIELD_UID]     → Value::U32(uid)
-    use zvariant::Structure;
-
-    let app_val: OwnedValue = Value::Structure(Structure::from((
-        FOCUS_TAG_APP,
-        "code",
-        "main.rs",
-        9999u32,
-        1000u32,
-    )))
-    .try_into()
-    .expect("convert Value to OwnedValue");
-    let v: Value = app_val.into();
-    match &v {
-        Value::U32(_) => panic!("expected Structure for app, got U32"),
-        Value::Structure(s) => {
-            let f = s.fields();
+fn event_struct_focus_encoding() {
+    // Construct a Focus event struct matching what the C++ plugin emits.
+    let val = Value::Structure(Structure::from((
+        EVENT_TAG_FOCUS,
+        "firefox",
+        "Mozilla Firefox",
+        12345u32,
+        0u32,
+    )));
+    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
+    let bytes = to_bytes(ctxt, &val).expect("serialize Focus event");
+    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize Focus event");
+    match decoded {
+        Value::Structure(ref fields) => {
+            let f = fields.fields();
             assert_eq!(
                 f.len(),
-                FOCUS_STRUCT_FIELD_COUNT,
-                "C++ struct has {FOCUS_STRUCT_FIELD_COUNT} fields"
+                EVENT_STRUCT_FIELD_COUNT,
+                "expected {EVENT_STRUCT_FIELD_COUNT} fields"
             );
             assert_eq!(
-                f[FOCUS_FIELD_TAG],
-                Value::U32(FOCUS_TAG_APP),
-                "field 0 = App tag ({FOCUS_TAG_APP})"
+                f[EVENT_FIELD_TAG],
+                Value::U32(EVENT_TAG_FOCUS),
+                "field 0 = event tag"
             );
             assert_eq!(
-                f[FOCUS_FIELD_APP_ID],
-                Value::Str("code".into()),
+                f[EVENT_FIELD_APP_ID],
+                Value::Str("firefox".into()),
                 "field 1 = app_id"
             );
             assert_eq!(
-                f[FOCUS_FIELD_TITLE],
-                Value::Str("main.rs".into()),
+                f[EVENT_FIELD_TITLE],
+                Value::Str("Mozilla Firefox".into()),
                 "field 2 = title"
             );
-            assert_eq!(f[FOCUS_FIELD_PID], Value::U32(9999u32), "field 3 = pid");
-            assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32), "field 4 = uid");
-        }
-        _ => panic!("unexpected variant type"),
-    }
-}
-
-#[test]
-fn focus_changed_app_variant_raw_signature() {
-    use zvariant::Structure;
-    let s = Structure::from((FOCUS_TAG_APP, "term", "Terminal", 7777u32, 1000u32));
-    assert_eq!(
-        s.signature().to_string(),
-        FOCUS_STRUCT_SIGNATURE,
-        "FocusChanged app variant inner struct signature must match C++ sdbus::Struct encoding"
-    );
-}
-
-#[test]
-fn activity_changed_idle_tag_matches_cpp_encoding() {
-    // C++ emits: static_cast<uint32_t>(FocusActivityTag::Idle)  → u32(ACTIVITY_TAG_IDLE)
-    // Rust handler in manager.rs checks args.tag == ACTIVITY_TAG_IDLE → PlatformEvent::Idle
-    let val = Value::U32(ACTIVITY_TAG_IDLE);
-    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-    let bytes = to_bytes(ctxt, &val).expect("serialize idle tag");
-    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize idle tag");
-    assert_eq!(
-        decoded,
-        Value::U32(ACTIVITY_TAG_IDLE),
-        "ActivityChanged idle tag must be U32({ACTIVITY_TAG_IDLE}) to match C++ FocusActivityTag::Idle={ACTIVITY_TAG_IDLE}"
-    );
-}
-
-#[test]
-fn activity_changed_resumed_tag_matches_cpp_encoding() {
-    // C++ emits: static_cast<uint32_t>(FocusActivityTag::Resumed)  → u32(ACTIVITY_TAG_RESUMED)
-    // Rust handler in manager.rs checks args.tag != ACTIVITY_TAG_IDLE → PlatformEvent::Resumed
-    let val = Value::U32(ACTIVITY_TAG_RESUMED);
-    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-    let bytes = to_bytes(ctxt, &val).expect("serialize resumed tag");
-    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize resumed tag");
-    assert_eq!(
-        decoded,
-        Value::U32(ACTIVITY_TAG_RESUMED),
-        "ActivityChanged resumed tag must be U32({ACTIVITY_TAG_RESUMED}) to match C++ FocusActivityTag::Resumed={ACTIVITY_TAG_RESUMED}"
-    );
-}
-
-#[test]
-fn window_info_variant_pattern_match() {
-    use zvariant::Structure;
-
-    let desktop_val: OwnedValue = OwnedValue::from(FOCUS_TAG_DESKTOP);
-    let v: Value = desktop_val.into();
-    match &v {
-        Value::U32(FOCUS_TAG_DESKTOP) => {}
-        Value::Structure(_) => panic!("expected U32 for desktop"),
-        _ => panic!("unexpected variant"),
-    }
-
-    let app_val: OwnedValue = Value::Structure(Structure::from((
-        FOCUS_TAG_APP,
-        "code",
-        "main.rs — VS Code",
-        9999u32,
-        1000u32,
-    )))
-    .try_into()
-    .expect("convert Value to OwnedValue");
-    let v: Value = app_val.into();
-    match &v {
-        Value::U32(FOCUS_TAG_DESKTOP) => panic!("expected Structure for app"),
-        Value::Structure(s) if s.fields().len() >= FOCUS_STRUCT_FIELD_COUNT => {
-            let f = s.fields();
+            assert_eq!(f[EVENT_FIELD_PID], Value::U32(12345u32), "field 3 = pid");
             assert_eq!(
-                f[FOCUS_FIELD_TAG],
-                Value::U32(FOCUS_TAG_APP),
-                "tag should be App"
+                f[EVENT_FIELD_POWER_TAG],
+                Value::U32(0),
+                "field 4 = power_tag (unused for Focus)"
             );
-            assert_eq!(f[FOCUS_FIELD_APP_ID], Value::Str("code".into()));
-            assert_eq!(f[FOCUS_FIELD_TITLE], Value::Str("main.rs — VS Code".into()));
-            assert_eq!(f[FOCUS_FIELD_PID], Value::U32(9999u32));
-            assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32));
         }
         _ => panic!("expected Value::Structure variant"),
+    }
+}
+
+#[test]
+fn event_struct_unfocus_encoding() {
+    // Construct an Unfocus event struct.
+    let val = Value::Structure(Structure::from((EVENT_TAG_UNFOCUS, "", "", 0u32, 0u32)));
+    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
+    let bytes = to_bytes(ctxt, &val).expect("serialize Unfocus event");
+    let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize Unfocus event");
+    match decoded {
+        Value::Structure(ref fields) => {
+            let f = fields.fields();
+            assert_eq!(
+                f[EVENT_FIELD_TAG],
+                Value::U32(EVENT_TAG_UNFOCUS),
+                "field 0 = event tag"
+            );
+        }
+        _ => panic!("expected Value::Structure variant"),
+    }
+}
+
+#[test]
+fn event_struct_power_encoding() {
+    // Construct a PowerEvent (Hibernate) struct.
+    let val = Value::Structure(Structure::from((
+        EVENT_TAG_POWER,
+        "",
+        "",
+        0u32,
+        EVENT_POWER_HIBERNATE,
+    )));
+    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
+    let bytes = to_bytes(ctxt, &val).expect("serialize Power/Hibernate event");
+    let (decoded, _): (Value, _) = bytes
+        .deserialize()
+        .expect("deserialize Power/Hibernate event");
+    match decoded {
+        Value::Structure(ref fields) => {
+            let f = fields.fields();
+            assert_eq!(
+                f[EVENT_FIELD_TAG],
+                Value::U32(EVENT_TAG_POWER),
+                "field 0 = EVENT_TAG_POWER"
+            );
+            assert_eq!(
+                f[EVENT_FIELD_POWER_TAG],
+                Value::U32(EVENT_POWER_HIBERNATE),
+                "field 4 = Hibernate"
+            );
+        }
+        _ => panic!("expected Value::Structure variant"),
+    }
+}
+
+#[test]
+fn event_struct_all_tags_have_correct_field_count() {
+    // Verify every event tag produces a struct with EVENT_STRUCT_FIELD_COUNT fields.
+    let tags = [
+        (EVENT_TAG_FOCUS, "Focus"),
+        (EVENT_TAG_UNFOCUS, "Unfocus"),
+        (EVENT_TAG_BLOCK, "Block"),
+        (EVENT_TAG_IDLE, "Idle"),
+        (EVENT_TAG_RESUME, "Resume"),
+        (EVENT_TAG_LOGOUT, "LogOut"),
+        (EVENT_TAG_LOCKED, "Locked"),
+        (EVENT_TAG_POWER, "PowerEvent"),
+    ];
+    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
+    for (tag, name) in &tags {
+        let val = Value::Structure(Structure::from((tag, "", "", 0u32, 0u32)));
+        let bytes = to_bytes(ctxt, &val).unwrap_or_else(|e| panic!("serialize {name} event: {e}"));
+        let (decoded, _): (Value, _) = bytes
+            .deserialize()
+            .unwrap_or_else(|e| panic!("deserialize {name} event: {e}"));
+        match decoded {
+            Value::Structure(ref fields) => {
+                assert_eq!(
+                    fields.fields().len(),
+                    EVENT_STRUCT_FIELD_COUNT,
+                    "{name} event should have {EVENT_STRUCT_FIELD_COUNT} fields"
+                );
+            }
+            _ => panic!("{name} event should be Value::Structure"),
+        }
+    }
+}
+
+#[test]
+fn event_struct_encode_decode_roundtrip_all_power_kinds() {
+    // Round-trip all three PowerEvent kinds.
+    let power_kinds = [
+        (EVENT_POWER_SUSPEND, "Suspend"),
+        (EVENT_POWER_HIBERNATE, "Hibernate"),
+        (EVENT_POWER_SHUTDOWN, "Shutdown"),
+    ];
+    let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
+    for (power_tag, name) in &power_kinds {
+        let val = Value::Structure(Structure::from((EVENT_TAG_POWER, "", "", 0u32, power_tag)));
+        let bytes =
+            to_bytes(ctxt, &val).unwrap_or_else(|e| panic!("serialize Power/{name} event: {e}"));
+        let (decoded, _): (Value, _) = bytes
+            .deserialize()
+            .unwrap_or_else(|e| panic!("deserialize Power/{name} event: {e}"));
+        match decoded {
+            Value::Structure(ref fields) => {
+                assert_eq!(
+                    fields.fields()[EVENT_FIELD_POWER_TAG],
+                    Value::U32(*power_tag),
+                    "Power/{name} power_tag mismatch"
+                );
+            }
+            _ => panic!("Power/{name} event should be Value::Structure"),
+        }
     }
 }

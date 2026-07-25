@@ -41,8 +41,8 @@ optional for user-service activation.
 
 ### State directory (XDG)
 
-$XDG_DATA_HOME/digital-wellbeing/ # e.g. ~/.local/share/digital-wellbeing └──
-db.sqlite # mode 600, owned by the user
+$XDG_DATA_HOME/digital-wellbeing/ # e.g.
+~/.local/share/digital-wellbeing/db.sqlite # mode 600, owned by the user
 
 The daemon resolves this path at startup when in session mode
 (13-deployment-modes.md#mode-selection); override with --db-path for testing.
@@ -75,37 +75,6 @@ Root's own is the primary rule; context=default is a fallback.
 ### Plugin policy
 
 The manager policy file grants send/receive to the owning user.
-
-## Directory Structure
-
-/var/lib/digital-wellbeing/ # StateDirectory (SYSTEM mode), mode 700 └──
-db.sqlite # SQLite database, mode 600, root-owned
-
-$XDG_DATA_HOME/digital-wellbeing/ # State dir (SESSION mode), mode 700 └──
-db.sqlite # SQLite database, mode 600, user-owned
-
-/usr/libexec/digital-wellbeing/ # Binaries ├── wellbeing-daemon # Daemon binary,
-mode 755 └── wellbeing-gui # GUI binary, mode 755 (optional, user installs)
-
-deploy/ ├── dbus/ # D-Bus policy (system bus) │ ├──
-org.wellbeing.v1.Controller.conf │ └── org.wellbeing.v1.Manager.conf ├──
-systemd/ │ └── digital-wellbeing-daemon.service └── system-services/ └──
-org.wellbeing.v1.Controller.service
-
-/usr/share/dbus-1/system.d/ # installed policy ├──
-org.wellbeing.v1.Controller.conf └── org.wellbeing.v1.Manager.conf
-
-/usr/share/dbus-1/system-services/ # D-Bus activation, system daemon (optional)
-└── org.wellbeing.v1.Controller.service
-
-/usr/share/dbus-1/services/ # D-Bus activation, session daemon (optional) └──
-org.wellbeing.v1.Controller.service
-
-/etc/systemd/system/ # systemd unit (system daemon) └──
-digital-wellbeing-daemon.service
-
-~/.config/systemd/user/ # user systemd unit (session daemon, optional) └──
-digital-wellbeing-daemon.service
 
 ## D-Bus Activation (Optional)
 

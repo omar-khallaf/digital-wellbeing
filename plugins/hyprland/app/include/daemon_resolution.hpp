@@ -18,8 +18,7 @@ namespace wellbeing {
 //   2. NameHasOwner on session bus
 //   3. StartServiceByName on system bus
 //   4. StartServiceByName on session bus
-auto resolveActiveDaemonBus(const std::string &daemonBusName,
-                            std::shared_ptr<sdbus::IConnection> sysConn,
-                            std::shared_ptr<sdbus::IConnection> sessConn) -> WellbeingManager::DaemonBus;
+auto resolveActiveDaemonBus(const std::string &daemonBusName, const std::shared_ptr<sdbus::IConnection> &sysConn,
+                            const std::shared_ptr<sdbus::IConnection> &sessConn) -> WellbeingManager::DaemonBus;
 
 } // namespace wellbeing

@@ -34,11 +34,8 @@ pub const POLICY_MUTATED_SIGNAL: &str = "PolicyMutated";
 
 // ── Signal names on the Manager interface ────────────────────────────────────
 
-/// Emitted by the plugin when the focused window changes.
-pub const FOCUS_CHANGED_SIGNAL: &str = "FocusChanged";
-
-/// Emitted by the plugin when user activity/idle state changes.
-pub const ACTIVITY_CHANGED_SIGNAL: &str = "ActivityChanged";
+/// Name of the unified `event` signal (replaces FocusChanged + ActivityChanged).
+pub const EVENT_SIGNAL: &str = "Event";
 
 // ── Property names ───────────────────────────────────────────────────────────
 
@@ -46,65 +43,78 @@ pub const ACTIVITY_CHANGED_SIGNAL: &str = "ActivityChanged";
 pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 
 // ═════════════════════════════════════════════════════════════════════════════
-// FocusChanged variant tags (Manager signal)
+// Unified event signal — replaces FocusChanged, ActivityChanged, and power_event.
 //
-// The FocusChanged signal carries a D-Bus variant whose type discriminator
-// determines whether the focused window is a desktop (no app) or an app.
+// The `event` signal carries a D-Bus struct with 5 fields:
+//   (u:tag, s:app_id, s:title, u:pid, u:power_tag)
 //
-// Must match C++ FocusVariantTag in plugins/hyprland/app/include/types.hpp.
-// ═════════════════════════════════════════════════════════════════════════════
+// Signature: `(ussuu)`
 
-/// FocusChanged variant U32 value — desktop/unfocused (no app window).
-pub const FOCUS_TAG_DESKTOP: u32 = 0;
+/// D-Bus struct signature for the unified event payload.
+pub const EVENT_STRUCT_SIGNATURE: &str = "(ussuu)";
 
-/// FocusChanged variant struct first-field — app variant discriminator.
-pub const FOCUS_TAG_APP: u32 = 1;
+/// Event tag for Focus — a window received focus. Applies to `uid`.
+/// Relevant fields: app_id, title, pid
+pub const EVENT_TAG_FOCUS: u32 = 0;
 
-/// FocusChanged variant U32 value — window blocked by enforcement.
-///
-/// The compositor plugin sends this when the focused window has an
-/// active overlay (is blocked). It carries the same struct layout as
-/// `FOCUS_TAG_APP` minus the overlay_shown bool.
-pub const FOCUS_TAG_BLOCKED: u32 = 2;
+/// Event tag for Unfocus — all windows for `uid` lost focus (desktop shown).
+/// Relevant fields: uid only.
+pub const EVENT_TAG_UNFOCUS: u32 = 1;
 
-// ═════════════════════════════════════════════════════════════════════════════
-// ActivityChanged tags (Manager signal)
-//
-// The ActivityChanged signal carries a plain u32 indicating idle or resumed.
-// Must match C++ FocusActivityTag in plugins/hyprland/app/include/types.hpp.
-// ═════════════════════════════════════════════════════════════════════════════
+/// Event tag for Block — focus changed to a blocked window (overlay shown).
+/// Relevant fields: app_id, title, uid.
+pub const EVENT_TAG_BLOCK: u32 = 2;
 
-/// ActivityChanged u32 value — user activity stopped.
-pub const ACTIVITY_TAG_IDLE: u32 = 0;
+/// Event tag for Idle — user activity stopped for `uid`.
+/// Relevant fields: uid only.
+pub const EVENT_TAG_IDLE: u32 = 3;
 
-/// ActivityChanged u32 value — user activity resumed.
-pub const ACTIVITY_TAG_RESUMED: u32 = 1;
+/// Event tag for Resume — user activity resumed for `uid`.
+/// Relevant fields: uid only.
+pub const EVENT_TAG_RESUME: u32 = 4;
 
-// ═════════════════════════════════════════════════════════════════════════════
-// FocusChanged app-variant struct field indices
-//
-// When FocusChanged carries an app window, the variant contains a D-Bus struct
-// with these fields in order.  Used by the Rust handler in
-// daemon/src/platform/linux/manager.rs to destructure the signal payload.
-// ═════════════════════════════════════════════════════════════════════════════
+/// Event tag for LogOut — user session `uid` logged out.
+/// Relevant fields: uid only.
+pub const EVENT_TAG_LOGOUT: u32 = 5;
 
-/// Index of the variant-tag field (Value::U32(FOCUS_TAG_APP)).
-pub const FOCUS_FIELD_TAG: usize = 0;
+/// Event tag for PowerEvent — system power-state change affecting `uid`.
+/// Relevant fields: uid, power_tag.
+pub const EVENT_TAG_POWER: u32 = 6;
 
-/// Index of the app_id field (Value::Str).
-pub const FOCUS_FIELD_APP_ID: usize = 1;
+/// Event tag for Locked — session locked (screen saver / logind lock).
+/// Relevant fields: uid only.
+pub const EVENT_TAG_LOCKED: u32 = 7;
 
-/// Index of the window-title field (Value::Str).
-pub const FOCUS_FIELD_TITLE: usize = 2;
+// ── Power tags (inner discriminator for EVENT_TAG_POWER) ─────────────────────
 
-/// Index of the PID field (Value::U32).
-pub const FOCUS_FIELD_PID: usize = 3;
+/// Power-event inner tag for Suspend.
+pub const EVENT_POWER_SUSPEND: u32 = 0;
 
-/// Index of the UID field (Value::U32).
-pub const FOCUS_FIELD_UID: usize = 4;
+/// Power-event inner tag for Hibernate.
+pub const EVENT_POWER_HIBERNATE: u32 = 1;
 
-/// Total number of fields in the FocusChanged app struct.
-pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
+/// Power-event inner tag for Shutdown.
+pub const EVENT_POWER_SHUTDOWN: u32 = 2;
+
+// ── Event struct field indices ───────────────────────────────────────────────
+
+/// Index: tag (u32) — PlatformEvent variant discriminator.
+pub const EVENT_FIELD_TAG: usize = 0;
+
+/// Index: app_id (string) — application ID (Focus, Block).
+pub const EVENT_FIELD_APP_ID: usize = 1;
+
+/// Index: title (string) — window title (Focus, Block).
+pub const EVENT_FIELD_TITLE: usize = 2;
+
+/// Index: pid (u32) — process ID (Focus).
+pub const EVENT_FIELD_PID: usize = 3;
+
+/// Index: power_tag (u32) — inner discriminator for PowerEvent (Suspend/Hibernate/Shutdown).
+pub const EVENT_FIELD_POWER_TAG: usize = 4;
+
+/// Total number of fields in the event struct.
+pub const EVENT_STRUCT_FIELD_COUNT: usize = 5;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // D-Bus type signatures (cross-language contract)
@@ -119,6 +129,36 @@ pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
 /// Must match C++ tuple type in wellbeing_manager.cpp readBlockedApps.
 pub const BLOCKED_APP_SIGNATURE: &str = "(stut)";
 
-/// D-Bus struct signature for FocusChanged app variant: (uint32, string, string, uint32, uint32).
-/// Must match C++ sdbus::Struct type in wellbeing_manager.cpp windowInfoToVariant.
+// ═════════════════════════════════════════════════════════════════════════════
+// Legacy FocusChanged constants — retained during migration, no longer emitted by the plugin.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// Legacy: FocusChanged variant U32 value — desktop/unfocused.
+pub const FOCUS_TAG_DESKTOP: u32 = 0;
+
+/// Legacy: FocusChanged struct first-field — app variant discriminator.
+pub const FOCUS_TAG_APP: u32 = 1;
+
+/// Legacy: FocusChanged variant U32 value — window blocked by enforcement.
+pub const FOCUS_TAG_BLOCKED: u32 = 2;
+
+/// Legacy: Index of the variant-tag field in the FocusChanged struct.
+pub const FOCUS_FIELD_TAG: usize = 0;
+
+/// Legacy: Index of the app_id field in the FocusChanged struct.
+pub const FOCUS_FIELD_APP_ID: usize = 1;
+
+/// Legacy: Index of the window-title field in the FocusChanged struct.
+pub const FOCUS_FIELD_TITLE: usize = 2;
+
+/// Legacy: Index of the PID field in the FocusChanged struct.
+pub const FOCUS_FIELD_PID: usize = 3;
+
+/// Legacy: Index of the UID field in the FocusChanged struct.
+pub const FOCUS_FIELD_UID: usize = 4;
+
+/// Legacy: Total number of fields in the FocusChanged app struct.
+pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
+
+/// Legacy: D-Bus struct signature for FocusChanged app variant: (u, s, s, u, u).
 pub const FOCUS_STRUCT_SIGNATURE: &str = "(ussuu)";

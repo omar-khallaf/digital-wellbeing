@@ -8,6 +8,7 @@
 #include <sdbus-c++/sdbus-c++.h>
 
 #include "lockdown.hpp"
+#include "types.hpp"
 
 // fire_and_forget — eager start, no return value, auto-cleanup on completion.
 // Use for top-level entry points (signal handlers, init) where no one awaits.
@@ -56,10 +57,12 @@ struct task {
     task(task &&other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
 
     task(const task &) = delete;
-    task &operator=(const task &) = delete;
+    auto operator=(const task &) -> task & = delete;
 
     ~task() {
-        if (m_handle) m_handle.destroy();
+        if (m_handle) {
+            m_handle.destroy();
+        }
     }
 
     struct awaiter {
@@ -67,15 +70,17 @@ struct task {
 
         explicit awaiter(std::coroutine_handle<promise_type> h) noexcept : m_handle(h) {}
 
-        auto await_ready() noexcept -> bool { return !m_handle || m_handle.done(); }
+        [[nodiscard]] auto await_ready() const noexcept -> bool { return !m_handle || m_handle.done(); }
 
-        void await_suspend(std::coroutine_handle<> caller) noexcept { m_handle.promise().waiter = caller; }
+        void await_suspend(std::coroutine_handle<> caller) const noexcept { m_handle.promise().waiter = caller; }
 
         void await_resume() noexcept {}
     };
 
-    auto operator co_await() noexcept -> awaiter { return awaiter{m_handle}; }
+    auto operator co_await() const noexcept -> awaiter { return awaiter{m_handle}; }
 };
+
+namespace wellbeing {
 
 class WellbeingManager {
   public:
@@ -85,9 +90,16 @@ class WellbeingManager {
                      std::shared_ptr<sdbus::IConnection> sessConnection);
     ~WellbeingManager();
 
-    // Signal emission (synchronous — D-Bus signals are fire-and-forget)
-    void emitFocusChanged(const std::optional<WindowInfo> &info);
-    void emitActivityChanged(wellbeing::FocusActivityTag tag);
+    /// Emit the unified Event signal with focus-state info.
+    /// For Focus/Block, use the WindowInfo overload.  For tag-only events
+    /// (Idle, Resume, LogOut, Unfocus), use the tag-only overload.
+    void emitEvent(EventTag tag, const std::string &app_id, const std::string &title, uint32_t pid, uint32_t power_tag);
+
+    /// Convenience: emit an event from the current focus state.
+    void emitFocusEvent(const std::optional<WindowInfo> &info);
+
+    /// Convenience: emit a tag-only event (Idle, Resume, LogOut, Unfocus, Locked).
+    void emitSimpleEvent(EventTag tag);
 
     /// Called on startup and daemon reconnect.
     auto handshake() -> fire_and_forget;
@@ -103,7 +115,6 @@ class WellbeingManager {
     void reconnectToDaemon();
 
   private:
-    void emitHandshake();
     void onNameOwnerChanged(const std::string &name, const std::string &oldOwner, const std::string &newOwner,
                             bool isSystem);
 
@@ -113,6 +124,14 @@ class WellbeingManager {
 
     void setupBlockedAppsWatch();
     sdbus::Slot m_blockedAppsSlot;
+
+    // ── System signal watchers (logind, screensaver) ──────────────
+    void setupSystemWatchers();
+    void handlePrepareForSleep(bool sleeping);
+    void handlePrepareForShutdown(bool shuttingDown);
+    void handleScreenSaverActive(bool active);
+    sdbus::Slot m_logindSlot;
+    sdbus::Slot m_screenSaverSlot;
 
     std::shared_ptr<sdbus::IProxy> m_daemonProxy;
     std::shared_ptr<sdbus::IConnection> m_sysConn;
@@ -124,4 +143,7 @@ class WellbeingManager {
     DaemonBus m_activeBus{DaemonBus::None};
     std::string m_daemonBusName;
     bool m_registered{false};
+    bool m_screenLocked{false};
 };
+
+} // namespace wellbeing

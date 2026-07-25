@@ -18,7 +18,7 @@ fn row_to_entry(r: DailyUsageRow) -> DailyUsageByAppEntry {
         date: r.date,
         user_id: r.user_id as u32,
         app_id: r.app_id,
-        total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+        total_millis: r.closed_millis + r.open_millis,
     }
 }
 
@@ -56,7 +56,7 @@ pub async fn get_daily_usage_by_title(
             user_id: r.user_id as u32,
             app_id: r.app_id,
             title: r.title,
-            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+            total_millis: r.closed_millis + r.open_millis,
         })
         .collect())
 }
@@ -76,7 +76,7 @@ pub async fn get_usage_range_by_title(
         .load(conn)
         .await?;
 
-    let mut summaries: Vec<DailyUsageByTitleSummary> = Vec::new();
+    let mut summaries: Vec<DailyUsageByTitleSummary> = Vec::with_capacity(rows.len());
 
     for r in rows {
         let entry = DailyUsageByTitleEntry {
@@ -84,7 +84,7 @@ pub async fn get_usage_range_by_title(
             user_id: user_id.0,
             app_id: r.app_id,
             title: r.title,
-            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+            total_millis: r.closed_millis + r.open_millis,
         };
 
         if let Some(s) = summaries.last_mut()
@@ -119,7 +119,7 @@ pub async fn get_usage_range(
         .load(conn)
         .await?;
 
-    let mut summaries: Vec<DailySummary> = Vec::new();
+    let mut summaries: Vec<DailySummary> = Vec::with_capacity(rows.len());
 
     for r in rows {
         let last = summaries.last_mut();
@@ -135,7 +135,7 @@ pub async fn get_usage_range(
             date: r.date.clone(),
             user_id: r.user_id as u32,
             app_id: r.app_id,
-            total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
+            total_millis: r.closed_millis + r.open_millis,
         };
         summaries.push(DailySummary {
             date: r.date,

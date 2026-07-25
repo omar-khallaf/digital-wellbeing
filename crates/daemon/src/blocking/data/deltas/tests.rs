@@ -1,17 +1,17 @@
 use chrono::{DateTime, Utc};
 use diesel::ExpressionMethods;
-use diesel::QueryDsl;
 use diesel_async::RunQueryDsl;
 
 use tempfile::TempDir;
 
+use crate::platform::PlatformEvent;
 use wellbeing_core::event_types::EVENT_WINDOW_FOCUSED;
-use wellbeing_core::{AppId, Uid};
+use wellbeing_core::{AppId, Uid, WindowTitle};
 
 use crate::store::StoreBuilder;
 
-use super::super::super::super::buffer::BufferedEvent;
 use super::BlockingRepo;
+use crate::blocking::domain::TimedEvent;
 
 fn app(s: &str) -> AppId {
     AppId::new(s).unwrap()
@@ -21,23 +21,31 @@ fn dt(ms: i64) -> chrono::DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
-fn focus_event(uid: u32, app_name: &str, ts: i64) -> BufferedEvent {
-    BufferedEvent {
-        uid: Uid(uid),
-        app_id: app(app_name),
-        event_type: 0,
+fn focus_event(uid: u32, app_name: &str, ts: i64) -> TimedEvent {
+    TimedEvent {
+        event: PlatformEvent::Focus {
+            app_id: app(app_name),
+            title: WindowTitle::new("test"),
+            pid: wellbeing_core::Pid(1),
+            uid: Uid(uid),
+        },
         timestamp: dt(ts),
-        title: None,
     }
 }
 
-fn close_event(uid: u32, app_name: &str, event_type: i32, ts: i64) -> BufferedEvent {
-    BufferedEvent {
-        uid: Uid(uid),
-        app_id: app(app_name),
-        event_type,
+fn close_event(uid: u32, app_name: &str, event_type: i32, ts: i64) -> TimedEvent {
+    let event = match event_type {
+        1 => PlatformEvent::Unfocus { uid: Uid(uid) },
+        8 => PlatformEvent::Block {
+            app_id: app(app_name),
+            title: WindowTitle::new("test"),
+            uid: Uid(uid),
+        },
+        _ => unreachable!(),
+    };
+    TimedEvent {
+        event,
         timestamp: dt(ts),
-        title: None,
     }
 }
 
@@ -78,7 +86,7 @@ async fn read_closed_millis(
     date: &str,
     uid: u32,
     app_id: &str,
-) -> Option<i32> {
+) -> Option<i64> {
     use diesel::QueryDsl;
 
     let mut conn = repo.pool.get().await.unwrap();
@@ -87,7 +95,7 @@ async fn read_closed_millis(
         .filter(crate::store::schema::daily_usage::user_id.eq(uid as i32))
         .filter(crate::store::schema::daily_usage::app_id.eq(app_id))
         .select(crate::store::schema::daily_usage::closed_millis)
-        .first::<i32>(&mut conn)
+        .first::<i64>(&mut conn)
         .await
         .ok()
 }
@@ -147,43 +155,38 @@ async fn test_window_blocked_closes_previous_interval() {
 }
 
 #[tokio::test]
-async fn test_increment_open_ms_does_not_re_add_closed_interval() {
-    // Given: a WindowFocused event already in the DB
+async fn test_window_focused_closes_pre_buffer_interval_for_different_app() {
+    // Given: a pre-buffer WindowFocused at t=1000 for uid=1000, app=firefox
     let (_tmp, repo) = setup_repo().await;
     write_raw_event(&repo, EVENT_WINDOW_FOCUSED, 1000, "firefox", 1_000_000).await;
 
-    // When: the buffer contains an Unfocused event that closes the interval,
-    // and current_focus still contains the uid (simulating the race where
-    // increment_open_ms runs after the buffer flush closed the interval)
-    let events = vec![close_event(1000, "firefox", 1, 3_000_000)];
+    // When: the next buffer contains a WindowFocused for a DIFFERENT app at t=3000
+    let events = vec![focus_event(1000, "chrome", 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-
-    // Simulate flush_buffer: apply deltas, flush events, then increment_open_ms
     repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
         .await
         .unwrap();
-    repo.flush_events(&mut conn, &events).await.unwrap();
 
-    // Simulate increment_open_ms running for the still-focused app
-    repo.increment_open_ms(&mut conn, Uid(1000), app("firefox"), dt(3_000_000))
+    // Then: firefox interval (1_000_000 -> 3_000_000) = 2_000_000ms closed
+    let closed = read_closed_millis(&repo, "1970-01-01", 1000, "firefox").await;
+    assert_eq!(closed, Some(2_000_000));
+}
+
+#[tokio::test]
+async fn test_window_focused_closes_pre_buffer_interval_for_same_app() {
+    // Given: a pre-buffer WindowFocused at t=1000 for uid=1000, app=firefox
+    let (_tmp, repo) = setup_repo().await;
+    write_raw_event(&repo, EVENT_WINDOW_FOCUSED, 1000, "firefox", 1_000_000).await;
+
+    // When: the next buffer contains a WindowFocused for the SAME app at t=3000
+    // (this represents switching back to the same app — still closes prior interval)
+    let events = vec![focus_event(1000, "firefox", 3_000_000)];
+    let mut conn = repo.pool.get().await.unwrap();
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
         .await
         .unwrap();
 
-    // Then: closed_millis = 2_000_000, open_millis = 0 (not re-populated)
+    // Then: firefox interval (1_000_000 -> 3_000_000) = 2_000_000ms closed
     let closed = read_closed_millis(&repo, "1970-01-01", 1000, "firefox").await;
     assert_eq!(closed, Some(2_000_000));
-
-    let open: Option<i32> = crate::store::schema::daily_usage::table
-        .filter(crate::store::schema::daily_usage::date.eq("1970-01-01"))
-        .filter(crate::store::schema::daily_usage::user_id.eq(1000))
-        .filter(crate::store::schema::daily_usage::app_id.eq("firefox"))
-        .select(crate::store::schema::daily_usage::open_millis)
-        .first::<i32>(&mut conn)
-        .await
-        .ok();
-    assert_eq!(
-        open,
-        Some(0),
-        "open_millis should be 0 after interval is closed"
-    );
 }

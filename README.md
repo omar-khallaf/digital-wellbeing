@@ -28,11 +28,11 @@ optional compositor plugin for overlay enforcement:
   4-step algorithm (system present → session present → activate system →
   activate session), never hardcodes a bus.
 - **Compositor plugin** (`org.wellbeing.v1.Manager`) — renders block overlays
-  via OpenGL and emits `FocusChanged` / `ActivityChanged` (with
-  `FocusActivityTag` enum) signals. Runs in the user's compositor session and
-  resolves the daemon's bus using the **identical 4-step algorithm** as the GUI,
-  so it always lands on the same daemon instance. This guarantees exactly one
-  enforcing daemon per user — no double overlay.
+  via OpenGL and emits the unified `Event` signal (with `EventTag` enum). Runs
+  in the user's compositor session and resolves the daemon's bus using the
+  **identical 4-step algorithm** as the GUI, so it always lands on the same
+  daemon instance. This guarantees exactly one enforcing daemon per user — no
+  double overlay.
 
 ```text
                      ┌──────────────────────────────────────────┐
@@ -73,7 +73,7 @@ optional compositor plugin for overlay enforcement:
                │  ┌──────────────────┐  │    │  org.wellbeing.v1.     │
                │  │ gpui (main thr.) │  │    │  Manager               │
                │  │  render loop     │  │    │                        │
-               │  └────────┬─────────┘  │    │  FocusChanged [signal] │
+               │  └────────┬─────────┘  │    │  Event [signal]        │
                │           │ mpsc       │    │  CurrentFocus [prop]   │
                │  ┌────────┴─────────┐  │    └────────────────────────┘
                │  │ tokio (bg thr.)  │  │

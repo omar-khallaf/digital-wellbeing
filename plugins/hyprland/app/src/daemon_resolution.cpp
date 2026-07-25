@@ -7,19 +7,15 @@
 #include "daemon_helpers.hpp"
 #include "logging.hpp"
 
-using wellbeing::logInfo;
 using wellbeing::logErr;
+using wellbeing::logInfo;
 using wellbeing::nameHasOwner;
-using wellbeing::startServiceByName;
 using wellbeing::resolveActiveDaemonBus;
-
-// =============================================================================
-// Free function: 4-step daemon bus resolution
-// =============================================================================
+using wellbeing::startServiceByName;
 
 auto wellbeing::resolveActiveDaemonBus(const std::string &daemonBusName,
-                                       std::shared_ptr<sdbus::IConnection> sysConn,
-                                       std::shared_ptr<sdbus::IConnection> sessConn)
+                                       const std::shared_ptr<sdbus::IConnection> &sysConn,
+                                       const std::shared_ptr<sdbus::IConnection> &sessConn)
     -> WellbeingManager::DaemonBus {
     logInfo("resolveActiveDaemonBus: resolving daemon bus (4-step)");
 
@@ -47,9 +43,7 @@ auto wellbeing::resolveActiveDaemonBus(const std::string &daemonBusName,
     return WellbeingManager::DaemonBus::None;
 }
 
-// =============================================================================
-// WellbeingManager member: NameOwnerChanged match setup
-// =============================================================================
+namespace wellbeing {
 
 void WellbeingManager::setupNameOwnerWatch(bool system) {
     auto &conn = system ? *m_sysConn : *m_sessConn;
@@ -81,19 +75,11 @@ void WellbeingManager::setupNameOwnerWatch(bool system) {
     }
 }
 
-// =============================================================================
-// WellbeingManager member: daemon disappearance
-// =============================================================================
-
 void WellbeingManager::onDaemonDisappeared() {
     m_activeBus = DaemonBus::None;
     m_daemonProxy.reset();
     logInfo("onDaemonDisappeared: daemon connection lost — waiting for reappearance");
 }
-
-// =============================================================================
-// WellbeingManager member: daemon reconnection
-// =============================================================================
 
 void WellbeingManager::reconnectToDaemon() {
     auto resolved = resolveActiveDaemonBus(wellbeing::DAEMON_INTERFACE, m_sysConn, m_sessConn);
@@ -128,18 +114,10 @@ void WellbeingManager::reconnectToDaemon() {
     setupBlockedAppsWatch();
 }
 
-// =============================================================================
-// WellbeingManager member: daemon appearance
-// =============================================================================
-
 void WellbeingManager::onDaemonAppeared() {
     logInfo("onDaemonAppeared: daemon bus name appeared — re-registering and syncing state");
     reconnectToDaemon();
 }
-
-// =============================================================================
-// WellbeingManager member: NameOwnerChanged signal handler
-// =============================================================================
 
 void WellbeingManager::onNameOwnerChanged(const std::string &name, const std::string &oldOwner,
                                           const std::string &newOwner, bool isSystem) {
@@ -165,3 +143,5 @@ void WellbeingManager::onNameOwnerChanged(const std::string &name, const std::st
         reconnectToDaemon();
     }
 }
+
+} // namespace wellbeing

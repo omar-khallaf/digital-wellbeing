@@ -17,8 +17,8 @@ diesel::table! {
         date -> Text,
         user_id -> Integer,
         app_id -> Text,
-        closed_millis -> Integer,
-        open_millis -> Integer,
+        closed_millis -> BigInt,
+        open_millis -> BigInt,
     }
 }
 
@@ -28,8 +28,8 @@ diesel::table! {
         user_id -> Integer,
         app_id -> Text,
         title -> Text,
-        closed_millis -> Integer,
-        open_millis -> Integer,
+        closed_millis -> BigInt,
+        open_millis -> BigInt,
     }
 }
 

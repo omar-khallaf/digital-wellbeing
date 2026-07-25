@@ -1,16 +1,9 @@
 # Linux Platform
 
 The Linux implementation lives in `platform/linux/`. On Linux, window events
-come from the compositor plugin via D-Bus FocusChanged signals. The plugin D-Bus
-contract is documented in [04-plugin-ipc.md](./04-plugin-ipc.md); the Platform
-trait it implements is in [02-platform.md](./02-platform.md).
-
-## Directory Structure
-
-platform/linux/ ├── mod.rs # impl Platform for Linux ├── manager.rs # D-Bus
-ManagerClient — plugin registration, signal subscriptions ├── screen_lock.rs #
-GNOME ScreenSaver D-Bus (lock/unlock) └── suspend.rs # systemd-logind D-Bus
-(PrepareForSleep/Shutdown)
+come from the compositor plugin via the unified D-Bus Event signal. The plugin
+D-Bus contract is documented in [04-plugin-ipc.md](./04-plugin-ipc.md); the
+Platform trait it implements is in [02-platform.md](./02-platform.md).
 
 ## App Metadata Resolution
 
@@ -30,65 +23,52 @@ The categorizer resolution chain is:
 
 When the system is about to suspend, hibernate, shut down, lock, or end a
 session, the open focus interval must be closed so wall-clock time during that
-state is not counted against the app limit. The Linux platform handles this via
-D-Bus integration with systemd-logind (platform/linux/suspend.rs). It emits real
-events — never a synthetic Unfocused:
+state is not counted against the app limit. The compositor plugin handles this
+via its own system signal watchers (`system_watcher.cpp`), emitting unified
+Event signals over D-Bus to the daemon. The daemon treats these as ordinary
+events — no special power-state handling in the daemon itself.
 
-- PrepareForSleep(TRUE) → Slept (covers both suspend and hibernate — logind
-  cannot distinguish them at signal time)
-- PrepareForShutdown(TRUE) → ShutDown
-- Session Lock signal → Locked
-- Session removed → LoggedOut
+The plugin subscribes to logind and GNOME ScreenSaver on the appropriate buses:
 
-Slept/ShutDown/Locked/LoggedOut are close events: they credit the active
-interval via `accumulate_daily_usage` and clear the in-memory `current_focus`. They
-carry no app_id.
+| State     | Source signal                   | Plugin emits                            |
+| --------- | ------------------------------- | --------------------------------------- |
+| Suspend   | logind PrepareForSleep(TRUE)    | `Event(EventTag::Power, ..., Suspend)`  |
+| Hibernate | logind PrepareForSleep(TRUE)    | `Event(EventTag::Power, ..., Suspend)`  |
+| Shutdown  | logind PrepareForShutdown(TRUE) | `Event(EventTag::Power, ..., Shutdown)` |
+| Lock      | ScreenSaver ActiveChanged(TRUE) | `Event(EventTag::Locked, ...)`          |
+| Logout    | logind Session removed          | `Event(EventTag::LogOut, ...)`          |
 
-Flow (suspend/shutdown example; lock/logout are analogous):
+Plugin-side flow (suspend example; others analogous):
 
-logind signal (PrepareForSleep / PrepareForShutdown = TRUE)
-│
-▼
-PowerStateWatcher (platform/linux/suspend.rs) creates logind delay inhibitor
-│
-├─► Sends Slept/ShutDown to EnforcerActor → buffered in memory
-├─► Waits 50ms for enforcer to process the event
-├─► Sends Flush with acknowledgement → events + deltas persisted to DB
-├─► Awaits flush completion
-│
-▼
-Drops the inhibitor fd → logind proceeds with power state change
+logind signal PrepareForSleep(TRUE) │ ▼ Plugin `handlePrepareForSleep(true)` →
+emits Event signal │ ▼ Daemon receives Event from Manager interface → buffers in
+EventBuffer │ ▼ EnforcerActor handles close event on next buffer flush → credits
+interval
 
-| State     | Signal                   | Event emitted |
-| --------- | ------------------------ | ------------- |
-| Suspend   | PrepareForSleep(TRUE)    | Slept         |
-| Hibernate | PrepareForSleep(TRUE)    | Slept         |
-| Shutdown  | PrepareForShutdown(TRUE) | ShutDown      |
-| Lock      | Session Lock             | Locked        |
-| Logout    | Session removed          | LoggedOut     |
-
-If the flush fails, the error is logged and the inhibitor is released anyway.
-Losing a few seconds of usage data is acceptable; blocking a power state change
-indefinitely is not.
-
-Shutdown is also emitted by the SIGTERM/SIGHUP handler on daemon termination
-(see [persistence/01-database.md](../persistence/01-database.md)).
+On daemon shutdown (SIGTERM/SIGHUP), `logind.rs`'s `take_shutdown_inhibit`
+creates a logind delay inhibitor to allow the final buffer flush to complete
+before the system proceeds (see
+[persistence/01-database.md](../persistence/01-database.md)).
 
 ### Resume & Screen Unlock
 
-On system resume (`PrepareForSleep(FALSE)`) the daemon checks the screen lock
-state:
+The daemon does NOT handle resume or unlock directly. The compositor plugin is
+responsible for syncing focus state after power-state changes. The plugin tracks
+screen lock state internally (`m_screenLocked` in `system_watcher.cpp`):
 
-- **Screen locked** → no action. The `ResumedSystem` event is a no-op in the
-  enforcer. Focus resync happens when the screen is unlocked.
-- **Screen unlocked** → the daemon sends an `Unlocked` platform event to the
-  enforcer. The enforcer queries the database for the most recent
-  `WindowFocused` event from today and buffers a synthetic `WindowFocused` with
-  the same app_id and title. This restores focus tracking without waiting for a
-  compositor focus switch.
+- **Resume while screen unlocked** — `handlePrepareForSleep(false)` emits the
+  current focus state via `emitFocusEvent()` if the screen is already unlocked,
+  resuming the focus interval.
+- **Resume while screen locked** — plugin defers and waits for the unlock
+  handler.
+- **Screen unlock** — `handleScreenSaverActive(false)` sets
+  `m_screenLocked = false` and emits the current focus state via
+  `emitFocusEvent()`.
 
-On screen unlock (via the `ScreenLockWatcher`), the daemon sends an
-`Unlocked` platform event that triggers the same focus resync path.
+In all cases the plugin emits a standard `Event` signal — either `Focus`,
+`Block`, or `Unfocus` depending on what window was focused — and the daemon
+processes it like any other event. No synthetic events or DB queries are
+involved on the daemon side.
 
 ## Compositor Support
 

@@ -53,9 +53,8 @@ milestones that the phases deliver.
       `OverlayConfig`, grant-extension, plugin disconnect/reconnect
       (`features/01-blocking.md`).
 - [x] `reports/*`: aggregate queries for history/export.
-- [x] `main.rs`: wire `EnforcerActor` + event fan-out +
-      D-Bus server + `PowerStateWatcher` + SIGTERM/SIGINT
-      handler.
+- [x] `main.rs`: wire `EnforcerActor` + event fan-out + D-Bus server +
+      `logind::take_shutdown_inhibit` + SIGTERM/SIGINT handler.
 
 ### Phase D — GUI · `Ready`
 
@@ -85,9 +84,9 @@ milestones that the phases deliver.
 ### Phase E — Plugin migration · `Ready`
 
 - [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentFocus`;
-      `RegisterPlugin()` reverse discovery; `ActivityChanged` (FocusActivityTag)
-signal; read `ActiveBlocks` property on startup and on `BlockStateChanged`
-signal (`features/01-blocking.md`).
+      `RegisterPlugin()` reverse discovery; unified `Event` signal (EventTag);
+      read `ActiveBlocks` property on startup and on `BlockStateChanged` signal
+      (`features/01-blocking.md`).
 - [ ] `deploy/*.conf`: D-Bus system policy files for both interfaces
       (`architecture/10-deployment.md`).
 
@@ -106,17 +105,16 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 
 ### Tracking · `Ready`
 
-1. **Hyprland `FocusChanged`** — C++ `wellbeing-lockdown.so`, sdbus-cpp,
-   `RENDER_PASS_POST_WINDOW` hook →
-   `WindowInfo{app_id,title,pid,uid}` (`features/01-blocking.md`,
-   `architecture/04-plugin-ipc.md`).
+1. **Hyprland `Event` signal** — C++ `wellbeing-lockdown.so`, sdbus-cpp,
+   `RENDER_PASS_POST_WINDOW` hook → `WindowInfo{app_id,title,pid,uid}`
+   (`features/01-blocking.md`, `architecture/04-plugin-ipc.md`).
 2. **Event-driven usage** — `EnforcerActor` writes one append-only `events` row
-   per `WindowFocused`/`Unfocused`; `accumulate_daily_usage` updates
-   `daily_usage` in the same transaction (`persistence/01-database.md`).
-3. **Idle/Resume + power/session closes** — `ActivityChanged` (FocusActivityTag)
-   → `Idle`/`Resumed`; `PowerStateWatcher` (logind) → real
-   `Slept`/`ShutDown`/`Locked`/`LoggedOut`; SIGTERM/SIGINT → `LoggedOut`
-   (`architecture/03-linux-platform.md`).
+   per `Focus`/`Unfocus`; `accumulate_daily_usage` updates `daily_usage` in the
+   same transaction (`persistence/01-database.md`).
+3. **Idle/Resume + power/session closes** — unified `Event` signal (EventTag) →
+   `Idle`/`Resumed`; logind → real
+   `PowerEvent{Suspend}`/`PowerEvent{Shutdown}`/`Locked`/`LoggedOut`;
+   SIGTERM/SIGINT → `LoggedOut` (`architecture/03-linux-platform.md`).
 
 ### Enforcement · `Ready`
 
@@ -127,12 +125,11 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
    semantics; `Block`/`TimeLimit`/`Notify`; `TimeWindow`
    (`features/01-blocking.md`, `features/02-categorization.md`).
 3. **Overlay-only blocking** — gate-first evaluate before DB write; blocked app
-   never logged; `grant_extension()` writes synthetic `WindowFocused` +
-   no in-memory block state — block state is declarative via ActiveBlocks
-(`features/01-blocking.md`).
+   never logged; block state is declarative via ActiveBlocks
+   (`features/01-blocking.md`).
 4. **Block overlay (plugin)** — OpenGL backdrop + `Extra`/`Close` buttons; traps
-input; Close button handled locally in plugin via `LockManager::hideOverlay()`
-(`features/01-blocking.md`).
+   input; Close button handled locally in plugin via
+   `LockManager::hideOverlay()` (`features/01-blocking.md`).
 
 ### UI · `Ready`
 
@@ -146,8 +143,8 @@ input; Close button handled locally in plugin via `LockManager::hideOverlay()`
 1. **SQLite (WAL)** — `events` (generated cols + CHECK JSON), `daily_usage`,
    `policies` (exclusive-arc + kind CHECKs), `categories`, `app_categories`;
    initial schema (`persistence/01-database.md`).
-2. **Signals** — D-Bus signals `BlockStateChanged` /
-   `DailyUsageChanged` / `PolicyMutated` (`architecture/09-state-flow.md`).
+2. **Signals** — D-Bus signals `BlockStateChanged` / `DailyUsageChanged` /
+   `PolicyMutated` (`architecture/09-state-flow.md`).
 3. **Seeded `app_categories`** — built-in categories + `INSERT OR IGNORE`
    defaults replace `.desktop`/config parsing (`features/02-categorization.md`).
 
@@ -171,8 +168,8 @@ input; Close button handled locally in plugin via `LockManager::hideOverlay()`
 ### v1 hardening · `Open`
 
 - [ ] **Crash recovery with active overlay** — re-issue `Overlay(show)` with
-      re-read ActiveBlocks property on daemon restart
-      (`12-open-questions.md#3`, `features/01-blocking.md`).
+      re-read ActiveBlocks property on daemon restart (`12-open-questions.md#3`,
+      `features/01-blocking.md`).
 - [ ] **GUI startup when daemon down** — D-Bus activation vs error dialog
       (`12-open-questions.md#2`).
 - [ ] **gpui version pin** — commit hash, not branch; advance via dependabot
@@ -191,8 +188,8 @@ already exist (`architecture/03-linux-platform.md`).
 
 1. **KWin** — `wellbeing-effect` (`KWin::Effect` + D-Bus).
 2. **Wayfire** — `wellbeing-plugin` (Wayfire API + D-Bus).
-3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies
-   `ActiveBlocks` property).
+3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies `ActiveBlocks`
+   property).
 4. **Shared extension template** — `LockManager`/render-hook/input-trap adapter
    over the D-Bus contract.
 

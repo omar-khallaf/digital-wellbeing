@@ -16,9 +16,9 @@ where AppId accepts empty input.
 
 A test should construct a realistic scenario, trigger the behavior under test,
 and assert on the outcome. For example, constructing a PolicyConfig::TimeLimit
-with time_limit_minutes and a schedule, then calling evaluate()
-with the policy and elapsed usage, and asserting on the returned PolicyVerdict
-variant (e.g., PolicyVerdict::Block when elapsed exceeds limit).
+with time_limit_minutes and a schedule, then calling evaluate() with the policy
+and elapsed usage, and asserting on the returned PolicyVerdict variant (e.g.,
+PolicyVerdict::Block when elapsed exceeds limit).
 
 ## Pattern: Given-When-Then
 
@@ -34,11 +34,10 @@ state verifies that the decision was persisted correctly. Both are required —
 events are ephemeral (they exit the actor boundary), while the DB is the
 canonical record for reports and crash recovery.
 
-A test might construct a TrackerState, feed it a WindowFocused event for an
-Alacritty window with a zsh title, pid 1234, and uid 1000,
-and then assert that the resulting domain events include WindowFocusChanged. It
-then queries the database and asserts that exactly one event row exists for
-Alacritty with event type WindowFocused.
+A test might construct a TrackerState, feed it a Focus event for an Alacritty
+window with a zsh title, pid 1234, and uid 1000, and then assert that the
+resulting domain events include FocusChanged. It then queries the database and
+asserts that exactly one event row exists for Alacritty with event type Focus.
 
 Assert both the decision path (events) and the persistence path (DB rows); a
 test that only checks events can pass while the DB write silently fails (e.g., a
@@ -162,18 +161,19 @@ intervals. These tests simulate crash scenarios.
 
 ### Scenario: Daemon restart during active block
 
-A test seeds an event trace with a WindowFocused event for firefox with
-WindowBlocked for firefox with pid 100 and uid 1000 (tag=2 variant). It builds a MockPlatform from those
-events, creates a new EnforcerActor with a cloned pool and clock, calls
+A test seeds an event trace with a Focus event for firefox with Block for
+firefox with pid 100 and uid 1000 (tag=2 variant). It builds a MockPlatform from
+those events, creates a new EnforcerActor with a cloned pool and clock, calls
 reconcile_on_startup(), and asserts that the block state for firefox is still
 blocked. It also asserts that the events table contains exactly one row — the
-original WindowFocused — with no duplicates.
+original Focus — with no duplicates.
 
 ### Scenario: Suspend during focus interval
 
 A test verifies that when a PrepareForSleep signal arrives while an app is
-focused and no focus switch has yet occurred, a Slept event is written, the
-interval is accumulated, and resume does not accrue wall-clock time.
+focused and no focus switch has yet occurred, a PowerEvent{Suspend} event is
+written, the interval is accumulated, and resume does not accrue wall-clock
+time.
 
 ### Scenario: SIGTERM during event write
 
@@ -222,9 +222,9 @@ app limit but above the category limit — the category policy triggers first.
 - VirtualClock implements Clone — each clone shares the same Arc<AtomicI64>.
   Advancing one advances all. This allows passing the same logical clock to
   multiple actors in a test.
-- All actors that issue time-stamped DB writes (EnforcerActor, prune loop)
-  prune loop) must take a Clock parameter — they need deterministic time for
-  testable timestamp assertions.
+- All actors that issue time-stamped DB writes (EnforcerActor, prune loop) prune
+  loop) must take a Clock parameter — they need deterministic time for testable
+  timestamp assertions.
 - Pure domain logic (evaluate, TimeWindow::is_active) should accept an explicit
   now: DateTime<Utc> parameter. Only actors with DB access accept a Clock (they
   call it once and pass the value down).

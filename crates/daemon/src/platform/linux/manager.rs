@@ -4,34 +4,50 @@ use futures::StreamExt;
 
 use tracing::{error, info, warn};
 
-use crate::platform::PlatformEvent;
+use crate::platform::{PlatformEvent, PowerEventKind};
 use wellbeing_core::{
     PluginInstanceId, Uid,
     dbus_constants::{
-        ACTIVITY_TAG_IDLE, FOCUS_FIELD_APP_ID, FOCUS_FIELD_PID, FOCUS_FIELD_TAG, FOCUS_FIELD_TITLE,
-        FOCUS_FIELD_UID, FOCUS_STRUCT_FIELD_COUNT, FOCUS_TAG_APP, FOCUS_TAG_BLOCKED,
-        FOCUS_TAG_DESKTOP,
+        EVENT_FIELD_APP_ID, EVENT_FIELD_PID, EVENT_FIELD_POWER_TAG, EVENT_FIELD_TAG,
+        EVENT_FIELD_TITLE, EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN, EVENT_POWER_SUSPEND,
+        EVENT_STRUCT_FIELD_COUNT, EVENT_TAG_BLOCK, EVENT_TAG_FOCUS, EVENT_TAG_IDLE,
+        EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT, EVENT_TAG_POWER, EVENT_TAG_RESUME, EVENT_TAG_UNFOCUS,
     },
 };
 use zbus::proxy;
 use zvariant::OwnedValue;
 
+// ── Proxy ────────────────────────────────────────────────────────────────────
+
+/// The `org.wellbeing.v1.Manager` D-Bus interface exposed by the compositor plugin.
+///
+/// Signals:
+///   - `Event(payload: OwnedValue)` — unified event carrying a `(ussuu)` struct.
 #[proxy(
     interface = "org.wellbeing.v1.Manager",
     default_path = "/org/wellbeing/Manager"
 )]
 pub trait Manager {
+    /// Unified event signal — `payload` is a D-Bus struct with signature `(ussuu)`:
+    ///
+    ///   field | type   | contents
+    ///   ------+--------+-----------------------------------------------
+    ///   0     | u32    | event tag (EVENT_TAG_FOCUS / _UNFOCUS / …)
+    ///   1     | string | app_id (Focus, Block)
+    ///   2     | string | title  (Focus, Block)
+    ///   3     | u32    | pid    (Focus)
+    ///   4     | u32    | power_tag  (PowerEvent: Suspend / Hibernate / Shutdown)
     #[zbus(signal)]
-    fn focus_changed(&self, window: OwnedValue) -> zbus::Result<()>;
+    fn event(&self, payload: OwnedValue) -> zbus::Result<()>;
 
-    #[zbus(signal)]
-    fn activity_changed(&self, tag: u32) -> zbus::Result<()>;
-
-    /// Read-only property returning the same variant as FocusChanged —
-    /// None (Desktop), WindowFocused, or WindowBlocked.
+    /// Read-only property returning the current focus state in the same
+    /// `(uussuu)` struct format as the `Event` signal.  The client should
+    /// use [`parse_event_payload`] to decode the value.
     #[zbus(property)]
     fn current_focus(&self) -> zbus::Result<OwnedValue>;
 }
+
+// ── Client ───────────────────────────────────────────────────────────────────
 
 pub struct ManagerClient {
     pub uid: Uid,
@@ -43,14 +59,17 @@ impl ManagerClient {
         Self { uid, proxy }
     }
 
-    /// Query the plugin's CurrentFocus D-Bus property and convert it to a
-    /// PlatformEvent. Returns None if the property returns Desktop (no focus)
-    /// or if deserialization fails.
+    /// Query the plugin's CurrentFocus D-Bus property.
+    /// Returns the parsed [`PlatformEvent`] — including `Unfocus` when
+    /// no app window is focused (the plugin sends [`EVENT_TAG_UNFOCUS`]
+    /// with the uid).
     pub async fn current_focus(&self) -> Option<PlatformEvent> {
         let val: OwnedValue = self.proxy.current_focus().await.ok()?;
-        parse_focus_variant(val)
+        parse_event_payload(val, self.uid)
     }
 }
+
+// ── Registry ─────────────────────────────────────────────────────────────────
 
 pub struct PluginRegistry {
     clients: HashMap<PluginInstanceId, ManagerClient>,
@@ -100,6 +119,8 @@ impl PluginRegistry {
         client.current_focus().await
     }
 
+    /// Subscribe to the unified `Event` signal from a plugin instance.
+    /// Returns a receiver that yields parsed [`PlatformEvent`]s.
     pub async fn subscribe_signals(
         &self,
         instance_id: &PluginInstanceId,
@@ -107,40 +128,25 @@ impl PluginRegistry {
     ) -> Option<tokio::sync::mpsc::Receiver<PlatformEvent>> {
         let client = self.clients.get(instance_id)?;
         let proxy = client.proxy.clone();
+        let uid = client.uid;
         let (tx, rx) = tokio::sync::mpsc::channel::<PlatformEvent>(256);
 
         handle.spawn(async move {
-            let mut focus_stream = match proxy.receive_focus_changed().await {
+            let mut event_stream = match proxy.receive_event().await {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("failed to subscribe focus_changed: {e}");
+                    error!("failed to subscribe Event signal: {e}");
                     return;
                 }
             };
-            let mut activity_stream = match proxy.receive_activity_changed().await {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("failed to subscribe activity_changed: {e}");
-                    return;
-                }
-            };
+
             loop {
                 tokio::select! {
-                    Some(signal) = focus_stream.next() => {
-                        if let Ok(args) = signal.args()
-                            && let Some(event) = parse_focus_variant(args.window) {
+                    Some(signal) = event_stream.next() => {
+                            if let Ok(args) = signal.args()
+                                && let Some(event) = parse_event_payload(args.payload, uid) {
                                 tx.send(event).await.ok();
                             }
-                    }
-                    Some(signal) = activity_stream.next() => {
-                        if let Ok(args) = signal.args() {
-                            let event = if args.tag == ACTIVITY_TAG_IDLE {
-                                PlatformEvent::IdleActivity
-                            } else {
-                                PlatformEvent::ResumedActivity
-                            };
-                            tx.send(event).await.ok();
-                        }
                     }
                     else => break,
                 }
@@ -157,46 +163,83 @@ impl Default for PluginRegistry {
     }
 }
 
-/// Parse a FocusChanged variant OwnedValue into a PlatformEvent.
-/// Shared by the signal handler and the CurrentFocus property query.
-fn parse_focus_variant(val: OwnedValue) -> Option<PlatformEvent> {
+// ── Payload parser (D-Bus → PlatformEvent boundary) ─────────────────────────
+
+/// Parse a unified `Event` signal / `CurrentFocus` property payload into a
+/// [`PlatformEvent`].
+///
+/// The payload is a D-Bus struct with signature `(ussuu)`:
+///
+///   [`EVENT_FIELD_TAG`]       = u32 tag  (EVENT_TAG_FOCUS / …)
+///   [`EVENT_FIELD_APP_ID`]    = string app_id
+///   [`EVENT_FIELD_TITLE`]     = string title
+///   [`EVENT_FIELD_PID`]       = u32 pid
+///   [`EVENT_FIELD_POWER_TAG`] = u32 power_tag
+///
+/// Returns `None` on malformed input (invalid tag, bad struct shape, or
+/// empty `app_id` for Focus/Block which fails [`wellbeing_core::AppId`]
+/// validation).
+pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
     use zvariant::Value;
+
+    // Every variant must be a struct with at least EVENT_STRUCT_FIELD_COUNT fields.
     let v: Value = val.into();
-    match &v {
-        Value::U32(FOCUS_TAG_DESKTOP) => Some(PlatformEvent::Unfocused),
-        Value::Structure(s) if s.fields().len() >= FOCUS_STRUCT_FIELD_COUNT => {
-            let f = s.fields();
-            if let (
-                tag @ (Value::U32(FOCUS_TAG_APP) | Value::U32(FOCUS_TAG_BLOCKED)),
-                Value::Str(app_id),
-                Value::Str(title),
-                Value::U32(pid),
-                Value::U32(uid),
-            ) = (
-                &f[FOCUS_FIELD_TAG],
-                &f[FOCUS_FIELD_APP_ID],
-                &f[FOCUS_FIELD_TITLE],
-                &f[FOCUS_FIELD_PID],
-                &f[FOCUS_FIELD_UID],
-            ) && let Ok(aid) = wellbeing_core::AppId::new(app_id.as_str())
-            {
-                let wt = wellbeing_core::WindowTitle::new(title.as_str());
-                match tag {
-                    Value::U32(FOCUS_TAG_BLOCKED) => Some(PlatformEvent::WindowBlocked {
-                        app_id: aid,
-                        title: wt,
-                        uid: wellbeing_core::Uid(*uid),
-                    }),
-                    _ => Some(PlatformEvent::WindowFocused {
-                        app_id: aid,
-                        title: wt,
-                        pid: wellbeing_core::Pid(*pid),
-                        uid: wellbeing_core::Uid(*uid),
-                    }),
-                }
-            } else {
-                None
-            }
+    let f = match &v {
+        Value::Structure(s) if s.fields().len() >= EVENT_STRUCT_FIELD_COUNT => s.fields(),
+        _ => return None,
+    };
+
+    match &f[EVENT_FIELD_TAG] {
+        Value::U32(EVENT_TAG_FOCUS) => {
+            let app_id_str = match &f[EVENT_FIELD_APP_ID] {
+                Value::Str(s) => s.as_str(),
+                _ => return None,
+            };
+            let title_str = match &f[EVENT_FIELD_TITLE] {
+                Value::Str(s) => s.as_str(),
+                _ => return None,
+            };
+            let pid_val = match &f[EVENT_FIELD_PID] {
+                Value::U32(p) => wellbeing_core::Pid(*p),
+                _ => return None,
+            };
+            let aid = wellbeing_core::AppId::new(app_id_str).ok()?;
+            Some(PlatformEvent::Focus {
+                app_id: aid,
+                title: wellbeing_core::WindowTitle::new(title_str),
+                pid: pid_val,
+                uid,
+            })
+        }
+        Value::U32(EVENT_TAG_UNFOCUS) => Some(PlatformEvent::Unfocus { uid }),
+        Value::U32(EVENT_TAG_BLOCK) => {
+            let app_id_str = match &f[EVENT_FIELD_APP_ID] {
+                Value::Str(s) => s.as_str(),
+                _ => return None,
+            };
+            let title_str = match &f[EVENT_FIELD_TITLE] {
+                Value::Str(s) => s.as_str(),
+                _ => return None,
+            };
+            let aid = wellbeing_core::AppId::new(app_id_str).ok()?;
+            Some(PlatformEvent::Block {
+                app_id: aid,
+                title: wellbeing_core::WindowTitle::new(title_str),
+                uid,
+            })
+        }
+        Value::U32(EVENT_TAG_IDLE) => Some(PlatformEvent::Idle { uid }),
+        Value::U32(EVENT_TAG_RESUME) => Some(PlatformEvent::Resume { uid }),
+        Value::U32(EVENT_TAG_LOGOUT) => Some(PlatformEvent::LogOut { uid }),
+        Value::U32(EVENT_TAG_LOCKED) => Some(PlatformEvent::Locked { uid }),
+        Value::U32(EVENT_TAG_POWER) => {
+            let kind = match &f[EVENT_FIELD_POWER_TAG] {
+                Value::U32(EVENT_POWER_HIBERNATE) => PowerEventKind::Hibernate,
+                Value::U32(EVENT_POWER_SHUTDOWN) => PowerEventKind::Shutdown,
+                Value::U32(EVENT_POWER_SUSPEND) => PowerEventKind::Suspend,
+                _ => return None,
+            };
+            Some(PlatformEvent::PowerEvent { kind, uid })
         }
         _ => None,
     }

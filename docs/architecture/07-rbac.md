@@ -61,7 +61,7 @@ Root sees all policies, can manage any
 
 ## Enforcer Actor Per-User Policy Application
 
-The EnforcerActor runs one evaluation cycle per FocusChanged event. It:
+The EnforcerActor runs one evaluation cycle per Event signal. It:
 
 1. Gets the uid from the plugin's D-Bus connection credentials
 2. Queries policies WHERE owner_id = uid AND active = 1

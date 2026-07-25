@@ -19,7 +19,7 @@ struct PluginState {
     std::shared_ptr<sdbus::IConnection> sysConnection;
     std::shared_ptr<sdbus::IConnection> sessConnection;
     std::unique_ptr<WellbeingManager> wellbeingManager;
-    // ── Canonical focus state (serialized over D-Bus as FocusChanged) ─
+    // ── Canonical focus state (serialized over D-Bus as Event signal) ─
     std::optional<WindowInfo> focusState;
 
     // ── Cached uid for FocusChanged signals ──────────────────────────

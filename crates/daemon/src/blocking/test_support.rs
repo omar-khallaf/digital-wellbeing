@@ -1,6 +1,6 @@
 //! Shared test helpers for the blocking/enforcement feature.
 //!
-//! Provides [`MockPlatform`], [`setup`], [`app`], and [`dt`] used by
+//! Provides [`MockPlatform`], [`setup`], and [`dt`] used by
 //! persistence and core test modules. Only compiled in `#[cfg(test)]`.
 
 #![cfg(test)]
@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use wellbeing_core::{AppId, BlockedAppEntry, Uid, VirtualClock};
 
 use crate::blocking::EnforcerActor;
+use crate::platform::linux::PluginRegistry;
 use crate::platform::{Platform, PlatformEvent};
 use crate::signal::DaemonSignal;
 use crate::store::{DbPool, StoreBuilder};
@@ -27,10 +28,6 @@ impl Platform for MockPlatform {
     async fn notify(&self, _title: &str, _body: &str) -> anyhow::Result<()> {
         Ok(())
     }
-}
-
-pub fn app(s: &str) -> AppId {
-    AppId::new(s).unwrap()
 }
 
 pub fn dt(secs: i64) -> DateTime<Utc> {
@@ -57,7 +54,15 @@ pub async fn setup() -> (
         HashMap::<Uid, HashMap<AppId, BlockedAppEntry>>::new(),
     ));
 
-    let (actor, _) = EnforcerActor::new(pool.clone(), platform, clock, signal_tx, blocked_apps);
+    let registry = Arc::new(RwLock::new(PluginRegistry::new()));
+    let (actor, _) = EnforcerActor::new(
+        pool.clone(),
+        platform,
+        registry,
+        clock,
+        signal_tx,
+        blocked_apps,
+    );
 
     (tmp, pool, actor, signal_rx)
 }

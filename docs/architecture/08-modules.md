@@ -18,15 +18,6 @@ no UI code.
 
 ## Dependency Flow
 
-core/ -> zero project dependencies | v platform/ -> core/ | v tracking/core ->
-tracking/domain, tracking/data, platform/ policy/core -> policy/domain,
-policy/data, platform/ blocking/core -> blocking/domain, blocking/overlay,
-platform/ | v categorization -> core/, store/ (DB queries + domain types) | v
-gui/ (separate binary) -> core/ (shared types) + D-Bus client |
-screens/dashboard, screens/policy, screens/reports | subscribes to daemon D-Bus
-signals (BlockStateChanged, | DailyUsageChanged, PolicyMutated) for cache
-invalidation | v daemon main.rs (wires actors) · gui/main.rs (gpui + bg tokio)
-
 Rules:
 
 - domain/ modules have zero dependencies on tokio, diesel, gpui, or any
@@ -57,8 +48,8 @@ feature's extension of the Platform contract. It holds:
   AwaitingChoice -> PluginLost -> ...).
 - The disconnect handler logic: log on plugin disconnect, re-show overlay on
   reconnect.
-- The overlay lifecycle hooks: manage overlay state transitions and
-  disconnect handling.
+- The overlay lifecycle hooks: manage overlay state transitions and disconnect
+  handling.
 
 The top-level platform/ trait defines how to perform an operation (D-Bus method
 call, signal dispatch). blocking/overlay/ defines when to perform it (lifecycle,

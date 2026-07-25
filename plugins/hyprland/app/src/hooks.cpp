@@ -272,7 +272,7 @@ void registerWindowHooks() {
                     // BlockedAppsChanged signal subscription in WellbeingManager.
                 }
                 if (g_ctx->wellbeingManager) {
-                    g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
+                    g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
                 }
             } catch (const std::exception &e) {
                 logErr("window focus: " + std::string(e.what()));
@@ -294,7 +294,9 @@ void registerWindowHooks() {
                 const auto pid = w->getPID();
 
                 auto appId = AppId::from_raw(appIdRaw);
-                if (!appId.has_value()) return;
+                if (!appId.has_value()) {
+                    return;
+                }
 
                 g_ctx->focusedHyprWindow = w;
                 g_ctx->focusState = WindowInfo{
@@ -304,14 +306,20 @@ void registerWindowHooks() {
                     .uid = g_ctx->uid,
                 };
                 g_ctx->lockManager->setFocusedApp(appId);
-                if (g_ctx->wellbeingManager) g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
+                if (g_ctx->wellbeingManager) {
+                    g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
+                }
                 return;
             }
 
-            if (!focused || focused != w || !g_ctx->focusState.has_value()) return;
+            if (!focused || focused != w || !g_ctx->focusState.has_value()) {
+                return;
+            }
 
             g_ctx->focusState->title = w->m_title;
-            if (g_ctx->wellbeingManager) g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
+            if (g_ctx->wellbeingManager) {
+                g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
+            }
         } catch (const std::exception &e) {
             logErr("window title: " + std::string(e.what()));
         } catch (...) {

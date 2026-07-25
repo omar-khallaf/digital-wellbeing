@@ -8,10 +8,10 @@ use diesel::result::QueryResult;
 use diesel_async::RunQueryDsl;
 use wellbeing_core::Uid;
 
-use crate::blocking::data::CLOSE_EVENT_TYPES;
 use crate::reports::data::models::{EventRow, HourlyUsageRow};
 use crate::store::connection::DbConn;
 use crate::store::schema::events;
+use wellbeing_core::event_types::CLOSE_EVENT_TYPES;
 
 use super::get_event_range;
 
@@ -39,7 +39,7 @@ pub async fn get_hourly_usage(
         .filter(|e| e.user_id == user_id.0 as i32)
         .collect();
 
-    let mut hourly = [0i32; 24];
+    let mut hourly = [0i64; 24];
     let mut focus_start: Option<i64> = None;
 
     for event in &user_events {
@@ -72,7 +72,7 @@ pub async fn get_hourly_usage(
 
 /// Distribute a focus interval into per-hour buckets with cross-hour splitting.
 fn add_interval_to_hourly(
-    hourly: &mut [i32; 24],
+    hourly: &mut [i64; 24],
     interval_start: i64,
     interval_end: i64,
     day_start_millis: i64,
@@ -86,7 +86,7 @@ fn add_interval_to_hourly(
         let hour_end = hour_start + 3_600_000;
         let overlap_start = interval_start.max(hour_start);
         let overlap_end = interval_end.min(hour_end);
-        let millis = (overlap_end - overlap_start).max(0) as i32;
+        let millis = (overlap_end - overlap_start).max(0);
         *slot += millis;
     }
 }

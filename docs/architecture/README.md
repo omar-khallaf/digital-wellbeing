@@ -133,26 +133,25 @@ Constraints (from AGENTS.md and the design docs):
 
 All focus events are processed through a gate-first pipeline — the EnforcerActor
 evaluates policy before any event is persisted. The enforcer runs one evaluation
-cycle per FocusChanged event.
+cycle per Event signal.
 
-WindowFocused arrives from the plugin as a PlatformEvent. The EnforcerActor acts
-as gatekeeper:
+Focus arrives from the plugin as a PlatformEvent. The EnforcerActor acts as
+gatekeeper:
 
 1. It queries the app's daily_usage plus active policies.
 2. It evaluates the app against policies and usage before any DB write. If the
-   verdict is Block, the previous app's open interval is closed with an
-   Unfocused event, the app is added to ActiveBlocks so the plugin renders an
-   overlay, no WindowFocused is written for the new app, and the blocked app
-   never enters the event log. If the verdict is Notify, the previous interval
-   is closed, a WindowFocused is written for the new app, the app proceeds
-   normally, and a desktop notification is sent. If the policy has a repeat
-   interval, a real-time timer fires at that interval to re-notify the user
-   while the app remains focused. A limit timer is also started for other
-   policies. If the verdict is Ok, the previous interval is closed, a
-   WindowFocused is written for the new app, and a limit timer is started for
-   TimeLimit policies. When that timer fires, the app is re-evaluated and if the
-   limit is exceeded the overlay is shown immediately without waiting for the
-   next focus switch.
+   verdict is Block, the previous app's open interval is closed with an Unfocus
+   event, the app is added to ActiveBlocks so the plugin renders an overlay, no
+   Focus is written for the new app, and the blocked app never enters the event
+   log. If the verdict is Notify, the previous interval is closed, a Focus is
+   written for the new app, the app proceeds normally, and a desktop
+   notification is sent. If the policy has a repeat interval, a real-time timer
+   fires at that interval to re-notify the user while the app remains focused. A
+   limit timer is also started for other policies. If the verdict is Ok, the
+   previous interval is closed, a Focus is written for the new app, and a limit
+   timer is started for TimeLimit policies. When that timer fires, the app is
+   re-evaluated and if the limit is exceeded the overlay is shown immediately
+   without waiting for the next focus switch.
 
 Notify path: when a Notify policy triggers, the app proceeds normally — events
 are written and usage accumulates. The EnforcerActor sends a desktop
@@ -171,8 +170,8 @@ for the next focus switch.
 Key consequences:
 
 - Blocked apps never appear in the event log — only tracked focus is recorded.
-- The Unfocused written during a block closes the previous app's interval (A),
-  not the blocked app's (which was never opened).
+- The Unfocus written during a block closes the previous app's interval (A), not
+  the blocked app's (which was never opened).
 - Timer enforcement catches limit expiry during continuous use of a single app,
   not just on focus switches.
 - Notify policies do NOT block — the app's focus interval proceeds normally, and

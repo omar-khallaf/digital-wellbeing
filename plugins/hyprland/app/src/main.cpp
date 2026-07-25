@@ -9,22 +9,20 @@
 // and trigger auto-recovery across busses.
 //
 // Provides:
-//   - FocusChanged    signal   (Option<WindowInfo> on every focus switch)
-//   - ActivityChanged signal   (FocusActivityTag: idle / resumed)
+//   - Event signal  (unified, replaces FocusChanged + ActivityChanged)
 //
 // Uses declarative block state: reads the daemon's BlockedApps property
 // for initial sync and subscribes to BlockedAppsChanged signal for reactive
 // overlay updates — never receives commands, never polls on focus changes.
 //
 // Single source of truth for focus: g_ctx->focusState is the only focus
-// state (serialized over D-Bus as FocusChanged). LockManager queries it
+// state (serialized over D-Bus as Event). LockManager queries it
 // via getFocusedApp() instead of receiving duplicate setFocusedApp calls.
 //
 // See docs/architecture/04-plugin-ipc.md and 05-daemon-auth.md.
 // =============================================================================
 
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -39,25 +37,21 @@
 #include <hyprland/render/OpenGL.hpp>
 #include <sdbus-c++/sdbus-c++.h>
 
+#include "hooks.hpp"
 #include "lockdown.hpp"
 #include "logging.hpp"
 #include "plugin_state.hpp"
 #include "types.hpp"
 #include "wellbeing_manager.hpp"
-#include "hooks.hpp"
 
-using wellbeing::FocusActivityTag;
 using wellbeing::g_ctx;
 using wellbeing::IdleState;
 using wellbeing::IdleTracker;
 using wellbeing::logErr;
 using wellbeing::logInfo;
+using wellbeing::WellbeingManager;
 
 inline HANDLE PHANDLE = nullptr;
-
-// =============================================================================
-// Required Hyprland plugin entry points
-// =============================================================================
 
 extern "C" APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API_VERSION; }
 
@@ -115,20 +109,20 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             }
             switch (newState) {
             case IdleState::Idle:
-                g_ctx->wellbeingManager->emitActivityChanged(FocusActivityTag::Idle);
+                g_ctx->wellbeingManager->emitSimpleEvent(wellbeing::EventTag::Idle);
                 logInfo("activity: idle");
                 break;
             case IdleState::Active:
-                g_ctx->wellbeingManager->emitActivityChanged(FocusActivityTag::Resumed);
+                g_ctx->wellbeingManager->emitSimpleEvent(wellbeing::EventTag::Resume);
                 logInfo("activity: resumed");
                 break;
             }
         };
-        state->idleTracker =
-            std::make_unique<IdleTracker>(std::move(onTransition),
-                                          wellbeing::focusedWindowHasIdleInhibitor,    // inhibitCheck — Wayland idle-inhibit
-                                          std::chrono::milliseconds(30'000) // 30s threshold
-            );
+        state->idleTracker = std::make_unique<IdleTracker>(
+            std::move(onTransition),
+            wellbeing::focusedWindowHasIdleInhibitor, // inhibitCheck — Wayland idle-inhibit
+            std::chrono::milliseconds(30'000)         // 30s threshold
+        );
     }
 
     g_ctx = std::move(state);

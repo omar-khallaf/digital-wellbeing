@@ -20,8 +20,8 @@ pub struct DailyUsageRow {
     pub date: String,
     pub user_id: i32,
     pub app_id: String,
-    pub closed_millis: i32,
-    pub open_millis: i32,
+    pub closed_millis: i64,
+    pub open_millis: i64,
 }
 
 #[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
@@ -31,13 +31,13 @@ pub struct DailyUsageByTitleRow {
     pub user_id: i32,
     pub app_id: String,
     pub title: String,
-    pub closed_millis: i32,
-    pub open_millis: i32,
+    pub closed_millis: i64,
+    pub open_millis: i64,
 }
 
 /// One hour bucket (0-23) with total focus milliseconds.
 #[derive(Debug, Clone)]
 pub struct HourlyUsageRow {
     pub hour: u8,
-    pub total_millis: i32,
+    pub total_millis: i64,
 }

@@ -95,9 +95,9 @@ TimeWindow wraps schedule rules, which can be either daily (start and end times
 each day) or weekly (a set of weekdays plus start and end times). Empty or null
 schedule rules mean the policy is active all the time.
 
-The editor renders labeled controls for kind, target, time limit, schedule rules,
-and active flag. Time_limit_minutes is shown only when kind is TimeLimit or
-Notify.
+The editor renders labeled controls for kind, target, time limit, schedule
+rules, and active flag. Time_limit_minutes is shown only when kind is TimeLimit
+or Notify.
 
 Categories are managed through a separate editor that lets users create, rename,
 assign colors, and assign icons. The editor operates on the categories table

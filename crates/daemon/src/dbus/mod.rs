@@ -3,7 +3,7 @@
 mod controller;
 mod core;
 mod data;
-mod domain;
+pub mod domain;
 mod methods;
 mod signals;
 
