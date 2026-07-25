@@ -3,6 +3,10 @@ name = "wellbeing-gui"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "wellbeing-gui"
+path = "src/main/mod.rs"
+
 [dependencies]
 wellbeing-core = { path = "../core" }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }

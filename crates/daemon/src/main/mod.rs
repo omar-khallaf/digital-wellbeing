@@ -1,13 +1,14 @@
 //! wellbeing-daemon — Digital Wellbeing system service.
 //! Starts the D-Bus server, platform layer, and background actors.
 
+mod wiring;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use futures::StreamExt;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -70,10 +71,8 @@ async fn main() -> Result<()> {
         .context("failed to build database pool")?;
     info!("database ready");
 
-    let prune_pool = pool.clone();
-    tokio::spawn(async move {
-        wellbeing_daemon::reports::prune_loop(prune_pool, Box::new(SystemClock)).await;
-    });
+    // Background prune loop for old usage records
+    wiring::spawn_prune_loop(pool.clone());
 
     let (platform, event_stream) = wellbeing_daemon::platform::linux::LinuxPlatformBuilder::new()
         .build(bus)
@@ -118,32 +117,8 @@ async fn main() -> Result<()> {
     // `flush_tx` stays in main's scope; only clones are moved into spawns.
     let flush_tx = enforcer.flush_handle();
 
-    // Wall-clock aligned minute-ticker: sends InternalEvent::Flush to the
-    // EnforcerActor at every minute boundary. Re-calculates the delay on every
-    // iteration so NTP steps / system sleep do not cause drift.
-    let minute_flush_tx = flush_tx.clone();
-    let minute_token = shutdown_token.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = minute_token.cancelled() => {
-                    info!("minute-ticker: shutting down");
-                    break;
-                }
-                _ = async {
-                    let now = Utc::now();
-                    let next_boundary = (now.timestamp() / 60 + 1) * 60;
-                    let delay_secs = (next_boundary - now.timestamp()).max(1) as u64;
-                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
-                } => {
-                    if minute_flush_tx.send(InternalEvent::Flush(None)).await.is_err() {
-                        info!("minute-ticker: enforcer actor dropped");
-                        break;
-                    }
-                }
-            }
-        }
-    });
+    // Wall-clock aligned minute-ticker
+    wiring::spawn_minute_ticker(flush_tx.clone(), shutdown_token.clone());
 
     tokio::spawn(async move {
         enforcer.run(enforcer_rx, internal_rx).await;
@@ -229,9 +204,10 @@ async fn main() -> Result<()> {
                     let reg = power_registry.read().await;
                     for uid in reg.registered_uids() {
                         if let Some(event) = reg.current_focus_for_uid(uid).await
-                            && power_tx.send(event).is_err() {
-                                break;
-                            }
+                            && power_tx.send(event).is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 // If screen is locked, resync happens when the user unlocks.
@@ -243,32 +219,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    let sl_tx = platform.event_tx();
-    let sl_registry = registry.clone();
-    tokio::spawn(async move {
-        use tokio_stream::wrappers::UnboundedReceiverStream;
-        let mut sl_stream = UnboundedReceiverStream::new(screen_lock_rx);
-        while let Some(event) = sl_stream.next().await {
-            match event {
-                wellbeing_daemon::platform::linux::ScreenLockEvent::Locked => {
-                    sl_tx
-                        .send(wellbeing_daemon::platform::PlatformEvent::Locked)
-                        .ok();
-                }
-                wellbeing_daemon::platform::linux::ScreenLockEvent::Unlocked => {
-                    // Screen unlocked — resync focus by querying the
-                    // plugin's CurrentFocus property.
-                    let reg = sl_registry.read().await;
-                    for uid in reg.registered_uids() {
-                        if let Some(event) = reg.current_focus_for_uid(uid).await
-                            && sl_tx.send(event).is_err() {
-                                break;
-                            }
-                    }
-                }
-            }
-        }
-    });
+    // Spawn screen-lock watcher — listens for lock/unlock events and
+    // re-synchronizes focus tracking on unlock.
+    wiring::spawn_screen_lock_watcher(platform.event_tx(), registry.clone(), screen_lock_rx);
 
     let conn = match bus {
         BusMode::System => zbus::Connection::system()

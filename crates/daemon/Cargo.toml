@@ -3,6 +3,10 @@ name = "wellbeing-daemon"
 version.workspace = true
 edition.workspace = true
 
+[[bin]]
+name = "wellbeing-daemon"
+path = "src/main/mod.rs"
+
 [dependencies]
 wellbeing-core = { path = "../core" }
 tokio = { workspace = true, features = ["full"] }

@@ -97,7 +97,6 @@ class WellbeingManager {
 
     void onDaemonAppeared();
 
-    auto resolveActiveDaemonBus(const std::string &daemonBusName) -> DaemonBus;
     auto daemonBusName() -> std::string;
 
     void onDaemonDisappeared();

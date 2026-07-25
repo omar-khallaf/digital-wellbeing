@@ -84,27 +84,6 @@ optional compositor plugin for overlay enforcement:
                └────────────────────────┘
 ```
 
-### Architecture docs
-
-Full design reasoning, D-Bus contracts, and component specs in
-[architecture/README.md](docs/architecture/README.md):
-
-| Doc                                                                      | Scope                                                 |
-| ------------------------------------------------------------------------ | ----------------------------------------------------- |
-| [01-rationale.md](docs/architecture/01-rationale.md)                     | "Why" essays — platform abstraction, gpui, D-Bus IPC  |
-| [02-platform.md](docs/architecture/02-platform.md)                       | `Platform` trait, `OverlayConfig`, event model        |
-| [03-linux-platform.md](docs/architecture/03-linux-platform.md)           | Linux platform impl: metadata, power state            |
-| [04-plugin-ipc.md](docs/architecture/04-plugin-ipc.md)                   | Plugin D-Bus contract, signed overlay tokens          |
-| [05-daemon-auth.md](docs/architecture/05-daemon-auth.md)                 | Ed25519 signing, `DaemonPublicKey`, replay handling   |
-| [06-daemon-dbus.md](docs/architecture/06-daemon-dbus.md)                 | `org.wellbeing.v1.Controller` server, error mapping   |
-| [07-rbac.md](docs/architecture/07-rbac.md)                               | Per-user RBAC, policy visibility per uid              |
-| [08-modules.md](docs/architecture/08-modules.md)                         | Feature-per-directory layout, dependency flow         |
-| [09-state-flow.md](docs/architecture/09-state-flow.md)                   | Daemon-authoritative state, GUI cache architecture    |
-| [10-deployment.md](docs/architecture/10-deployment.md)                   | systemd unit, D-Bus policy files, install layout      |
-| [11-implementation-plan.md](docs/architecture/11-implementation-plan.md) | Phased build plan (Phase A–F)                         |
-| [12-open-questions.md](docs/architecture/12-open-questions.md)           | Open design questions and resolutions                 |
-| [13-deployment-modes.md](docs/architecture/13-deployment-modes.md)       | System vs session daemon modes, 4-step bus resolution |
-
 ## Workspace Layout
 
 ```
@@ -161,21 +140,16 @@ cd plugins/hyprland && cmake --preset linux-host && cmake --build --preset relea
 # Run tests
 cargo test
 
+# Run Hyprland plugin C++ tests
+cd plugins/hyprland
+cmake --preset linux-host
+cmake --build build/linux-host --config Debug
+cd build/linux-host/wellbeing-lockdown-prefix/src/wellbeing-lockdown-build
+ctest -C Debug --output-on-failure
+
 # Lint
 cargo clippy -- -D warnings
 ```
-
-## Commands
-
-| Command                                                                                   | Description                 |
-| ----------------------------------------------------------------------------------------- | --------------------------- |
-| `cargo build --release`                                                                   | Release build               |
-| `cargo test`                                                                              | Run all tests               |
-| `cargo clippy -- -D warnings`                                                             | Lint check                  |
-| `cargo fmt --check`                                                                       | Format check                |
-| `cargo build -p wellbeing-daemon`                                                         | Build daemon only           |
-| `cargo build -p wellbeing-gui`                                                            | Build GUI only              |
-| `cd plugins/hyprland && cmake --preset linux-host && cmake --build --preset release-host` | Build Hyprland plugin (.so) |
 
 ## Design Decisions
 

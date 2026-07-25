@@ -8,7 +8,7 @@ use wellbeing_core::event_types::{
 
 use crate::store::{DbPool, schema};
 
-use super::super::super::buffer::BufferedEvent;
+use crate::blocking::buffer::BufferedEvent;
 
 /// Repository for blocking-feature persistence operations.
 pub(crate) struct BlockingRepo {

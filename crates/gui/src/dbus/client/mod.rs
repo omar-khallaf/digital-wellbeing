@@ -1,78 +1,23 @@
-//! GUI D-Bus client: `DaemonClient` proxy wrapper.
+//! `DaemonClient` — thin wrapper around the daemon's D-Bus API.
 //!
 //! Holds connections to BOTH system and session busses simultaneously,
-//! using 4-step resolution to prefer the system daemon.
+//! using 4-step resolution to prefer the system daemon. Provides response
+//! caching with invalidation methods.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use wellbeing_core::*;
 use zbus::Connection;
-use zbus::proxy;
 
 use crate::cache::ClientCache;
 
 use super::bus::{ConnectionStatus, select_daemon_bus};
 
-#[proxy(
-    interface = "org.wellbeing.v1.Controller",
-    default_service = "org.wellbeing.v1.Controller",
-    default_path = "/org/wellbeing/Controller"
-)]
-pub(crate) trait Daemon {
-    async fn list_policies(&self, filter_owner: u32) -> zbus::Result<Vec<PolicyData>>;
-    async fn create_policy(&self, input: PolicyInput) -> zbus::Result<PolicyId>;
-    async fn update_policy(&self, id: PolicyId, input: PolicyInput) -> zbus::Result<()>;
-    async fn delete_policy(&self, id: PolicyId) -> zbus::Result<()>;
+mod methods;
+mod proxy;
 
-    async fn get_daily_usage(
-        &self,
-        date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByAppEntry>>;
-    async fn get_usage_range(
-        &self,
-        start_date: &str,
-        end_date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailySummary>>;
-
-    async fn get_daily_usage_by_title(
-        &self,
-        date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByTitleEntry>>;
-    async fn get_usage_range_by_title(
-        &self,
-        start_date: &str,
-        end_date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByTitleSummary>>;
-
-    async fn get_day_events(
-        &self,
-        uid: u32,
-        start_millis: i64,
-        end_millis: i64,
-    ) -> zbus::Result<Vec<DayEventRow>>;
-
-    async fn list_categories(&self) -> zbus::Result<Vec<Category>>;
-    async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
-    async fn set_app_category(&self, app_id: &str, category_id: CategoryId) -> zbus::Result<()>;
-
-    #[zbus(property)]
-    fn blocked_apps(&self) -> zbus::Result<Vec<BlockedAppEntry>>;
-
-    /// Signals (non-async — zbus generates receivers)
-    #[zbus(signal, name = "BlockedAppsChanged")]
-    fn on_blocked_apps_changed(&self) -> zbus::Result<(u32, String, bool, u32)>;
-
-    #[zbus(signal)]
-    fn daily_usage_changed(&self) -> zbus::Result<u32>;
-
-    #[zbus(signal)]
-    fn policy_mutated(&self) -> zbus::Result<u32>;
-}
+pub(crate) use proxy::DaemonProxy;
 
 /// Thin wrapper around the daemon's `org.wellbeing.v1.Controller` D-Bus API.
 ///
@@ -212,125 +157,7 @@ impl DaemonClient {
         }
     }
 
-    pub async fn list_policies(&self, filter_owner: u32) -> Result<Vec<PolicyData>> {
-        let key = format!("policies:{}", filter_owner);
-        if let Some(cached) = self.policy_cache.get(&key) {
-            return Ok(cached);
-        }
-        let policies = self.proxy.list_policies(filter_owner).await?;
-        self.policy_cache.set(key, policies.clone());
-        Ok(policies)
-    }
-
-    pub async fn create_policy(&self, input: PolicyInput) -> Result<PolicyId> {
-        let id = self.proxy.create_policy(input).await?;
-        self.policy_cache.clear();
-        Ok(id)
-    }
-
-    pub async fn update_policy(&self, id: PolicyId, input: PolicyInput) -> Result<()> {
-        self.proxy.update_policy(id, input).await?;
-        self.policy_cache.clear();
-        Ok(())
-    }
-
-    pub async fn delete_policy(&self, id: PolicyId) -> Result<()> {
-        self.proxy.delete_policy(id).await?;
-        self.policy_cache.clear();
-        Ok(())
-    }
-
-    pub async fn get_usage_range(
-        &self,
-        start_date: &str,
-        end_date: &str,
-        user_id: u32,
-    ) -> Result<Vec<DailySummary>> {
-        let key = format!("range:{}:{}:{}", start_date, end_date, user_id);
-        if let Some(cached) = self.range_cache.get(&key) {
-            return Ok(cached);
-        }
-        let summaries = self
-            .proxy
-            .get_usage_range(start_date, end_date, user_id)
-            .await?;
-        self.range_cache.set(key, summaries.clone());
-        Ok(summaries)
-    }
-
-    pub async fn get_daily_usage_by_title(
-        &self,
-        date: &str,
-        user_id: u32,
-    ) -> Result<Vec<DailyUsageByTitleEntry>> {
-        let key = format!("title:{}:{}", date, user_id);
-        if let Some(cached) = self.daily_title_cache.get(&key) {
-            return Ok(cached);
-        }
-        let entries = self.proxy.get_daily_usage_by_title(date, user_id).await?;
-        self.daily_title_cache.set(key, entries.clone());
-        Ok(entries)
-    }
-
-    pub async fn get_usage_range_by_title(
-        &self,
-        start_date: &str,
-        end_date: &str,
-        user_id: u32,
-    ) -> Result<Vec<DailyUsageByTitleSummary>> {
-        let key = format!("range_by_title:{}:{}:{}", start_date, end_date, user_id);
-        if let Some(cached) = self.range_by_title_cache.get(&key) {
-            return Ok(cached);
-        }
-        let entries = self
-            .proxy
-            .get_usage_range_by_title(start_date, end_date, user_id)
-            .await?;
-        self.range_by_title_cache.set(key, entries.clone());
-        Ok(entries)
-    }
-
-    pub async fn get_day_events(
-        &self,
-        uid: u32,
-        start_millis: i64,
-        end_millis: i64,
-    ) -> Result<Vec<DayEventRow>> {
-        let key = format!("day_events:{}:{}:{}", uid, start_millis, end_millis);
-        if let Some(cached) = self.day_events_cache.get(&key) {
-            return Ok(cached);
-        }
-        let events = self
-            .proxy
-            .get_day_events(uid, start_millis, end_millis)
-            .await?;
-        self.day_events_cache.set(key, events.clone());
-        Ok(events)
-    }
-
-    pub async fn list_categories(&self) -> Result<Vec<Category>> {
-        let key = "categories".into();
-        if let Some(cached) = self.category_cache.get(&key) {
-            return Ok(cached);
-        }
-        let cats = self.proxy.list_categories().await?;
-        self.category_cache.set(key, cats.clone());
-        Ok(cats)
-    }
-
-    pub async fn get_app_categories(&self) -> Result<Vec<AppCategoryRow>> {
-        let key = "app_categories".into();
-        if let Some(cached) = self.app_category_cache.get(&key) {
-            return Ok(cached);
-        }
-        let rows = self.proxy.get_app_categories().await?;
-        self.app_category_cache.set(key, rows.clone());
-        Ok(rows)
-    }
-
-    pub async fn get_blocked_apps(&self) -> Result<Vec<BlockedAppEntry>> {
-        self.proxy.blocked_apps().await.map_err(Into::into)
-    }
+    // -- Cache invalidation methods --
 
     pub fn invalidate_range_cache(&self) {
         self.range_cache.clear();

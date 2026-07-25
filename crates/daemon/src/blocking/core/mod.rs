@@ -152,15 +152,27 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     .apply_closed_deltas_from_buffer(conn, &events, now)
                     .await?;
                 self.repo.flush_events(conn, &events).await?;
+
+                // increment_open_ms must run AFTER flush_events so it sees
+                // the latest WindowFocused events in the DB. Running it
+                // inside the transaction keeps the open/closed deltas atomic
+                // and prevents re-adding time for intervals that were just
+                // closed by apply_closed_deltas_from_buffer.
+                for (&uid, app_id) in &self.current_focus {
+                    self.repo
+                        .increment_open_ms(conn, uid, app_id.clone(), now)
+                        .await?;
+                }
+
                 Ok::<_, anyhow::Error>(())
             })
             .await?;
-        }
-
-        for (&uid, app_id) in &self.current_focus {
-            self.repo
-                .increment_open_ms(&mut conn, uid, app_id.clone(), now)
-                .await?;
+        } else {
+            for (&uid, app_id) in &self.current_focus {
+                self.repo
+                    .increment_open_ms(&mut conn, uid, app_id.clone(), now)
+                    .await?;
+            }
         }
 
         // Use a set to avoid duplicate signals when multiple events share a UID.
@@ -266,14 +278,15 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         }
         for (uid, app_id) in to_remove {
             if let Some(user_blocks) = self.blocked_apps.write().await.get_mut(&uid)
-                && user_blocks.remove(&app_id).is_some() {
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
-                        uid: uid.0,
-                        app_id: app_id.clone(),
-                        blocked: false,
-                        reason: 0,
-                    });
-                }
+                && user_blocks.remove(&app_id).is_some()
+            {
+                let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    uid: uid.0,
+                    app_id: app_id.clone(),
+                    blocked: false,
+                    reason: 0,
+                });
+            }
         }
     }
 

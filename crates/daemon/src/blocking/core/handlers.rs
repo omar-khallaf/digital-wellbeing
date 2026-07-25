@@ -9,8 +9,8 @@ use wellbeing_core::*;
 
 use crate::platform::PlatformEvent;
 
-use super::super::buffer::BufferedEvent;
 use super::EnforcerActor;
+use crate::blocking::buffer::BufferedEvent;
 use wellbeing_core::event_types::{EVENT_IDLE, EVENT_RESUMED};
 
 impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C> {
@@ -73,14 +73,15 @@ impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C>
         if let Some(prev_app) = self.current_focus.get(&uid)
             && prev_app != &app_id
             && let Some(user_blocks) = self.blocked_apps.write().await.get_mut(&uid)
-                && user_blocks.remove(prev_app).is_some() {
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
-                        uid: uid.0,
-                        app_id: prev_app.clone(),
-                        blocked: false,
-                        reason: 0,
-                    });
-                }
+            && user_blocks.remove(prev_app).is_some()
+        {
+            let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                uid: uid.0,
+                app_id: prev_app.clone(),
+                blocked: false,
+                reason: 0,
+            });
+        }
 
         self.current_focus.insert(uid, app_id.clone());
         self.last_titles.insert(uid, title.clone());
@@ -178,8 +179,6 @@ impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C>
 #[cfg(test)]
 mod tests {
     use wellbeing_core::{AppId, Uid, WindowTitle};
-
-    
 
     /// Verify handle_window_blocked removes uid from current_focus and pushes a
     /// buffered event.
