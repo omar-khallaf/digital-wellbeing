@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{
-    BLOCK_STATE_CHANGED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
+    BLOCKED_APPS_CHANGED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
     DAILY_USAGE_CHANGED_SIGNAL,
 };
 use wellbeing_daemon::{
@@ -24,7 +24,6 @@ use wellbeing_daemon::{
 };
 
 use wellbeing_daemon::blocking::InternalEvent;
-use wellbeing_daemon::platform::{PlatformEvent, linux::PluginRegistry};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -46,6 +45,20 @@ async fn main() -> Result<()> {
                 tokio::fs::create_dir_all(parent)
                     .await
                     .context("failed to create DB directory")?;
+                // Directory contains sensitive usage data.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) =
+                        tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                            .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to set DB directory permissions — using default umask"
+                        );
+                    }
+                }
             }
             db_path.clone()
         }
@@ -87,7 +100,7 @@ async fn main() -> Result<()> {
         info!("event fan-out: platform event stream ended");
     });
 
-    let active_blocks = Arc::new(RwLock::new(HashMap::new()));
+    let blocked_apps = Arc::new(RwLock::new(HashMap::new()));
 
     // Create shutdown token early so the minute-ticker and signal/watchdog
     // tasks can all reference it.
@@ -98,25 +111,8 @@ async fn main() -> Result<()> {
         platform.clone(),
         SystemClock,
         signal_tx.clone(),
-        active_blocks.clone(),
+        blocked_apps.clone(),
     );
-
-    // Recover routing + daily usage from the database on startup
-    // so the in-memory state matches persisted events after a crash or
-    // system resume.
-    enforcer
-        .recover()
-        .await
-        .context("failed to recover enforcer state")?;
-
-    // Flush synthetic close events from recovery so the database is
-    // authoritative when the plugin later registers and runs the sync
-    // algorithm.  Without this, `sync_focus_on_register` would see the
-    // stale WindowFocused from last session and skip the reconcile.
-    enforcer
-        .flush_buffer()
-        .await
-        .context("failed to flush recovery buffer")?;
 
     // Clone flush handle BEFORE moving enforcer into the actor task.
     // `flush_tx` stays in main's scope; only clones are moved into spawns.
@@ -168,45 +164,80 @@ async fn main() -> Result<()> {
     let power_flush_tx = flush_tx.clone();
     let power_tx = platform.event_tx();
     let shutdown_tx = power_tx.clone();
-    let power_registry = registry.clone();
     let resume_is_locked = screen_is_locked.clone();
+    let power_registry = registry.clone();
     tokio::spawn(async move {
-        use futures::StreamExt;
         use tokio_stream::wrappers::UnboundedReceiverStream;
+        use wellbeing_daemon::platform::PlatformEvent;
+        use wellbeing_daemon::platform::linux::PowerEvent;
+        use wellbeing_daemon::platform::linux::inhibit_shutdown;
+
         let mut power_stream = UnboundedReceiverStream::new(power_rx);
         while let Some(event) = power_stream.next().await {
-            // Flush buffered events BEFORE power state change
-            let _ = power_flush_tx.send(InternalEvent::Flush(None)).await;
-            let (platform_event, is_resume) = match event {
-                wellbeing_daemon::platform::linux::PowerEvent::Slept => {
-                    (wellbeing_daemon::platform::PlatformEvent::Slept, false)
-                }
-                wellbeing_daemon::platform::linux::PowerEvent::ShutDown => {
-                    (wellbeing_daemon::platform::PlatformEvent::ShutDown, false)
-                }
-                wellbeing_daemon::platform::linux::PowerEvent::ResumedSystem => (
-                    wellbeing_daemon::platform::PlatformEvent::ResumedSystem,
-                    true,
-                ),
-                wellbeing_daemon::platform::linux::PowerEvent::LoggedOut => {
-                    (wellbeing_daemon::platform::PlatformEvent::LoggedOut, false)
-                }
-            };
-            if power_tx.send(platform_event).is_err() {
-                info!("power event channel closed");
-                break;
-            }
-            // After ResumedSystem, reconcile focus so intervals are
-            // reopened for whatever app the user is actually using.
-            // Skip if the screen is still locked — the unlock handler
-            // will run reconcile_focus when the user unlocks.
-            if is_resume && !resume_is_locked.load(Ordering::Acquire) {
-                let reconcile_events = reconcile_focus(&power_registry).await;
-                for ev in reconcile_events {
-                    if power_tx.send(ev).is_err() {
-                        info!("power event channel closed during reconcile");
-                        break;
+            // Create a logind delay inhibitor for sleep/shutdown/logout.
+            // The OwnedFd is kept alive until the flush ack arrives,
+            // then dropped at the end of this iteration to release logind.
+            let _inhibit_fd = match event {
+                PowerEvent::Slept | PowerEvent::ShutDown | PowerEvent::LoggedOut => {
+                    match inhibit_shutdown().await {
+                        Ok(fd) => Some(fd),
+                        Err(e) => {
+                            error!(error = %e, "failed to inhibit logind, proceeding without delay");
+                            None
+                        }
                     }
+                }
+                _ => None,
+            };
+
+            let (platform_event, is_resume) = match event {
+                PowerEvent::Slept => (PlatformEvent::Slept, false),
+                PowerEvent::ShutDown => (PlatformEvent::ShutDown, false),
+                PowerEvent::ResumedSystem => (PlatformEvent::ResumedSystem, true),
+                PowerEvent::LoggedOut => (PlatformEvent::LoggedOut, false),
+            };
+
+            let is_power_change = matches!(
+                platform_event,
+                PlatformEvent::Slept | PlatformEvent::ShutDown | PlatformEvent::LoggedOut
+            );
+
+            if is_power_change {
+                // 1. Send the close event to enforcer so it drains current_focus
+                if power_tx.send(platform_event).is_err() {
+                    break;
+                }
+                // 2. Yield so the enforcer buffers the event before we flush
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                // 3. Flush with ack — persists the close event to the database
+                let (ack_tx, ack_rx) = oneshot::channel();
+                if power_flush_tx
+                    .send(InternalEvent::Flush(Some(ack_tx)))
+                    .await
+                    .is_ok()
+                {
+                    let _ = ack_rx.await;
+                }
+                // 4. inhibit_fd dropped here → logind proceeds with the state change
+            } else if is_resume {
+                if power_tx.send(platform_event).is_err() {
+                    break;
+                }
+                if !resume_is_locked.load(Ordering::Acquire) {
+                    // Screen was unlocked during sleep — resync focus by
+                    // querying the plugin's CurrentFocus property.
+                    let reg = power_registry.read().await;
+                    for uid in reg.registered_uids() {
+                        if let Some(event) = reg.current_focus_for_uid(uid).await
+                            && power_tx.send(event).is_err() {
+                                break;
+                            }
+                    }
+                }
+                // If screen is locked, resync happens when the user unlocks.
+            } else {
+                if power_tx.send(platform_event).is_err() {
+                    break;
                 }
             }
         }
@@ -215,7 +246,6 @@ async fn main() -> Result<()> {
     let sl_tx = platform.event_tx();
     let sl_registry = registry.clone();
     tokio::spawn(async move {
-        use futures::StreamExt;
         use tokio_stream::wrappers::UnboundedReceiverStream;
         let mut sl_stream = UnboundedReceiverStream::new(screen_lock_rx);
         while let Some(event) = sl_stream.next().await {
@@ -226,8 +256,14 @@ async fn main() -> Result<()> {
                         .ok();
                 }
                 wellbeing_daemon::platform::linux::ScreenLockEvent::Unlocked => {
-                    for ev in reconcile_focus(&sl_registry).await {
-                        sl_tx.send(ev).ok();
+                    // Screen unlocked — resync focus by querying the
+                    // plugin's CurrentFocus property.
+                    let reg = sl_registry.read().await;
+                    for uid in reg.registered_uids() {
+                        if let Some(event) = reg.current_focus_for_uid(uid).await
+                            && sl_tx.send(event).is_err() {
+                                break;
+                            }
                     }
                 }
             }
@@ -252,7 +288,7 @@ async fn main() -> Result<()> {
     let recovery_pool = pool.clone();
     let recovery_registry = registry.clone();
     let recovery_event_tx = platform.event_tx().clone();
-    let recovery_active_blocks = active_blocks.clone();
+    let recovery_blocked_apps = blocked_apps.clone();
     // Build interface before touching the connection so we can register
     // the object server atomically with the name request.
     let interface = DaemonInterface::new(
@@ -260,7 +296,7 @@ async fn main() -> Result<()> {
         registry,
         platform.event_tx(),
         Box::new(SystemClock),
-        active_blocks,
+        blocked_apps,
         tokio::runtime::Handle::current(),
     );
 
@@ -416,7 +452,7 @@ async fn main() -> Result<()> {
                                                             recovery_registry.clone(),
                                                             recovery_event_tx.clone(),
                                                             Box::new(SystemClock),
-                                                            recovery_active_blocks.clone(),
+                                                            recovery_blocked_apps.clone(),
                                                             tokio::runtime::Handle::current(),
                                                         );
 
@@ -496,7 +532,6 @@ async fn main() -> Result<()> {
                                 }
                             }
                             None => {
-                                // Stream ended (connection died); restart watch.
                                 break;
                             }
                         }
@@ -532,7 +567,7 @@ async fn main() -> Result<()> {
                                 .map(|(c, _)| c.clone());
                             let Some(conn) = conn else { continue };
                             match signal {
-                                DaemonSignal::BlockStateChanged {
+                                DaemonSignal::BlockedAppsChanged {
                                     uid,
                                     app_id,
                                     blocked,
@@ -544,7 +579,7 @@ async fn main() -> Result<()> {
                                             None::<&str>,
                                             DAEMON_OBJECT_PATH,
                                             DAEMON_INTERFACE,
-                                            BLOCK_STATE_CHANGED_SIGNAL,
+                                            BLOCKED_APPS_CHANGED_SIGNAL,
                                             &(uid, app_id_str, blocked, reason),
                                         )
                                         .await
@@ -612,22 +647,4 @@ async fn main() -> Result<()> {
     drop(serving_state);
 
     Ok(())
-}
-
-/// Reconcile session state after an interruption (boot, unlock, resume).
-///
-/// Queries the plugin's `CurrentFocus` and returns a single
-/// `WindowFocused` event if an app window is focused, or an empty vec
-/// when no app is focused (desktop/null).
-///
-/// At all three call-sites the enforcer's `current_focus` has already
-/// been drained (by `recover()`, `PlatformEvent::Locked`, or
-/// `PlatformEvent::Slept`), so `handle_event` will accept the new focus
-/// without dedup issues.
-async fn reconcile_focus(registry: &RwLock<PluginRegistry>) -> Vec<PlatformEvent> {
-    let current = registry.read().await.query_current_focus().await;
-    match current {
-        Some(ev @ PlatformEvent::WindowFocused { .. }) => vec![ev],
-        _ => vec![],
-    }
 }

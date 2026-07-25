@@ -1,196 +1,14 @@
-//! Dashboard ViewModel builder and data transformations.
+//! Day timeline and hourly bucket computations.
 //!
-//! All functions are pure — no gpui, no async. Consumed by UI layer.
+//! Converts raw D-Bus event rows into focus interval blocks and hourly
+//! breakdowns for the timeline view. Pure functions — no gpui, no async.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use wellbeing_core::{
-    AppCategoryRow, Category, DailySummary, DailyUsageEntry, DateRange, DayEventRow,
-    event_types::is_close_event_type,
-};
+use wellbeing_core::{DayEventRow, event_types::is_close_event_type};
 
-use super::domain::{
-    AppListEntry, BlockCardInfo, DashboardViewModel, DayTimeline, HourlyBucket, Kpis,
-    TimelineBlock, TimelineFragment,
-};
-use crate::chart::Slice;
-
-/// Transform D-Bus cache data into a `DashboardViewModel`.
-pub fn build_dashboard_viewmodel(
-    range: DateRange,
-    summaries: &[DailySummary],
-    categories: &[Category],
-    app_categories: &[AppCategoryRow],
-    block_cards: Vec<BlockCardInfo>,
-    day_timeline: Option<DayTimeline>,
-) -> DashboardViewModel {
-    let usage: Vec<DailyUsageEntry> = summaries
-        .iter()
-        .flat_map(|s| s.entries.iter().cloned())
-        .collect();
-
-    let pie_app = build_app_slices(&usage, app_categories);
-    let pie_category = build_category_slices(&usage, categories, app_categories);
-    let top_apps = build_top_apps(&usage, app_categories);
-
-    DashboardViewModel {
-        date_range: range,
-        pie_app,
-        pie_category,
-        top_apps,
-        block_cards,
-        day_timeline,
-    }
-}
-
-fn build_app_slices(usage: &[DailyUsageEntry], app_categories: &[AppCategoryRow]) -> Vec<Slice> {
-    let mut by_app: HashMap<String, f64> = HashMap::new();
-    let mut total: f64 = 0.0;
-    for entry in usage {
-        let minutes = entry.total_millis as f64;
-        *by_app.entry(entry.app_id.clone()).or_insert(0.0) += minutes;
-        total += minutes;
-    }
-
-    if total <= 0.0 {
-        return Vec::new();
-    }
-
-    let meta: HashMap<&str, &str> = app_categories
-        .iter()
-        .map(|ac| (ac.app_id.as_str(), ac.display_name.as_str()))
-        .collect();
-
-    let mut slices: Vec<Slice> = by_app
-        .into_iter()
-        .map(|(app_id, app_minutes)| {
-            let display_name = meta
-                .get(app_id.as_str())
-                .copied()
-                .unwrap_or(&app_id)
-                .to_string();
-            Slice {
-                percentage: (app_minutes / total) * 100.0,
-                app_id,
-                display_name,
-                color: String::new(),
-            }
-        })
-        .collect();
-
-    slices.sort_by(|a, b| {
-        b.percentage
-            .partial_cmp(&a.percentage)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    slices
-}
-
-fn build_category_slices(
-    usage: &[DailyUsageEntry],
-    categories: &[Category],
-    app_categories: &[AppCategoryRow],
-) -> Vec<Slice> {
-    let app_to_cat: HashMap<&str, i64> = app_categories
-        .iter()
-        .map(|ac| (ac.app_id.as_str(), ac.category_id))
-        .collect();
-
-    let cat_map: HashMap<i64, &Category> = categories.iter().map(|c| (c.id.0, c)).collect();
-
-    let mut by_cat: HashMap<String, (f64, String)> = HashMap::new();
-    let mut total: f64 = 0.0;
-    for entry in usage {
-        let minutes = entry.total_millis as f64;
-        let cat_id = app_to_cat.get(entry.app_id.as_str()).copied().unwrap_or(0);
-        let cat_name = cat_map
-            .get(&cat_id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "Uncategorized".into());
-        let entry = by_cat.entry(cat_name).or_insert((0.0, String::new()));
-        entry.0 += minutes;
-        total += minutes;
-    }
-
-    if total <= 0.0 {
-        return Vec::new();
-    }
-
-    let mut slices: Vec<Slice> = by_cat
-        .into_iter()
-        .map(|(name, (cat_minutes, color))| Slice {
-            percentage: (cat_minutes / total) * 100.0,
-            app_id: name.clone(),
-            display_name: name,
-            color,
-        })
-        .collect();
-
-    slices.sort_by(|a, b| {
-        b.percentage
-            .partial_cmp(&a.percentage)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    slices
-}
-
-fn build_top_apps(
-    usage: &[DailyUsageEntry],
-    app_categories: &[AppCategoryRow],
-) -> Vec<AppListEntry> {
-    let app_meta: HashMap<&str, (&str, Option<String>)> = app_categories
-        .iter()
-        .map(|ac| {
-            let color = if ac.category_id > 0 {
-                Some(format!("cat_{}", ac.category_id))
-            } else {
-                None
-            };
-            (ac.app_id.as_str(), (ac.display_name.as_str(), color))
-        })
-        .collect();
-
-    let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
-    let mut grand_total: f64 = 0.0;
-    for entry in usage {
-        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
-        grand_total += entry.total_millis as f64;
-    }
-
-    if grand_total <= 0.0 {
-        return Vec::new();
-    }
-
-    let mut entries: Vec<AppListEntry> = by_app
-        .into_iter()
-        .map(|(app_id, total_millis)| {
-            let (display_name, category_color) = app_meta
-                .get(app_id.as_str())
-                .map(|(name, color)| (name.to_string(), color.clone()))
-                .unwrap_or_else(|| (app_id.clone(), None));
-            AppListEntry {
-                rank: 0,
-                total_millis,
-                percentage: (total_millis as f64 / grand_total) * 100.0,
-                app_id,
-                display_name,
-                category_color,
-                is_blocked: false,
-            }
-        })
-        .collect();
-
-    entries.sort_by_key(|a| std::cmp::Reverse(a.total_millis));
-    for (i, entry) in entries.iter_mut().enumerate() {
-        entry.rank = i + 1;
-    }
-
-    entries.truncate(10);
-    entries
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
+use super::domain::{DayTimeline, HourlyBucket, TimelineBlock, TimelineFragment};
 
 fn ms_to_dt(ts: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(ts)
@@ -221,7 +39,7 @@ fn make_focus_block(
     }
 }
 
-/// Fill time gaps between consecutive blocks by inserting synthetic gap blocks.
+/// Insert gap blocks wherever consecutive focus blocks are not adjacent.
 fn fill_time_gaps(blocks: &mut Vec<TimelineBlock>) {
     if blocks.is_empty() {
         return;
@@ -260,11 +78,10 @@ fn fill_time_gaps(blocks: &mut Vec<TimelineBlock>) {
 /// 3. Unmatched focus at end of day → `end: None`.
 /// 4. Fill remaining time gaps between consecutive blocks.
 pub fn build_day_timeline(
-    events: Vec<DayEventRow>,
+    mut events: Vec<DayEventRow>,
     date: NaiveDate,
     app_names: &HashMap<String, String>,
 ) -> DayTimeline {
-    let mut events = events;
     events.sort_by_key(|e| e.timestamp);
 
     let mut blocks: Vec<TimelineBlock> = Vec::new();
@@ -403,16 +220,160 @@ pub fn compute_hourly_buckets(timeline: &DayTimeline, now: DateTime<Utc>) -> Vec
     buckets
 }
 
-/// Compute the KPI summary for the stat row.
-pub fn compute_kpis(vm: &DashboardViewModel) -> Kpis {
-    let total_millis: i64 = vm.top_apps.iter().map(|a| a.total_millis).sum();
-    let top = vm.top_apps.first();
-    Kpis {
-        total_millis,
-        top_app: top
-            .map(|t| t.display_name.clone())
-            .unwrap_or_else(|| "\u{2014}".into()),
-        top_app_millis: top.map(|t| t.total_millis).unwrap_or(0),
-        active_blocks: vm.block_cards.len(),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn make_row(event_type: u8, timestamp: i64, app_id: &str) -> DayEventRow {
+        DayEventRow {
+            id: 0,
+            event_type,
+            timestamp,
+            app_id: app_id.to_string(),
+            title: String::new(),
+            user_id: 0,
+        }
+    }
+
+    #[test]
+    fn test_empty_events_returns_empty_timeline() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        let tl = build_day_timeline(vec![], date, &names);
+        assert!(tl.blocks.is_empty());
+        assert_eq!(tl.total_focus_millis, 0);
+        assert_eq!(tl.date, date);
+    }
+
+    #[test]
+    fn test_single_focus_with_close() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        let events = vec![
+            make_row(0, 1_748_772_000_000, "org.mozilla.Firefox"),
+            make_row(1, 1_748_772_050_000, "org.mozilla.Firefox"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        assert_eq!(tl.blocks.len(), 1);
+        assert!(!tl.blocks[0].is_gap);
+        assert_eq!(tl.blocks[0].app_id, "org.mozilla.Firefox");
+        assert!(tl.blocks[0].end.is_some());
+        assert_eq!(tl.total_focus_millis, 50_000);
+    }
+
+    #[test]
+    fn test_unmatched_focus_at_end() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        let events = vec![
+            make_row(0, 1_748_772_000_000, "org.mozilla.Firefox"),
+            make_row(1, 1_748_772_050_000, "org.mozilla.Firefox"),
+            make_row(0, 1_748_772_100_000, "com.Code.App"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        // Firefox block + gap + Code open block (gap fills between 5s and 10s)
+        assert_eq!(tl.blocks.len(), 3);
+        assert!(tl.blocks[0].end.is_some());
+        assert!(tl.blocks[1].is_gap);
+        let last = &tl.blocks[2];
+        assert_eq!(last.app_id, "com.Code.App");
+        assert!(last.end.is_none());
+    }
+
+    #[test]
+    fn test_gap_filling_between_blocks() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        // Firefox from 10:00:00 to 10:00:10, Code from 10:00:30 to 10:00:40
+        let events = vec![
+            make_row(0, 1_748_772_000_000, "org.mozilla.Firefox"),
+            make_row(1, 1_748_772_010_000, "org.mozilla.Firefox"),
+            make_row(0, 1_748_772_030_000, "com.Code.App"),
+            make_row(1, 1_748_772_040_000, "com.Code.App"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        assert_eq!(tl.blocks.len(), 3); // block + gap + block
+        assert!(!tl.blocks[0].is_gap);
+        assert!(tl.blocks[1].is_gap);
+        assert!(!tl.blocks[2].is_gap);
+        let gap = &tl.blocks[1];
+        assert_eq!(gap.app_id, "");
+        assert_eq!(gap.display_name, "");
+    }
+
+    #[test]
+    fn test_idle_events_ignored() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        let events = vec![
+            make_row(0, 1_748_772_000_000, "org.mozilla.Firefox"),
+            make_row(2, 1_748_772_010_000, ""), // idle — ignored
+            make_row(1, 1_748_772_020_000, "org.mozilla.Firefox"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        assert_eq!(tl.blocks.len(), 1);
+        assert_eq!(tl.total_focus_millis, 20_000);
+    }
+
+    #[test]
+    fn test_hourly_buckets_single_block() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        let events = vec![
+            // 10:00:00 to 10:30:00
+            make_row(0, 1_748_772_000_000, "org.mozilla.Firefox"),
+            make_row(1, 1_748_773_800_000, "org.mozilla.Firefox"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        let now = DateTime::from_timestamp_millis(1_748_773_800_000).unwrap();
+        let buckets = compute_hourly_buckets(&tl, now);
+        // Block is in hour 10
+        assert_eq!(buckets[10].fragments.len(), 1);
+        assert!(!buckets[10].fragments[0].is_gap);
+        assert_eq!(buckets[10].fragments[0].millis, 1_800_000);
+        assert_eq!(buckets[10].total_millis, 1_800_000);
+        // All other hours should be empty
+        for h in 0..10 {
+            assert!(buckets[h].fragments.is_empty(), "hour {h} should be empty");
+        }
+        for h in 11..24 {
+            assert!(buckets[h].fragments.is_empty(), "hour {h} should be empty");
+        }
+    }
+
+    #[test]
+    fn test_hourly_buckets_spanning_hours() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        // 10:45:00 to 11:15:00 — spans hours 10 and 11
+        let events = vec![
+            make_row(0, 1_748_774_700_000, "org.mozilla.Firefox"),
+            make_row(1, 1_748_776_500_000, "org.mozilla.Firefox"),
+        ];
+        let tl = build_day_timeline(events, date, &names);
+        let now = DateTime::from_timestamp_millis(1_748_776_500_000).unwrap();
+        let buckets = compute_hourly_buckets(&tl, now);
+        // 15 min in hour 10, 15 min in hour 11
+        assert_eq!(buckets[10].fragments.len(), 1);
+        assert_eq!(buckets[10].fragments[0].millis, 900_000); // 15 min
+        assert_eq!(buckets[11].fragments.len(), 1);
+        assert_eq!(buckets[11].fragments[0].millis, 900_000); // 15 min
+    }
+
+    #[test]
+    fn test_open_block_uses_now() {
+        let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
+        let names = HashMap::new();
+        // Firefox at 10:00:00, no close event
+        let events = vec![make_row(0, 1_748_772_000_000, "org.mozilla.Firefox")];
+        let tl = build_day_timeline(events, date, &names);
+        // now = 10:30:00
+        let now_ms = 1_748_773_800_000;
+        let now_dt = DateTime::from_timestamp_millis(now_ms).unwrap();
+        let buckets = compute_hourly_buckets(&tl, now_dt);
+        assert_eq!(buckets[10].fragments.len(), 1);
+        // should be 30 min (1800s) from 10:00 to 10:30
+        assert_eq!(buckets[10].fragments[0].millis, 1_800_000);
     }
 }

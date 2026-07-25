@@ -50,15 +50,15 @@ Renamed from blocking/platform/ to avoid confusion with the top-level platform/
 trait. blocking/overlay/ is not a second Platform trait — it is the blocking
 feature's extension of the Platform contract. It holds:
 
-- Domain types specific to blocking: OverlayConfig, OverlayAction,
-  BlockOverlayState, BlockReason — these are blocking/domain/ types that the
-  Platform trait references.
+- Domain types specific to blocking: OverlayConfig, BlockOverlayState,
+  BlockReason — these are blocking/domain/ types that the Platform trait
+  references.
 - The overlay lifecycle state machine: BlockingState (Idle -> OverlayShown ->
   AwaitingChoice -> PluginLost -> ...).
 - The disconnect handler logic: log on plugin disconnect, re-show overlay on
   reconnect.
-- The overlay action router: translates user choices (Extra, Close) into the
-  appropriate DB writes.
+- The overlay lifecycle hooks: manage overlay state transitions and
+  disconnect handling.
 
 The top-level platform/ trait defines how to perform an operation (D-Bus method
 call, signal dispatch). blocking/overlay/ defines when to perform it (lifecycle,

@@ -107,8 +107,8 @@ user, never persisted in the database.
 `accumulate_daily_usage` computes elapsed minutes from the focus state
 (wall-clock time including idle), derives the date from the focus start time,
 and upserts into `daily_usage` within the same transaction as the event INSERT.
-The extended flag is set by the `EnforcerActor` after granting extra time via a
-direct UPDATE; it is not set by a trigger.
+Block state is managed declaratively through the daemon's ActiveBlocks D-Bus
+property, not through the events table or daily_usage.
 
 Application-level transactions provide the same atomicity that SQL triggers
 would while keeping business logic in Rust.
@@ -121,11 +121,9 @@ The kind column uses an integer that maps one-to-one with the PolicyKind Rust
 enum.
 
 Block kind has no time limit; TimeLimit and Notify kinds require a positive
-time_limit_minutes. The extra_minutes column configures how much extra time the
-user receives on an Extend action for TimeLimit policies. The
-notification_repeat_interval_minutes column controls re-notification cadence for
-Notify policies; NULL means notify once, a positive value means repeat at that
-interval in minutes.
+time_limit_minutes. The notification_repeat_interval_minutes column controls
+re-notification cadence for Notify policies; NULL means notify once, a positive
+value means repeat at that interval in minutes.
 
 Schedule columns define when the policy is active. Both schedule_start_hour and
 schedule_end_hour are either both present or both NULL; when present they are
@@ -183,15 +181,14 @@ re-fetches.
 ### Daily Usage for Policy Evaluation
 
 The policy engine reads daily_usage by date and app_id to obtain the total
-minutes and extended flag. This is a point lookup on the materialized table. The
-calling code constructs the appropriate domain type from the result depending on
+minutes. This is a point lookup on the materialized table. The calling code
+constructs the appropriate domain type from the result depending on
 whether the policy is TimeLimit or Notify.
 
 ### Daily Usage Report for Dashboard
 
-The dashboard reads total minutes plus extended flag per app for a given date by
-scanning daily_usage filtered by date. The result is an ordered list of app
-totals.
+The dashboard reads total minutes per app for a given date by scanning
+daily_usage filtered by date. The result is an ordered list of app totals.
 
 ### Last Event for Boot Reconciliation
 
@@ -237,18 +234,24 @@ are pruned independently in the same loop.
 
 ### Power State-Aware Flush
 
-When the system is about to suspend, hibernate, or shut down, the open focus
-interval must be closed so wall-clock time during the power state change is not
-counted. A PowerStateWatcher subscribes to systemd-logind PrepareForSleep and
+When the system is about to suspend, hibernate, shut down, or log out, the open
+focus interval must be closed so wall-clock time during the power state change is
+not counted. A PowerStateWatcher subscribes to systemd-logind PrepareForSleep and
 PrepareForShutdown signals via D-Bus. On PrepareForSleep(TRUE) it emits a real
 Slept event; on PrepareForShutdown(TRUE) it emits a real ShutDown event. These
 are genuine occurrences, so the event log stays truthful and the interval is
 simply closed by the existing accumulation logic.
 
 Session lifecycle events such as Locked and LoggedOut are emitted by the same
-watcher from logind Session Lock and session-removed signals. If the flush
-fails, the error is logged and the D-Bus delay inhibitor is released anyway.
-Losing a few seconds of usage data is acceptable; blocking a power state change
+watcher from logind Session Lock and session-removed signals.
+
+The daemon creates a **logind delay inhibitor** (`inhibit("sleep:shutdown", "delay")`)
+for each sleep, shutdown, and logout event. It then sends the close event to the
+enforcer actor and waits for the flush acknowledgement before releasing the
+inhibitor. This guarantees that the close event and its interval deltas are
+persisted to the database before the power state change completes. If the flush
+fails, the error is logged and the inhibitor is released anyway. Losing a few
+seconds of usage data is acceptable; blocking a power state change indefinitely
 is not.
 
 ### Process Termination Handling

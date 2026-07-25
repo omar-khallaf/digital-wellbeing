@@ -25,15 +25,12 @@ determine overlay options for the blocking policy. It is a domain enum
 representing the time-limited state of an app against a single policy. It is
 constructed from daily_usage plus policy config.
 
-The enum has two regimes: Normal (within policy time_limit; limit is
-policy.time_limit_minutes) and Extended (user already granted extra time; limit
-is policy.time_limit_minutes + policy.extra_minutes). It exposes remaining (time
-until limit is reached) and can_extend (whether the user can extend time further
-— only once, in Normal regime).
+The enum tracks a single regime with limit = policy.time_limit_minutes. It
+exposes remaining (time until limit is reached).
 
 Note: PolicyKind::Block (direct block, no time tracking) has no
 time_limit_minutes; it blocks unconditionally when active. For that kind the
-overlay shows only Close (no Extra button), and no tracked state is constructed.
+overlay shows only Close, and no tracked state is constructed.
 
 ### TrackedApp — Unified Domain Model
 
@@ -47,8 +44,7 @@ Resolving from DB row plus policy config: app_state() maps a PolicyConfig +
 usage tuple to the appropriate TrackedApp variant.
 
 - Block -> unreachable (no tracked state needed).
-- TimeLimit -> TimeLimitedApp::Normal or Extended based on whether usage has an
-  active extension.
+- TimeLimit -> TimeLimitedApp.
 - Notify -> TimeTrackedApp with the notify threshold as limit.
 
 ### TimeTrackedApp — Notify-Only Tracked State
@@ -59,11 +55,10 @@ remaining() -> (limit - used).max(0) and is_exceeded() -> used >= limit.
 
 ### Overlay Action Availability by State
 
-| TrackedApp            | Overlay buttons | Behaviour                                      |
-| --------------------- | --------------- | ---------------------------------------------- |
-| TimeLimited(Normal)   | Extra (N) Close | N = extra seconds from policy                  |
-| TimeLimited(Extended) | Close only      | Already extended, no further extension allowed |
-| TimeTracked(...)      | N/A             | Notify policies never show overlays            |
+| TrackedApp       | Overlay buttons | Behaviour                           |
+| ---------------- | --------------- | ----------------------------------- |
+| TimeLimited(...) | Close only      | Close dismisses the overlay         |
+| TimeTracked(...) | N/A             | Notify policies never show overlays |
 
 ## Blocking Flow
 
@@ -101,15 +96,14 @@ EnforcerActor acts as gate — evaluates BEFORE any DB write:
 
 1. Resolve B's app_id -> Vec<CategoryId> (app_categories table)
 2. Query policies WHERE active AND (app_id = ? OR category_id IN (...))
-3. Query B's daily_usage (total_minutes, extended)
+3. Query B's daily_usage (total_minutes)
 4. Call evaluate(B, &policies, elapsed_usage, now) — PURE DOMAIN FN
 
 If PolicyVerdict::Block: a. Check in-memory focus state — if previous app A has
 open interval: INSERT Unfocused (closes A's interval) (EnforcerActor
 `accumulate_daily_usage` closes A via in-memory focus state) b. Build
-ShowOverlayConfig with reason, policy_id, and available_actions determined by
-policy type: Block -> [Close]; TimeLimit -> app_state(usage,
-config).can_extend() ? [Extra, Close] : [Close] c. platform.show_overlay(config)
+ShowOverlayConfig with reason, policy_id, and available_actions: Block ->
+[Close]; TimeLimit -> [Close] c. platform.show_overlay(config)
 — fire-and-forget D-Bus d. Do NOT write WindowFocused for B (B never enters
 event log — no interval to close)
 
@@ -122,9 +116,8 @@ if B still focused, notify again e. Start limit timer for other policies
 
 If PolicyVerdict::Ok: a. INSERT Unfocused (closes previous A's interval) b.
 INSERT WindowFocused for B (opens B's interval) (trigger accumulates A, opens B)
-c. Calculate remaining time: if Normal(used, limit): rem = limit - used if
-Extended(used, limit+extra): rem = (limit+extra) - used Spawn tokio sleep(rem).
-When it fires: re-evaluate B; if limit exceeded -> show overlay
+c. Calculate remaining time: rem = limit - used. Spawn tokio sleep(rem). When it
+fires: re-evaluate B; if limit exceeded -> show overlay
 
 Key properties:
 
@@ -152,9 +145,8 @@ not just on focus switches.
 ### Timer Calculation
 
 remaining_minutes() computes the remaining time until the policy limit is
-reached. It uses the extended flag from daily_usage to determine whether to use
-the base limit or the extended limit (base + extra). Returns 0 if the limit is
-already exceeded.
+reached: remaining = max(0, limit - used). Returns 0 if the limit is already
+exceeded.
 
 ### Timer Lifecycle
 
@@ -171,15 +163,13 @@ start new timer
 User switches to different app: EnforcerActor cancels previous app's timer
 (JoinHandle::abort()), removes from HashMap New app gets its own timer
 
-User extends time (grant_extension): Cancel old timer, start new timer with
-remaining = (limit + extra) - total_minutes
+Block resolves (user closes overlay): Cancel limit timer for the app.
 
 ### Implementation — EnforcerActor
 
 The EnforcerActor maintains two timer maps: limit_timers for active limit timers
 per app (TimeLimit policies), and notify_timers for active notification repeat
-timers per app (Notify policies). Both are cancelled on focus switch or
-extension.
+timers per app (Notify policies). Both are cancelled on focus switch.
 
 The actor uses a weak reference pattern to avoid holding a strong reference
 cycle within the actor. The EnforcerActor uses Arc<Mutex<...>> interior
@@ -245,8 +235,8 @@ stale timer, discard
 User switches to different app: Cancel notify_timer for app_id Cancel
 limit_timer for app_id New app re-evaluated on focus
 
-User grants extension (TimeLimit only): Notification timers are Notify-policy
-only; Extension only applies to TimeLimit policies.
+Close resolves the block (TimeLimit only): The overlay is dismissed and the
+limit timer is cancelled.
 
 ### Initial Delay Calculation
 
@@ -271,79 +261,48 @@ The EnforcerActor handles the block path after evaluate() returns Block:
    focus state (passed from EnforcerActor). Insert Unfocused to close the
    previous interval. `accumulate_daily_usage` runs in the same transaction.
 2. Cancel any limit timer for this app (stale from prior session).
-3. Determine overlay buttons from the blocking policy's variant:
-   - Block -> [Close] only.
-   - TimeLimit -> [Extra, Close] if can_extend(), else [Close].
-   - Notify -> unreachable (enforce_block is never called for Notify).
+3. Overlay shows Close button for all block types.
 4. Show overlay — fire-and-forget D-Bus call. No WindowFocused is written for
    the blocked app. The event log contains only the Unfocused (previous interval
    closure).
 
 No in-memory block state:
 
-The overlay is owned by the plugin; the daemon keeps no BlockState map. The
-signed token (policy_id + blocked_since + signature) issued with Overlay(show)
-is echoed back in UserAction, and the daemon verifies the signature then
-re-derives policy_config from its own DB by policy_id (see
-../architecture/04-plugin-ipc.md).
+The overlay is owned by the plugin; the daemon keeps no active overlay map.
+Block state is shared declaratively through the ActiveBlocks D-Bus property.
+The plugin reads state from ActiveBlocks and renders overlays accordingly.
+Close is handled locally in the plugin via LockManager::hideOverlay() -- no
+signal is sent to the daemon.
 
-The daemon keeps no in-memory block state. The overlay is owned by the plugin;
-policy_id travels out with the Overlay(show) call and back with UserAction, and
-the platform layer adds the Ed25519 signature that the plugin echoes. The daemon
-verifies the signature and re-derives policy_config from its own DB when the
-user acts.
-
-Rust daemon side (zbus): The WindowInfo struct, UserActionEvent, and
-the #[proxy] trait Manager (the zbus proxy for org.wellbeing.v1.Manager —
-overlay(), current_focus property, user_action signal) are defined once,
-canonically, in ../architecture/04-plugin-ipc.md. They are not repeated here to
-avoid a second source of truth.
+Rust daemon side (zbus): The WindowInfo struct and the #[proxy] trait Manager
+(the zbus proxy for org.wellbeing.v1.Manager — current_focus property) are
+defined once, canonically, in ../architecture/04-plugin-ipc.md. They are not
+repeated here to avoid a second source of truth.
 
 C++ plugin side (Hyprland, sdbus-cpp v2): The plugin exposes
 org.wellbeing.v1.Manager on both the system and session buses. The FocusChanged
 signal carries a D-Bus variant whose discriminator separates desktop focus from
-application focus: a plain U32(0) means no application window is focused, while
-a struct with first field U32(1) means an application window is focused. The
-CurrentFocus readable property uses the identical variant encoding, allowing
+application focus, with distinct tags for WindowFocused (tag=1) and
+WindowBlocked (tag=2). A plain U32(0) means no application window is focused.
+The CurrentFocus readable property uses the identical variant encoding, allowing
 late-joining clients to read the current focus state even when they missed the
 ephemeral signal.
 
 The ActivityChanged signal carries a plain u32 where 0 means idle and 1 means
-resumed. The UserAction signal carries the application identifier and the action
-the user took (extra time grant or close). On startup the plugin registers with
-the daemon and discovers the active daemon bus through a four-step resolution.
-If the daemon name appears or disappears, the plugin reconnects, re-registers,
-and re-synchronizes overlay state so any rendered blocks are updated after a
-daemon restart.
+resumed. On startup the plugin registers with the daemon and discovers the
+active daemon bus through a four-step resolution. If the daemon name appears or
+disappears, the plugin reconnects, re-registers, and re-synchronizes overlay
+state so any rendered blocks are updated after a daemon restart.
 
-The plugin registers methods, properties, and signals under a single D-Bus
-interface table. The overlay handler accepts the signed envelope, parses the
-payload, timestamp, and Ed25519 signature, and dispatches to show or hide the
-overlay. Verification fails closed until the signature wiring is complete. The
-canonical implementation is in plugins/hyprland/app/src/main.cpp.
+The canonical implementation is in plugins/hyprland/app/src/main.cpp.
 
-### Option 1: Grant Extra Time
-
-1. EnforcerActor writes a synthetic WindowFocused event with the last known PID
-   and window title (from the pre-block tracker state). This opens a new focus
-   interval.
-2. EnforcerActor sets extended = 1 in daily_usage for the app.
-3. EnforcerActor restarts the limit timer for the extended limit: remaining =
-   (time_limit + extra_minutes) - total_minutes.
-4. The overlay is dismissed via Overlay(hide) D-Bus call or the plugin hides it
-   automatically when the user clicks.
-5. App continues running. The materialized view's accumulated time now counts
-   toward the combined cap (policy_config.time_limit_minutes +
-   policy_config.extra_minutes). When the timer fires, the app will be
-   re-evaluated for a potential second block.
-
-### Option 2: Close App
+### Close App
 
 No additional DB writes are needed. The previous app's interval was already
 closed by the Unfocused written in enforce_block (step 1), and the blocked app
-never had a WindowFocused written. The overlay is dismissed via Overlay(hide) by
-handle_user_action(), and the app keeps running — but with no tracked interval,
-it generates no tracked time.
+never had a WindowFocused written. The close button is handled locally in the
+plugin via LockManager::hideOverlay(), and the app keeps running with no tracked
+interval — it generates no tracked time.
 
 ## Overlay Design
 
@@ -422,93 +381,45 @@ name (from header.sender()), and tracks the instance in PluginRegistry, watching
 the plugin's connection for connect/disconnect. (see
 [04-plugin-ipc.md](../architecture/04-plugin-ipc.md#multi-instance-plugin-support)).
 
-D-Bus Interface:
+D-Bus Interface (org.wellbeing.v1.Manager):
 
-Methods:
+The plugin exposes signals and a property, but no methods for the daemon to
+call. The daemon never commands the plugin — block state is shared
+declaratively through the daemon's ActiveBlocks property and
+BlockedAppsChanged signal (see [04-plugin-ipc.md](../architecture/04-plugin-ipc.md)).
 
-| Method     | Effect                                                                                                                    |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Overlay(v) | Show/hide overlay, wrapped in a SignedEnvelope the daemon signs (see ../architecture/05-daemon-auth.md). Fire-and-forget. |
+Signals (plugin -> daemon):
 
-Verification requirement: the plugin MUST verify the SignedEnvelope (Ed25519
-signature over payload || issued_at, plus the freshness window) before
-dispatching the overlay. The C++ sketch below omits verification for brevity;
-the canonical, verified handler lives in
-[../architecture/05-daemon-auth.md](../architecture/05-daemon-auth.md) and
-[../architecture/04-plugin-ipc.md](../architecture/04-plugin-ipc.md).
+| Signal          | Payload                                                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| FocusChanged    | v — variant: u32(0)=Desktop, u32(1)+WindowInfo=WindowFocused, u32(2)+WindowInfo=WindowBlocked (WindowInfo: {app_id, title, pid, uid})            |
+| ActivityChanged | FocusActivityTag — Idle=0, Resumed=1                                                                                                             |
 
-Signals:
+Property:
 
-| Signal                                                               | Meaning                                                                                                                                                                                             |
-| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| UserAction(app_id, u, policy_id: t, blocked_since: t, signature: ay) | User clicked an overlay button. app_id + action are the plugin's window-domain assertion; policy_id + signature are the echoed, Ed25519-signed token the daemon verifies before trusting policy_id. |
-| FocusChanged(v)                                                      | Some(WindowInfo{app_id, title, pid, uid, overlay_shown}) or None                                                                                                                                    |
+| Property     | Type | Returns                                                                 |
+| ------------ | ---- | ------------------------------------------------------------------------ |
+| CurrentFocus | v    | Same variant as FocusChanged — Desktop / WindowFocused / WindowBlocked   |
 
-Enum encoding (all integers in variants):
+The WindowBlocked variant (tag=2) is used when the focused window has an active
+overlay. The plugin determines this by checking LockManager::isOverlayShown()
+at emit time. The variant tag encodes the distinction without a separate
+boolean field.
 
-Overlay variant command: show: {app_id: s, policy_id: t, reason: u,
-blocked_since: t, available_actions: au, signature: ay} (signature = Ed25519
-over app_id || policy_id || blocked_since || instance_id; the plugin echoes
-policy_id + blocked_since + signature back in UserAction) hide: {app_id: s}
+Blocking state is published by the daemon on Controller:
 
-FocusChanged: variant payload = Option<WindowInfo>
+| Property / Signal          | Type | Purpose                                     |
+| -------------------------- | ---- | ------------------------------------------- |
+| ActiveBlocks               | a(u) | Readable list of all currently blocked apps |
+| BlockedAppsChanged         | s    | Signal: {app_id, blocked: bool}             |
 
-WindowInfo { app_id: s, title: s, pid: u, uid: u, overlay_shown: b, }
+The daemon writes to ActiveBlocks when a block starts or ends. The plugin reads
+ActiveBlocks on startup and subscribes to BlockedAppsChanged for live updates.
+Overlay rendering is triggered by the plugin's local overlay set, not by
+daemon commands.
 
-UserAction signal payload: app_id: s, action: u, policy_id: t, blocked_since: t,
-signature: ay (the plugin is the authority on app_id + action; policy_id +
-blocked_since + signature are the daemon-issued, Ed25519-signed token echoed
-back — see ../architecture/05-daemon-auth.md)
-
-OverlayAction: 0=Extra 1=Close BlockReason: 0=AppTimeLimit 1=CategoryTimeLimit
-2=AppBlock 3=CategoryBlock
-
-The Overlay(v) method is fire-and-forget — it returns immediately with a boolean
-ack. User's choice arrives separately via the UserAction signal, which the
-EnforcerActor consumes on its main event loop:
-
-Daemon Plugin | | Overlay(show) | |----------------------------------> renders
-overlay |<-- ack: true ---------------------- returns immediately | [daemon
-continues processing] user clicks [Grant time] |
-|=================================================== UserAction("firefox", 0) |
-INSERT WindowFocused synthetic | UPDATE daily_usage SET extended | Overlay(hide)
-|----------------------------------> hides overlay
-
-FocusChanged signal with overlay_shown:
-
-The plugin includes an overlay_shown: bool in the WindowInfo payload of every
-FocusChanged signal. This tells the daemon, on any focus change, whether a block
-overlay is currently rendered on that window. The overlay is a plugin-owned
-state — the daemon keeps no in-memory block state. On a daemon restart, a window
-reported with overlay_shown == true lets the daemon refresh the signed token on
-that already-rendered overlay (see Startup Recovery below); the user's later
-click arrives as a UserAction carrying policy_id and a verified signature, and
-the daemon re-derives the policy from policy_id.
-
-ShowOverlayConfig (Overlay show variant payload):
-
-Payload for the show variant of Overlay(v) command. Sent as the v variant when
-command discriminator is "show". Wire form of OverlayConfig — blocked_since is
-the unix-ms wall-clock time the block started; no geometry, the plugin reads
-window dimensions directly from compositor memory. policy_id is carried so the
-plugin can echo it back in UserAction; the platform layer signs the payload and
-embeds the Ed25519 signature on dispatch.
-
-pub struct ShowOverlayConfig { app_id: String, policy_id: u64, reason: u32,
-blocked_since: u64, available_actions: Vec<u32>, }
-
-The daemon keeps no in-memory block state (no active_blocks map). The overlay is
-owned by the plugin; policy_id travels out with the Overlay(show) call and back
-with UserAction, and the platform layer adds the Ed25519 signature that the
-plugin echoes. The daemon verifies the signature and re-derives policy_config
-from its own DB when the user acts. See the signed-token contract in
-[../architecture/04-plugin-ipc.md](../architecture/04-plugin-ipc.md).
-
-Rust daemon side (zbus): The WindowInfo struct, UserActionEvent, and
-the #[proxy] trait Manager (the zbus proxy for org.wellbeing.v1.Manager —
-overlay(), current_focus property, user_action signal) are defined once,
-canonically, in ../architecture/04-plugin-ipc.md. They are not repeated here to
-avoid a second source of truth.
+Close button handling is entirely local to the plugin: the plugin calls
+LockManager::hideOverlay() to dismiss the overlay without any D-Bus signal.
 
 ### Overlay Lifecycle
 
@@ -517,14 +428,13 @@ WindowFocused for B -> EnforcerActor evaluates -> Block verdict | v
 1. If previous app A has open interval: INSERT Unfocused (closes A)
    (EnforcerActor `accumulate_daily_usage` closes A via in-memory focus state —
    interval management, NOT block enforcement)
-2. Build ShowOverlayConfig from TimeLimitedApp state
+2. Daemon adds app to ActiveBlocks -> emits BlockedAppsChanged signal on D-Bus
 3. Cancel any stale limit timer for B
-4. platform.show_overlay(config) — fire-and-forget -> D-Bus Overlay(show) call
-   -> plugin renders overlay on next compositor frame -> daemon continues
-   processing events immediately
-5. Overlay is plugin-owned — daemon stores no block state. The signed token
-   (policy_id+signature) travels out with Overlay(show) and back with
-   UserAction.
+4. Plugin (subscribed to BlockedAppsChanged) receives the signal, reads
+   ActiveBlocks for full block details, and renders overlay on next compositor
+   frame -> daemon continues processing events immediately
+5. Overlay is plugin-owned — daemon stores no block state. Block state is
+   shared declaratively through ActiveBlocks.
 
 If plugin not connected -> Unfocused already written (previous A closed), no
 overlay possible. App B runs unblocked. On next focus event, re-evaluates.
@@ -539,14 +449,9 @@ only the Unfocused (A's closure).
    User sees: app covered by overlay UI User cannot interact with the blocked
    app
 
-6. User clicks a button: Plugin calls emitUserAction(appId, action, policyId,
-   blockedSince, signature) — echoes signed token -> emits UserAction signal on
-   D-Bus -> EnforcerActor receives signal on main event loop -> calls
-   handle_user_action(app_id, action, policy_id, blocked_since, signature)
-
-   handle_user_action dispatches: Extra (0) -> grant_extension(): INSERT
-   WindowFocused, UPDATE extended=1, start limit timer for extended cap,
-   Overlay(hide) Close (1) -> Nothing (no interval to close), Overlay(hide)
+6. User clicks Close: Plugin calls LockManager::hideOverlay() locally. No D-Bus
+   signal is sent — the overlay is dismissed locally in the plugin. The app
+   continues running with no tracked interval.
 
 ### Plugin Disconnect Handling
 
@@ -561,9 +466,9 @@ effectively lifted — the app keeps running with no input trapping.
    block was active, but cannot grant time or close the app. Only the overlay
    (when the plugin reconnects) can resolve the block.
 3. If the plugin reconnects and the app is still focused, the overlay re-appears
-   and normal flow resumes. Since Overlay(v) is fire-and-forget, re-showing does
-   not block the event loop — the daemon simply sends the config and continues.
-   User actions arrive via the UserAction signal as usual.
+   and normal flow resumes. The plugin re-reads ActiveBlocks from the daemon and
+   re-establishes overlays for all blocked apps. Block resolution is handled
+   locally by the plugin.
 4. The daemon subscribes to NameOwnerChanged on the daemon's bus for
    org.wellbeing.v1.Manager.
 
@@ -572,10 +477,11 @@ blocked app never had a WindowFocused event persisted — no interval to clean u
 The block is lifted until the plugin returns.
 
 Called when the plugin's bus name (re-)appears. Re-evaluate and, if the app is
-still blocked, re-issue Overlay(show) with a fresh signed token. No
-active_blocks map to consult — re-derive from the current policy verdict.
+still blocked, update ActiveBlocks — the plugin re-reads the property and
+re-establishes overlays. No active_blocks map to consult — re-derive from the
+current policy verdict.
 
-### Startup Recovery — Plugin Signal Reconciliation
+### Startup Recovery — Plugin State Reconciliation
 
 If the daemon crashes while an overlay is active, the plugin retains the overlay
 (it keeps rendering on the compositor). On restart, the daemon reconciles by

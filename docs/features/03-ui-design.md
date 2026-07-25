@@ -84,7 +84,7 @@ event log, and typing a new app ID followed by Enter creates a new target.
 Policy data is constructed from database rows into domain types before the UI
 sees it. The Policy enum distinguishes App and Category targets. Each target
 carries an id, name, and a PolicyConfig that specifies kind, optional
-time_limit_minutes, extra_minutes, and schedule.
+time_limit_minutes, and schedule.
 
 Block kind is unconditional; it blocks whenever the policy is active and has no
 time limit. TimeLimit kind blocks when elapsed minutes reach or exceed
@@ -95,9 +95,9 @@ TimeWindow wraps schedule rules, which can be either daily (start and end times
 each day) or weekly (a set of weekdays plus start and end times). Empty or null
 schedule rules mean the policy is active all the time.
 
-The editor renders labeled controls for kind, target, time limit, extra minutes,
-schedule rules, and active flag. Time_limit_minutes is shown only when kind is
-TimeLimit or Notify; extra minutes are shown only for TimeLimit kind.
+The editor renders labeled controls for kind, target, time limit, schedule rules,
+and active flag. Time_limit_minutes is shown only when kind is TimeLimit or
+Notify.
 
 Categories are managed through a separate editor that lets users create, rename,
 assign colors, and assign icons. The editor operates on the categories table

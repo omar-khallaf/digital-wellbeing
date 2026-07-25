@@ -1,8 +1,5 @@
-//! Diesel Insertable structs for policy CRUD.
-
 use crate::store::schema::policies;
 
-/// Insert a new policy. No id or timestamps — those are auto-generated.
 #[derive(Debug, Clone, diesel::Insertable)]
 #[diesel(table_name = policies)]
 pub(crate) struct NewPolicy {
@@ -13,7 +10,6 @@ pub(crate) struct NewPolicy {
     pub(crate) created_by: i32,
     pub(crate) owner_id: i32,
     pub(crate) time_limit_minutes: Option<i32>,
-    pub(crate) extra_minutes: i32,
     pub(crate) notification_repeat_interval_minutes: Option<i32>,
     pub(crate) schedule_start_hour: Option<i32>,
     pub(crate) schedule_end_hour: Option<i32>,
@@ -32,7 +28,6 @@ pub(crate) struct UpdatePolicy {
     pub(crate) category_id: Option<Option<i32>>,
     pub(crate) app_id: Option<Option<String>>,
     pub(crate) time_limit_minutes: Option<Option<i32>>,
-    pub(crate) extra_minutes: Option<i32>,
     pub(crate) notification_repeat_interval_minutes: Option<Option<i32>>,
     pub(crate) schedule_start_hour: Option<Option<i32>>,
     pub(crate) schedule_end_hour: Option<Option<i32>>,

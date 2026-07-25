@@ -4,15 +4,16 @@
 use chrono::Utc;
 use gpui::prelude::*;
 use gpui::*;
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex};
 
 use crate::chart::{empty_state, pie_chart_panel};
 use crate::components::{card, format_duration, stat_card};
 use crate::theme::{self, rad, sp};
 
-use super::data::compute_hourly_buckets;
-use super::data::compute_kpis;
-use super::domain::{AppListEntry, BlockCardInfo, DashboardViewModel, DayTimeline};
+use super::domain::{AppListEntry, BlockCardInfo, DashboardViewModel, DayTimeline, TitleListEntry};
+use super::timeline::compute_hourly_buckets;
+use super::viewmodel::compute_kpis;
 
 /// Render the complete dashboard view from a ViewModel.
 pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElement {
@@ -72,6 +73,11 @@ pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElem
             cx,
             Some("Top Apps"),
             vec![app_list_panel(cx, &vm.top_apps).into_any_element()],
+        ))
+        .child(card(
+            cx,
+            Some("Top Titles"),
+            vec![title_list_panel(cx, &vm.top_titles).into_any_element()],
         ))
         .when(!vm.block_cards.is_empty(), |el| {
             el.child(card(
@@ -152,6 +158,66 @@ fn app_list_panel(cx: &App, entries: &[AppListEntry]) -> AnyElement {
     v_flex().gap_1().children(rows).into_any_element()
 }
 
+fn title_list_panel(cx: &App, entries: &[TitleListEntry]) -> AnyElement {
+    if entries.is_empty() {
+        return empty_state(cx, "No title usage data yet.").into_any_element();
+    }
+
+    let rows: Vec<AnyElement> = entries
+        .iter()
+        .map(|entry| {
+            h_flex()
+                .px(sp::MD)
+                .py(sp::SM)
+                .rounded(rad::md())
+                .hover(|s| s.bg(theme::border(cx)))
+                .gap_4()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted(cx))
+                        .w(px(28.0))
+                        .child(format!("#{}", entry.rank)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_primary(cx))
+                        .min_w(px(64.0))
+                        .child(entry.app_id.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .flex_1()
+                        .text_color(theme::text_primary(cx))
+                        .child(entry.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_primary(cx))
+                        .child(format!("{:.1}%", entry.percentage)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::text_primary(cx))
+                        .child(format_duration(entry.total_millis)),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    div()
+        .max_h(px(340.0))
+        .overflow_scrollbar()
+        .child(v_flex().gap_1().children(rows))
+        .into_any_element()
+}
+
 fn block_card(cx: &App, info: &BlockCardInfo) -> AnyElement {
     let now = Utc::now();
     let duration = now.signed_duration_since(info.blocked_since);
@@ -195,7 +261,6 @@ fn block_card(cx: &App, info: &BlockCardInfo) -> AnyElement {
 .into_any_element()
 }
 
-/// Create a positioned bar segment for the timeline chart.
 /// All segments share the same absolute positioning within the track.
 fn timeline_bar_segment(left: f32, width: f32, color: Hsla, track_height: Pixels) -> AnyElement {
     div()

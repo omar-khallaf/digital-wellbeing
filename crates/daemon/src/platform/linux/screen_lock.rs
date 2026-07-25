@@ -2,9 +2,10 @@
 //!
 //! [`ScreenLockWatcher`] subscribes to the `ActiveChanged` signal on the
 //! session bus and emits [`ScreenLockEvent`]s.  On unlock the consumer
-//! SHOULD query the plugin's `CurrentFocus` property via
-//! [`super::PluginRegistry::query_current_focus`] to re-inject a
-//! `WindowFocused` event into the event stream.
+//! SHOULD notify the plugin to re-emit its current focus so a
+//! `WindowFocused` event is re-injected into the event stream.
+//! (Currently handled naturally — the plugin emits `FocusChanged` when
+//! the user interacts after unlock.)
 //!
 //! # Lock-state flag
 //!

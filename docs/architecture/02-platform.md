@@ -50,32 +50,35 @@ plugin reads the D-Bus property independently.
 Platform events are the sole input to the system state machine. No platform
 knowledge leaks beyond PlatformEvent.
 
-| Event         | Fields                                   | Source                                                    | Consumer                                             |
-| ------------- | ---------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------- |
-| WindowFocused | {app_id, title, pid, uid, overlay_shown} | Plugin FocusChanged signal                                | EnforcerActor (policy evaluation, interval tracking) |
-| Unfocused     | —                                        | Plugin FocusChanged signal (Desktop variant)              | EnforcerActor (close interval)                       |
-| Idle          | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Idle)    | EnforcerActor (pause interval)                       |
-| Resumed       | —                                        | Plugin ActivityChanged signal (FocusActivityTag::Resumed) | EnforcerActor (resume interval)                      |
-| UserAction    | {app_id, action}                         | Plugin UserAction signal                                  | EnforcerActor (grant extension / close overlay)      |
+| Event            | Fields                           | Source                                                                                             | Consumer                                             |
+| ---------------- | -------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| WindowFocused    | {app_id, title, pid, uid}        | Plugin FocusChanged signal (tag=1)                                                                | EnforcerActor (policy evaluation, interval tracking) |
+| WindowBlocked    | {app_id, title, uid}             | Plugin FocusChanged signal (tag=2)                                                                | EnforcerActor (close interval, blocked state)        |
+| Unfocused        | —                                | Plugin FocusChanged signal (Desktop variant)                                                      | EnforcerActor (close interval)                       |
+| Idle             | —                                | Plugin ActivityChanged signal (FocusActivityTag::Idle)                                            | EnforcerActor (pause interval)                       |
+| Resumed          | —                                | Plugin ActivityChanged signal (FocusActivityTag::Resumed)                                         | EnforcerActor (resume interval)                      |
+| Slept            | —                                | logind PrepareForSleep(TRUE)                                                                      | EnforcerActor (close interval)                       |
+| Locked           | —                                | logind Session Lock                                                                               | EnforcerActor (close interval)                       |
+| LoggedOut        | —                                | logind Session removed / SIGTERM                                                                  | EnforcerActor (close interval)                       |
+| ShutDown         | —                                | logind PrepareForShutdown(TRUE)                                                                   | EnforcerActor (close interval)                       |
+| ResumedSystem    | —                                | logind PrepareForSleep(FALSE) — no-op in enforcer, resync handled by main.rs                      | —                                                    |
 
-Locked, LoggedOut, Slept, and ShutDown are not PlatformEvent variants. They are
-emitted directly into the event log by the session / power watcher
-(platform/linux/suspend.rs) from systemd-logind signals — bypassing the enforcer
-gate because they are terminal and need no policy evaluation. They carry no
-app_id and simply close the open interval.
+WindowFocused (tag=1) is emitted when the user focuses an unblocked window.
+WindowBlocked (tag=2) is emitted when the focused window has an active overlay
+(the compositor shows the block screen). The plugin decides the tag by checking
+`LockManager::isOverlayShown()` at emit time. The variant tag eliminates the
+need for a separate boolean — the distinction is encoded in the variant itself.
 
-The overlay_shown flag is a boolean included in every WindowFocused event,
-indicating whether a block overlay is already rendered on the focused window. It
-is used for diagnostics and dashboards. Crash recovery is handled by the plugin
-reading ActiveBlocks on reconnect.
+Unfocused carries no app_id — it closes the open interval without opening a new
+one. Slept, Locked, LoggedOut, and ShutDown are also close events: they credit
+the active interval and clear the in-memory current_focus map.
 
-UserAction fields: the plugin sends only app_id + action. The daemon looks up
-the corresponding policy_id from its own ActiveBlocks state.
+Close actions are handled locally in the plugin — the daemon never receives
+a user-action event over D-Bus. Block resolution is purely a plugin concern.
 
-Synthetic events: when the user grants extra time after a block, the
-EnforcerActor inserts a synthetic WindowFocused event after writing the
-extension. This opens a new focus interval, ensuring duration calculations
-reflect actual post-grant usage.
+Synthetic events: after a block is resolved, the EnforcerActor may insert a
+synthetic WindowFocused event if the app was given a new focus interval,
+ensuring duration calculations reflect actual post-block usage.
 
 ## References
 

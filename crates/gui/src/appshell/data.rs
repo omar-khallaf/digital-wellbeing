@@ -30,7 +30,6 @@ pub struct App {
     pub(crate) last_synced_policy_edit_id: Option<wellbeing_core::PolicyId>,
     /// InputState entities for the policy editor fields.
     pub(crate) time_limit_input: Option<Entity<InputState>>,
-    pub(crate) extra_secs_input: Option<Entity<InputState>>,
     pub(crate) app_id_input: Option<Entity<InputState>>,
     /// Custom date range picker state.
     pub(crate) show_custom_range: bool,
@@ -64,6 +63,7 @@ impl App {
                         .map(|ac| (ac.app_id.clone(), ac.display_name.clone()))
                         .collect(),
                 )),
+                &s.title_cache,
             );
             let pol_vm = policies::build_policies_viewmodel(
                 &s.policy_cache,
@@ -75,6 +75,7 @@ impl App {
                 s.selected_range,
                 &s.range_cache,
                 &s.app_category_cache,
+                &s.title_cache,
             );
             (Some(db_vm), Some(pol_vm), Some(rep_vm))
         } else {
@@ -91,7 +92,6 @@ impl App {
             policy_edit_id: None,
             last_synced_policy_edit_id: None,
             time_limit_input: None,
-            extra_secs_input: None,
             app_id_input: None,
             show_custom_range: false,
             custom_start_input: None,
@@ -112,19 +112,16 @@ impl App {
         self.viewmodel_task = Some(task);
     }
 
-    /// Store a policy Task handle (save/delete) to keep it alive.
     pub fn set_policy_task(&mut self, task: gpui::Task<()>) {
         self.policy_task = Some(task);
     }
 
-    /// Apply ViewModels received from the background refresh channel.
     pub fn apply_viewmodels(&mut self, vms: AppViewModels) {
         self.dashboard_vm = vms.dashboard;
         self.policies_vm = vms.policies;
         self.reports_vm = vms.reports;
     }
 
-    /// Refresh all ViewModels from current cache state.
     pub async fn refresh_viewmodels(
         state: &Arc<tokio::sync::Mutex<AppState>>,
     ) -> (
@@ -148,6 +145,7 @@ impl App {
                     .map(|ac| (ac.app_id.clone(), ac.display_name.clone()))
                     .collect(),
             )),
+            &s.title_cache,
         ));
 
         let pol_vm = Some(policies::build_policies_viewmodel(
@@ -161,6 +159,7 @@ impl App {
             s.selected_range,
             &s.range_cache,
             &s.app_category_cache,
+            &s.title_cache,
         ));
 
         (db_vm, pol_vm, rep_vm)
@@ -188,8 +187,7 @@ impl App {
             .unwrap_or_else(|_| "Unknown".into())
     }
 
-    /// Create or reset InputState entities for the custom date range inputs.
-    /// Should be called from render() where &mut Window is available.
+    /// Ensure date-range InputState entities exist; call from `render()`.
     pub(crate) fn ensure_custom_range_inputs(
         &mut self,
         window: &mut Window,
@@ -205,8 +203,7 @@ impl App {
         }
     }
 
-    /// Create or reset InputState entities for the policy editor fields.
-    /// Should be called from render() where &mut Window is available.
+    /// Ensure policy-editor InputState entities exist; call from `render()`.
     pub(crate) fn ensure_policy_editor_inputs(
         &mut self,
         window: &mut Window,
@@ -214,7 +211,6 @@ impl App {
     ) {
         let Some((_, form)) = &self.policy_edit else {
             self.time_limit_input = None;
-            self.extra_secs_input = None;
             self.app_id_input = None;
             return;
         };
@@ -265,51 +261,6 @@ impl App {
         if needs_sync && let Some(ref entity) = self.time_limit_input {
             entity.update(cx, |state, cx| {
                 let desired = form.time_limit_minutes.to_string();
-                if state.value() != desired.as_str() {
-                    state.set_value(desired, window, cx);
-                }
-            });
-        }
-
-        if self.extra_secs_input.is_none() {
-            let entity: Entity<InputState> = cx.new(|cx| InputState::new(window, cx));
-            let _ = cx.subscribe_in(
-                &entity,
-                window,
-                |this: &mut App,
-                 state: &Entity<InputState>,
-                 event: &NumberInputEvent,
-                 window: &mut Window,
-                 cx: &mut Context<App>| {
-                    match event {
-                        NumberInputEvent::Step(StepAction::Increment) => {
-                            let cur = state.read(cx).value().parse::<i64>().unwrap_or(0);
-                            let new_val = cur + 1;
-                            state.update(cx, |input, cx| {
-                                input.set_value(new_val.to_string(), window, cx);
-                            });
-                            if let Some((_, ref mut form)) = this.policy_edit {
-                                form.extra_minutes = new_val;
-                            }
-                        }
-                        NumberInputEvent::Step(StepAction::Decrement) => {
-                            let cur = state.read(cx).value().parse::<i64>().unwrap_or(0);
-                            let new_val = (cur - 1).max(0);
-                            state.update(cx, |input, cx| {
-                                input.set_value(new_val.to_string(), window, cx);
-                            });
-                            if let Some((_, ref mut form)) = this.policy_edit {
-                                form.extra_minutes = new_val;
-                            }
-                        }
-                    }
-                },
-            );
-            self.extra_secs_input = Some(entity);
-        }
-        if needs_sync && let Some(ref entity) = self.extra_secs_input {
-            entity.update(cx, |state, cx| {
-                let desired = form.extra_minutes.to_string();
                 if state.value() != desired.as_str() {
                     state.set_value(desired, window, cx);
                 }

@@ -1,13 +1,12 @@
-//! D-Bus interface methods — each public method is ≤20 lines.
-
 use wellbeing_core::{
-    ActiveBlockEntry, AppCategoryRow, Category, DailySummary, DailyUsageEntry, DayEventRow,
-    PluginInstanceId, PolicyData, PolicyInput, Uid,
+    AppCategoryRow, BlockedAppEntry, Category, DailySummary, DailyUsageByAppEntry,
+    DailyUsageByTitleEntry, DailyUsageByTitleSummary, DayEventRow, PluginInstanceId, PolicyData,
+    PolicyInput, Uid,
 };
 use zbus::fdo;
 use zbus::interface;
 
-use crate::platform::{PlatformEvent, linux::ManagerProxy};
+use crate::platform::linux::ManagerProxy;
 
 use super::controller::DaemonInterface;
 use super::core::{authenticate, resolve_uid};
@@ -123,7 +122,6 @@ impl DaemonInterface {
         let sender_str = header
             .sender()
             .ok_or_else(|| fdo::Error::Failed("no sender".into()))?
-            .as_ref()
             .to_owned();
         let caller_uid = authenticate(conn, header).await?;
         let uid = Uid(caller_uid);
@@ -151,12 +149,6 @@ impl DaemonInterface {
             let mut reg = self.registry.write().await;
             reg.register(instance, uid, proxy);
         }
-
-        // Sync session state: compare CurrentFocus with the last DB event
-        // and emit the minimal events needed to bring the in-memory and
-        // persisted state up to date. This ensures we don't double-insert
-        // WindowFocused when an interval is already open.
-        sync_focus_on_register(&self.pool, &self.registry, &self.event_tx).await;
 
         // Subscribe to plugin signals and spawn the event forwarding loop
         // as a background task. IMPORTANT: the forwarding loop runs in a
@@ -192,15 +184,15 @@ impl DaemonInterface {
     }
 
     #[zbus(property)]
-    async fn active_blocks(
+    async fn blocked_apps(
         &self,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: Option<zbus::message::Header<'_>>,
-    ) -> fdo::Result<Vec<ActiveBlockEntry>> {
+    ) -> fdo::Result<Vec<BlockedAppEntry>> {
         let header = header.ok_or_else(|| fdo::Error::Failed("missing header".into()))?;
         let caller = authenticate(conn, header).await?;
-        let blocks = self.active_blocks.read().await;
-        let result: Vec<ActiveBlockEntry> = if caller == 0 {
+        let blocks = self.blocked_apps.read().await;
+        let result: Vec<BlockedAppEntry> = if caller == 0 {
             blocks.values().flat_map(|v| v.values().cloned()).collect()
         } else if let Some(uid_blocks) = blocks.get(&Uid(caller)) {
             uid_blocks.values().cloned().collect()
@@ -216,7 +208,7 @@ impl DaemonInterface {
         user_id: u32,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailyUsageEntry>> {
+    ) -> fdo::Result<Vec<DailyUsageByAppEntry>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
         data::get_daily_usage(&self.pool, &date, uid)
@@ -238,6 +230,41 @@ impl DaemonInterface {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
         data::get_usage_range(&self.pool, &start_date, &end_date, uid)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "query failed");
+                fdo::Error::Failed("internal error".into())
+            })
+    }
+
+    async fn get_daily_usage_by_title(
+        &self,
+        date: String,
+        user_id: u32,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<Vec<DailyUsageByTitleEntry>> {
+        let caller = authenticate(conn, header).await?;
+        let uid = resolve_uid(caller, user_id);
+        data::get_daily_usage_by_title(&self.pool, &date, uid)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "query failed");
+                fdo::Error::Failed("internal error".into())
+            })
+    }
+
+    async fn get_usage_range_by_title(
+        &self,
+        start_date: String,
+        end_date: String,
+        user_id: u32,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<Vec<DailyUsageByTitleSummary>> {
+        let caller = authenticate(conn, header).await?;
+        let uid = resolve_uid(caller, user_id);
+        data::get_usage_range_by_title(&self.pool, &start_date, &end_date, uid)
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "query failed");
@@ -301,98 +328,5 @@ impl DaemonInterface {
             })?;
         let _ = signals::policy_mutated(conn, caller).await;
         Ok(())
-    }
-}
-
-/// Sync session state after a plugin registers.
-///
-/// Compares `CurrentFocus` against the last event in the database and emits
-/// only the minimal events needed to reconcile:
-///
-/// | DB last event        | CurrentFocus     | Action                                |
-/// |----------------------|------------------|---------------------------------------|
-/// | empty / close event  | WindowFocused    | send WindowFocused                    |
-/// | empty / close event  | None             | nothing (desktop)                     |
-/// | WindowFocused (same) | WindowFocused    | nothing (already open)                |
-/// | WindowFocused (diff) | WindowFocused    | send Unfocused + WindowFocused        |
-/// | WindowFocused        | None             | send Unfocused (close stale interval) |
-pub(crate) async fn sync_focus_on_register(
-    pool: &crate::store::DbPool,
-    registry: &std::sync::Arc<tokio::sync::RwLock<crate::platform::linux::PluginRegistry>>,
-    event_tx: &tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
-) {
-    use crate::blocking::data::{CLOSE_EVENT_TYPES, EVENT_WINDOW_FOCUSED, EventRow};
-    use crate::store::schema::events::dsl::*;
-    use diesel::ExpressionMethods;
-    use diesel::QueryDsl;
-    use diesel::SelectableHelper;
-    use diesel_async::RunQueryDsl;
-
-    let current = {
-        let reg = registry.read().await;
-        reg.query_current_focus().await
-    };
-
-    // Read the last event — order by timestamp, not id, because synthetic
-    // events during recovery may have timestamps that don't correlate with
-    // insertion order.
-    let last_event: Option<EventRow> = match pool.get().await {
-        Ok(mut conn) => events
-            .order(timestamp.desc())
-            .select(EventRow::as_select())
-            .first(&mut conn)
-            .await
-            .ok(),
-        Err(e) => {
-            tracing::error!(error = %e, "sync_focus_on_register: DB connection failed");
-            return;
-        }
-    };
-
-    match (last_event, current) {
-        // Empty DB or last event is a close → no open interval
-        (None, Some(focus)) => {
-            event_tx.send(focus).ok();
-        }
-        (Some(ref last), Some(focus)) if CLOSE_EVENT_TYPES.contains(&last.event_type) => {
-            event_tx.send(focus).ok();
-        }
-        // Last event is WindowFocused and CurrentFocus has the same app → nothing
-        (
-            Some(EventRow {
-                event_type: EVENT_WINDOW_FOCUSED,
-                app_id: ref last_app,
-                ..
-            }),
-            Some(PlatformEvent::WindowFocused {
-                app_id: ref cur_app_id,
-                ..
-            }),
-        ) if last_app.as_deref() == Some(cur_app_id.as_str()) => {}
-        (
-            Some(EventRow {
-                event_type: EVENT_WINDOW_FOCUSED,
-                ..
-            }),
-            Some(focus),
-        ) => {
-            event_tx.send(PlatformEvent::Unfocused).ok();
-            event_tx.send(focus).ok();
-        }
-        // Last event is WindowFocused but plugin reports desktop → close stale interval
-        (
-            Some(EventRow {
-                event_type: EVENT_WINDOW_FOCUSED,
-                ..
-            }),
-            None,
-        ) => {
-            event_tx.send(PlatformEvent::Unfocused).ok();
-        }
-        // Last event was some other non-focus event (Idle, Resumed, etc.)
-        (_, Some(focus)) => {
-            event_tx.send(focus).ok();
-        }
-        (_, None) => {}
     }
 }

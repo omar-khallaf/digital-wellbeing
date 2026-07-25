@@ -13,7 +13,7 @@ pub const DAEMON_OBJECT_PATH: &str = "/org/wellbeing/Controller";
 /// Well-known bus name for the daemon.
 pub const DAEMON_BUS_NAME: &str = "org.wellbeing.v1.Controller";
 
-// ── Plugin (Manager) interface — unchanged ───────────────────────────────────
+// ── Plugin (Manager) interface ───────────────────────────────────────────────
 
 /// Well-known D-Bus interface name for the compositor plugin's Manager API.
 pub const MANAGER_INTERFACE: &str = "org.wellbeing.v1.Manager";
@@ -23,8 +23,8 @@ pub const MANAGER_OBJECT_PATH: &str = "/org/wellbeing/Manager";
 
 // ── Signal names on the Controller interface ─────────────────────────────────
 
-/// Emitted when a block is shown or removed (a.k.a. BlockStateChanged).
-pub const BLOCK_STATE_CHANGED_SIGNAL: &str = "BlockStateChanged";
+/// Emitted when a block is shown or removed (a.k.a. BlockedAppsChanged).
+pub const BLOCKED_APPS_CHANGED_SIGNAL: &str = "BlockedAppsChanged";
 
 /// Emitted when daily usage data is updated.
 pub const DAILY_USAGE_CHANGED_SIGNAL: &str = "DailyUsageChanged";
@@ -39,9 +39,6 @@ pub const FOCUS_CHANGED_SIGNAL: &str = "FocusChanged";
 
 /// Emitted by the plugin when user activity/idle state changes.
 pub const ACTIVITY_CHANGED_SIGNAL: &str = "ActivityChanged";
-
-/// Emitted by the plugin when the user interacts with a block overlay.
-pub const USER_ACTION_SIGNAL: &str = "UserAction";
 
 // ── Property names ───────────────────────────────────────────────────────────
 
@@ -62,6 +59,13 @@ pub const FOCUS_TAG_DESKTOP: u32 = 0;
 
 /// FocusChanged variant struct first-field — app variant discriminator.
 pub const FOCUS_TAG_APP: u32 = 1;
+
+/// FocusChanged variant U32 value — window blocked by enforcement.
+///
+/// The compositor plugin sends this when the focused window has an
+/// active overlay (is blocked). It carries the same struct layout as
+/// `FOCUS_TAG_APP` minus the overlay_shown bool.
+pub const FOCUS_TAG_BLOCKED: u32 = 2;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // ActivityChanged tags (Manager signal)
@@ -99,11 +103,8 @@ pub const FOCUS_FIELD_PID: usize = 3;
 /// Index of the UID field (Value::U32).
 pub const FOCUS_FIELD_UID: usize = 4;
 
-/// Index of the overlay-shown field (Value::Bool).
-pub const FOCUS_FIELD_OVERLAY: usize = 5;
-
 /// Total number of fields in the FocusChanged app struct.
-pub const FOCUS_STRUCT_FIELD_COUNT: usize = 6;
+pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // D-Bus type signatures (cross-language contract)
@@ -114,10 +115,10 @@ pub const FOCUS_STRUCT_FIELD_COUNT: usize = 6;
 // serialization errors if these diverge.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// D-Bus struct signature for ActiveBlockEntry: (string, uint64, uint32, uint64, array<uint32>).
-/// Must match C++ tuple type in wellbeing_manager.cpp readActiveBlocks.
-pub const ACTIVE_BLOCK_SIGNATURE: &str = "(stutau)";
+/// D-Bus struct signature for BlockedAppEntry: (string, uint64, uint32, uint64).
+/// Must match C++ tuple type in wellbeing_manager.cpp readBlockedApps.
+pub const BLOCKED_APP_SIGNATURE: &str = "(stut)";
 
-/// D-Bus struct signature for FocusChanged app variant: (uint32, string, string, uint32, uint32, bool).
+/// D-Bus struct signature for FocusChanged app variant: (uint32, string, string, uint32, uint32).
 /// Must match C++ sdbus::Struct type in wellbeing_manager.cpp windowInfoToVariant.
-pub const FOCUS_STRUCT_SIGNATURE: &str = "(ussuub)";
+pub const FOCUS_STRUCT_SIGNATURE: &str = "(ussuu)";

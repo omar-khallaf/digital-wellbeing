@@ -41,7 +41,6 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// All available tabs in display order.
     pub fn all() -> &'static [Tab] {
         &[Tab::Dashboard, Tab::Policies, Tab::Reports]
     }
@@ -84,6 +83,7 @@ pub struct AppState {
     pub app_category_cache: Vec<AppCategoryRow>,
     pub block_cards: Vec<dashboard::BlockCardInfo>,
     pub day_events_cache: Vec<DayEventRow>,
+    pub title_cache: Vec<DailyUsageByTitleEntry>,
     pub daemon_available: bool,
     pub connection_status: dbus::ConnectionStatus,
 }

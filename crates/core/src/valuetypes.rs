@@ -151,12 +151,4 @@ impl AsRef<str> for PluginInstanceId {
     }
 }
 
-/// Overlay action button shown on block overlay.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub enum OverlayAction {
-    Extra = 0,
-    Close = 1,
-}
-
 use crate::error::Error;

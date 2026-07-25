@@ -22,7 +22,6 @@ use super::domain::{PoliciesViewModel, PolicyConfigForm, PolicyTarget, policy_in
 
 #[cfg(feature = "gui-gpui")]
 impl GuiApp {
-    /// Render the policies screen from the current ViewModel + live edit state.
     pub fn render_policies(
         &mut self,
         cx: &mut Context<Self>,
@@ -96,7 +95,7 @@ impl GuiApp {
                     "All".to_string()
                 };
                 let status = if p.active { "Active" } else { "Inactive" };
-                let is_selected = self.policy_edit_id.map(|id| id == p.id).unwrap_or(false);
+                let is_selected = self.policy_edit_id == Some(p.id);
 
                 div()
                     .id(format!("policy-row-{}", p.id.0))
@@ -114,7 +113,6 @@ impl GuiApp {
                         let app_id = p.app_id.clone();
                         let cat_id = p.category_id;
                         let tls = p.time_limit_minutes;
-                        let extra = p.extra_minutes;
                         let schedule = p.schedule_json.clone();
                         let active = p.active;
                         move |_, _window, app| {
@@ -135,7 +133,6 @@ impl GuiApp {
                                             wellbeing_core::PolicyKind::Notify => "Notify".into(),
                                         },
                                         time_limit_minutes: tls,
-                                        extra_minutes: extra,
                                         schedule_json: schedule.clone(),
                                         active,
                                         app_id: app_id.clone(),
@@ -228,7 +225,6 @@ impl GuiApp {
         };
 
         let show_time_limit = form.kind == "TimeLimit" || form.kind == "Notify";
-        let hide_extra_time = form.kind == "Notify";
         let kinds = ["Block", "TimeLimit", "Notify"];
         let kind = form.kind.clone();
         let active = form.active;
@@ -318,29 +314,6 @@ impl GuiApp {
                     .when(!show_time_limit, |el| el.opacity(0.4)),
             )
             .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_primary(&*cx))
-                            .child("Extra time (min):"),
-                    )
-                    .child(
-                        div().w(px(140.0)).child(
-                            NumberInput::new(
-                                self.extra_secs_input
-                                    .as_ref()
-                                    .expect("extra_secs_input not initialized"),
-                            )
-                            .appearance(true)
-                            .disabled(false),
-                        ),
-                    )
-                    .when(hide_extra_time, |el| el.opacity(0.4)),
-            )
-            .child(
                 h_flex().gap_2().items_center().child(
                     Button::new("toggle-active")
                         .label(if active { "Enabled" } else { "Disabled" })
@@ -369,20 +342,13 @@ impl GuiApp {
                                 let entity = entity.clone();
                                 let client = client.clone();
                                 move |_, _window, app| {
-                                    let (tl, es, ai) = {
+                                    let (tl, ai) = {
                                         let me = entity.read(app);
                                         if me.policy_edit.is_none() {
-                                            (0i64, 0i64, String::new())
+                                            (0i64, String::new())
                                         } else {
                                             let tl = me
                                                 .time_limit_input
-                                                .as_ref()
-                                                .and_then(|e| {
-                                                    e.read(app).value().parse::<i64>().ok()
-                                                })
-                                                .unwrap_or(0);
-                                            let es = me
-                                                .extra_secs_input
                                                 .as_ref()
                                                 .and_then(|e| {
                                                     e.read(app).value().parse::<i64>().ok()
@@ -393,14 +359,13 @@ impl GuiApp {
                                                 .as_ref()
                                                 .map(|e| e.read(app).value().to_string())
                                                 .unwrap_or_default();
-                                            (tl, es, ai)
+                                            (tl, ai)
                                         }
                                     };
                                     let client = client.clone();
                                     entity.update(app, |this, cx2| {
                                         if let Some((_, ref mut form)) = this.policy_edit {
                                             form.time_limit_minutes = tl;
-                                            form.extra_minutes = es;
                                             form.app_id = ai;
                                         }
                                         if let Some((target, form)) = this.policy_edit.clone() {
@@ -467,7 +432,6 @@ impl GuiApp {
         card(&*cx, Some("Policy Editor"), vec![editor.into_any_element()])
     }
 
-    /// Categories list with color swatches.
     fn render_categories(
         &self,
         cx: &mut Context<Self>,

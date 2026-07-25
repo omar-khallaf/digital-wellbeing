@@ -6,31 +6,17 @@
 use chrono::{DateTime, Utc};
 pub use wellbeing_core::{AppId, BlockReason, CategoryId, PolicyId};
 
-/// App with configured time limit and optional extension.
-pub enum TimeLimitedApp {
-    Normal(i64, i64),
-    Extended(i64, i64),
+pub struct TimeLimitedApp {
+    pub used: i64,
+    pub limit: i64,
 }
 
 impl TimeLimitedApp {
     pub fn remaining(&self) -> i64 {
-        match self {
-            Self::Normal(used, limit) | Self::Extended(used, limit) => limit - used,
-        }
-    }
-
-    pub fn can_extend(&self) -> bool {
-        matches!(self, Self::Normal(..))
-    }
-
-    pub fn effective_limit(&self) -> i64 {
-        match self {
-            Self::Normal(_, limit) | Self::Extended(_, limit) => *limit,
-        }
+        self.limit - self.used
     }
 }
 
-/// App with tracked (non-blocking) time usage.
 pub struct TimeTrackedApp {
     pub used: i64,
     pub limit: i64,
@@ -46,7 +32,6 @@ impl TimeTrackedApp {
     }
 }
 
-/// Union of time-limited and time-tracked app states.
 pub enum TrackedApp {
     TimeLimited(TimeLimitedApp),
     TimeTracked(TimeTrackedApp),
@@ -81,7 +66,6 @@ pub enum PolicyConfig {
         app_id: Option<AppId>,
         category_id: Option<CategoryId>,
         time_limit_minutes: i64,
-        extra_minutes: i64,
         active: bool,
     },
     Notify {
@@ -126,10 +110,6 @@ impl PolicyConfig {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Domain types belonging to the policy feature.
-// ═════════════════════════════════════════════════════════════════════════════
-
 use wellbeing_core::TimeWindow;
 
 /// Shared metadata attached to every policy variant.
@@ -145,25 +125,21 @@ pub struct PolicyMeta {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Target for an app-scoped policy.
 #[derive(Debug, Clone)]
 pub struct AppTarget {
     pub app_id: AppId,
 }
 
-/// Target for a category-scoped policy.
 #[derive(Debug, Clone)]
 pub struct CategoryTarget {
     pub category_id: CategoryId,
 }
 
-/// Action taken by an app-scoped policy.
 #[derive(Debug, Clone)]
 pub enum AppAction {
     Block,
     TimeLimit {
         limit_minutes: i64,
-        extra_minutes: i64,
     },
     Notify {
         limit_minutes: i64,
@@ -171,13 +147,11 @@ pub enum AppAction {
     },
 }
 
-/// Action taken by a category-scoped policy.
 #[derive(Debug, Clone)]
 pub enum CategoryAction {
     Block,
     TimeLimit {
         limit_minutes: i64,
-        extra_minutes: i64,
     },
     Notify {
         limit_minutes: i64,
@@ -185,7 +159,6 @@ pub enum CategoryAction {
     },
 }
 
-/// An app-scoped policy: targets a specific application.
 #[derive(Debug, Clone)]
 pub struct AppPolicy {
     pub target: AppTarget,
@@ -193,7 +166,6 @@ pub struct AppPolicy {
     pub action: AppAction,
 }
 
-/// A category-scoped policy: targets every app in a category.
 #[derive(Debug, Clone)]
 pub struct CategoryPolicy {
     pub target: CategoryTarget,
@@ -261,20 +233,6 @@ impl Policy {
         }
     }
 
-    /// Resolve extra minutes (0 for Block / Notify).
-    pub fn extra_minutes(&self) -> i64 {
-        match self {
-            Policy::App(p) => match p.action {
-                AppAction::Block | AppAction::Notify { .. } => 0,
-                AppAction::TimeLimit { extra_minutes, .. } => extra_minutes,
-            },
-            Policy::Category(p) => match p.action {
-                CategoryAction::Block | CategoryAction::Notify { .. } => 0,
-                CategoryAction::TimeLimit { extra_minutes, .. } => extra_minutes,
-            },
-        }
-    }
-
     /// Resolve notification repeat interval (None for Block / TimeLimit).
     pub fn repeat_interval_minutes(&self) -> Option<i64> {
         match self {
@@ -295,10 +253,6 @@ impl Policy {
         }
     }
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Conversions between D-Bus flat types and domain enums
-// ═════════════════════════════════════════════════════════════════════════════
 
 impl From<wellbeing_core::PolicyData> for Policy {
     fn from(p: wellbeing_core::PolicyData) -> Self {
@@ -344,7 +298,6 @@ impl From<wellbeing_core::PolicyData> for Policy {
                 meta,
                 action: AppAction::TimeLimit {
                     limit_minutes: p.time_limit_minutes.max(1),
-                    extra_minutes: p.extra_minutes,
                 },
             })),
             (wellbeing_core::PolicyKind::TimeLimit, false) => {
@@ -355,7 +308,6 @@ impl From<wellbeing_core::PolicyData> for Policy {
                     meta,
                     action: CategoryAction::TimeLimit {
                         limit_minutes: p.time_limit_minutes.max(1),
-                        extra_minutes: p.extra_minutes,
                     },
                 }))
             }
@@ -414,7 +366,6 @@ impl From<Policy> for wellbeing_core::PolicyData {
             app_id: p.app_id_str(),
             category_id: p.category_id_val(),
             time_limit_minutes: p.limit_minutes(),
-            extra_minutes: p.extra_minutes(),
             notification_repeat_interval_minutes: p.repeat_interval_minutes().unwrap_or(0),
             schedule_json: p
                 .meta()
@@ -449,15 +400,11 @@ impl From<Policy> for PolicyConfig {
                     category_id,
                     active,
                 },
-                AppAction::TimeLimit {
-                    limit_minutes,
-                    extra_minutes,
-                } => PolicyConfig::TimeLimit {
+                AppAction::TimeLimit { limit_minutes } => PolicyConfig::TimeLimit {
                     id,
                     app_id,
                     category_id,
                     time_limit_minutes: limit_minutes.max(1),
-                    extra_minutes,
                     active,
                 },
                 AppAction::Notify {
@@ -479,15 +426,11 @@ impl From<Policy> for PolicyConfig {
                     category_id,
                     active,
                 },
-                CategoryAction::TimeLimit {
-                    limit_minutes,
-                    extra_minutes,
-                } => PolicyConfig::TimeLimit {
+                CategoryAction::TimeLimit { limit_minutes } => PolicyConfig::TimeLimit {
                     id,
                     app_id,
                     category_id,
                     time_limit_minutes: limit_minutes.max(1),
-                    extra_minutes,
                     active,
                 },
                 CategoryAction::Notify {
@@ -513,26 +456,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_time_limited_normal_remaining() {
-        let app = TimeLimitedApp::Normal(50, 120);
+    fn test_time_limited_remaining() {
+        let app = TimeLimitedApp {
+            used: 50,
+            limit: 120,
+        };
         assert_eq!(app.remaining(), 70);
-        assert!(app.can_extend());
-        assert_eq!(app.effective_limit(), 120);
-    }
-
-    #[test]
-    fn test_time_limited_extended_remaining() {
-        let app = TimeLimitedApp::Extended(80, 120);
-        assert_eq!(app.remaining(), 40);
-        assert!(!app.can_extend());
-        assert_eq!(app.effective_limit(), 120);
     }
 
     #[test]
     fn test_time_limited_exceeded() {
-        let app = TimeLimitedApp::Normal(100, 60);
+        let app = TimeLimitedApp {
+            used: 100,
+            limit: 60,
+        };
         assert_eq!(app.remaining(), -40);
-        assert!(app.can_extend());
     }
 
     #[test]
@@ -715,7 +653,6 @@ mod tests {
             meta,
             action: AppAction::TimeLimit {
                 limit_minutes: 3600,
-                extra_minutes: 300,
             },
         }));
 
@@ -726,14 +663,12 @@ mod tests {
                 app_id,
                 category_id,
                 time_limit_minutes,
-                extra_minutes,
                 active,
             } => {
                 assert_eq!(*id, PolicyId(42));
                 assert_eq!(app_id.as_ref().unwrap().as_str(), "firefox");
                 assert!(category_id.is_none());
                 assert_eq!(*time_limit_minutes, 3600);
-                assert_eq!(*extra_minutes, 300);
                 assert!(*active);
             }
             _ => panic!("expected TimeLimit"),

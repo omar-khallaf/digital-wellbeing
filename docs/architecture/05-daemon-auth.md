@@ -9,10 +9,8 @@ plugin reads state from the daemon's well-known D-Bus name
 (`org.wellbeing.v1.Controller`). Only the daemon process can own that name, so
 reads are authenticated by the D-Bus daemon itself.
 
-**`UserAction` carries no daemon-owned data.** The plugin sends `app_id` +
-`action` (its window-domain assertion). The daemon looks up the corresponding
-`policy_id` from its own `ActiveBlocks` state — it does not trust a value from
-the plugin.
+Block resolution (close) is handled locally in the plugin via
+`LockManager::hideOverlay()`. No user-action signal flows over D-Bus.
 
 **Plugin identity is authenticated by `SO_PEERCRED`.** The daemon reads the
 caller's kernel-authenticated uid at `RegisterPlugin` time and scopes all events

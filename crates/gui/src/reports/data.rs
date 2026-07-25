@@ -2,27 +2,34 @@
 
 use std::collections::BTreeMap;
 
-use wellbeing_core::{AppCategoryRow, DailySummary, DailyUsageEntry, DateRange};
+use wellbeing_core::{
+    AppCategoryRow, DailySummary, DailyUsageByAppEntry, DailyUsageByTitleEntry, DateRange,
+};
 
 use crate::chart::HasBarData;
 
-use super::domain::{DailyBar, ReportAppEntry, ReportsViewModel};
+use super::domain::{DailyBar, ReportAppEntry, ReportTitleEntry, ReportsViewModel};
 
 /// Build a [`ReportsViewModel`] from cached usage data over the given [`DateRange`].
 pub fn build_reports_viewmodel(
     range: DateRange,
     summaries: &[DailySummary],
     app_categories: &[AppCategoryRow],
+    title_entries: &[DailyUsageByTitleEntry],
 ) -> ReportsViewModel {
-    let usage: Vec<DailyUsageEntry> = summaries
+    let usage: Vec<DailyUsageByAppEntry> = summaries
         .iter()
         .flat_map(|s| s.entries.iter().cloned())
         .collect();
 
     let mut by_date: BTreeMap<String, f64> = BTreeMap::new();
+    let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
+    let mut total: f64 = 0.0;
     for entry in &usage {
         let ms = entry.total_millis as f64;
         *by_date.entry(entry.date.clone()).or_insert(0.0) += ms;
+        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
+        total += ms;
     }
     let today = chrono::Utc::now().date_naive();
     let day_count = (range.end - range.start).num_days() as usize + 1;
@@ -37,13 +44,6 @@ pub fn build_reports_viewmodel(
             is_today: cursor == today,
         });
         cursor = cursor + chrono::Days::new(1);
-    }
-
-    let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
-    let mut total: f64 = 0.0;
-    for entry in &usage {
-        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
-        total += entry.total_millis as f64;
     }
 
     let meta: std::collections::HashMap<&str, &str> = app_categories
@@ -77,6 +77,42 @@ pub fn build_reports_viewmodel(
     for (i, entry) in app_list.iter_mut().enumerate() {
         entry.rank = i + 1;
     }
+    let mut by_title: std::collections::BTreeMap<(String, String), i64> =
+        std::collections::BTreeMap::new();
+    let mut title_total: f64 = 0.0;
+    for entry in title_entries {
+        let key = (entry.app_id.clone(), entry.title.clone());
+        *by_title.entry(key).or_insert(0) += entry.total_millis;
+        title_total += entry.total_millis as f64;
+    }
+
+    let mut title_list: Vec<ReportTitleEntry> = by_title
+        .into_iter()
+        .map(|((app_id, title), total_millis)| {
+            let display_name = meta
+                .get(app_id.as_str())
+                .copied()
+                .unwrap_or(&app_id)
+                .to_string();
+            ReportTitleEntry {
+                rank: 0,
+                app_id: display_name,
+                title,
+                total_millis,
+                percentage: if title_total > 0.0 {
+                    (total_millis as f64 / title_total) * 100.0
+                } else {
+                    0.0
+                },
+            }
+        })
+        .collect();
+
+    title_list.sort_by_key(|a| std::cmp::Reverse(a.total_millis));
+    for (i, entry) in title_list.iter_mut().enumerate() {
+        entry.rank = i + 1;
+    }
+
     let total_millis = total as i64;
     let top_app = app_list
         .first()
@@ -87,6 +123,7 @@ pub fn build_reports_viewmodel(
         date_range: range,
         bar_chart,
         app_list,
+        title_list,
         total_millis,
         top_app,
     }

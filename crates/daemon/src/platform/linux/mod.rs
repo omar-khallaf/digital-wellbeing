@@ -16,7 +16,7 @@ mod suspend;
 
 pub use manager::{ManagerProxy, PluginRegistry};
 pub use screen_lock::{ScreenLockEvent, ScreenLockWatcher};
-pub use suspend::{PowerEvent, PowerStateWatcher};
+pub use suspend::{PowerEvent, PowerStateWatcher, inhibit_shutdown};
 
 #[proxy(
     interface = "org.freedesktop.Notifications",

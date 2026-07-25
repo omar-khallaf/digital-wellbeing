@@ -6,34 +6,26 @@
 
 namespace wellbeing {
 
-// =============================================================================
-// D-Bus constants
-// =============================================================================
+// ── D-Bus constants ──────────────────────────────────────────────────────────────
 
-// Daemon (Controller) interface — the daemon's D-Bus API surface.
 inline constexpr auto DAEMON_INTERFACE = "org.wellbeing.v1.Controller";
 inline constexpr auto DAEMON_OBJECT_PATH = "/org/wellbeing/Controller";
 
-// Manager interface — the plugin's D-Bus API surface.
 inline constexpr auto MANAGER_INTERFACE = "org.wellbeing.v1.Manager";
 inline constexpr auto MANAGER_OBJECT_PATH = "/org/wellbeing/Manager";
 
-// Signal names (Manager → daemon/GUI)
 inline constexpr auto FOCUS_CHANGED_SIGNAL = "FocusChanged";
 inline constexpr auto ACTIVITY_CHANGED_SIGNAL = "ActivityChanged";
-inline constexpr auto USER_ACTION_SIGNAL = "UserAction";
+// UserAction signal removed — close button handled locally in plugin.
+// See docs/architecture/04-plugin-ipc.md for the handshake protocol.
 
-// Property name (Manager → daemon/GUI)
-inline constexpr auto CURRENT_FOCUS_PROPERTY = "CurrentFocus";
+inline constexpr auto BLOCKED_APPS_CHANGED_SIGNAL = "BlockedAppsChanged";
 
-// Daemon methods (Controller interface)
 inline constexpr auto REGISTER_PLUGIN_METHOD = "RegisterPlugin";
 
-// org.freedesktop.DBus.Properties
 inline constexpr auto GET_PROPERTY_METHOD = "Get";
 inline constexpr auto PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties";
 
-// org.freedesktop.DBus (well-known)
 inline constexpr auto DBUS_INTERFACE = "org.freedesktop.DBus";
 inline constexpr auto DBUS_OBJECT_PATH = "/org/freedesktop/DBus";
 inline constexpr auto NAME_HAS_OWNER_METHOD = "NameHasOwner";
@@ -74,18 +66,13 @@ class AppId {
 };
 
 // ── ActionType ────────────────────────────────────────────────────────────────
-// Discriminated action identifiers echoed back in UserAction signals.
-// D-Bus serialized as uint32_t — validated at boundary via from_raw().
+// Serialized over D-Bus as uint32_t — validated at boundary via raw_to_action_type().
 enum class ActionType : uint8_t {
-    Extra = 0,
     Close = 1,
 };
 
-/// Factory: validates a D-Bus-deserialized uint32_t into ActionType.
-/// Returns std::nullopt for out-of-range values (zero-trust boundary gate).
 [[nodiscard]] inline auto raw_to_action_type(uint32_t raw) -> std::optional<ActionType> {
     switch (static_cast<ActionType>(raw)) {
-    case ActionType::Extra:
     case ActionType::Close:
         return static_cast<ActionType>(raw);
     }
@@ -93,8 +80,7 @@ enum class ActionType : uint8_t {
 }
 
 // ── BlockReason ──────────────────────────────────────────────────────────────
-// Why an app was blocked. Serialized over D-Bus as uint32_t, validated at
-// the boundary. Used in Overlay(show) payload and BlockStateChanged signal.
+// Serialized over D-Bus as uint32_t — validated at the boundary.
 enum class BlockReason : uint8_t {
     AppTimeLimit = 0,
     CategoryTimeLimit = 1,
@@ -102,8 +88,6 @@ enum class BlockReason : uint8_t {
     CategoryBlock = 3,
 };
 
-/// Factory: validates a D-Bus-deserialized uint32_t into BlockReason.
-/// Returns std::nullopt for out-of-range values (zero-trust boundary gate).
 [[nodiscard]] inline auto raw_to_block_reason(uint32_t raw) -> std::optional<BlockReason> {
     switch (static_cast<BlockReason>(raw)) {
     case BlockReason::AppTimeLimit:
@@ -116,20 +100,16 @@ enum class BlockReason : uint8_t {
 }
 
 // ── FocusVariantTag ──────────────────────────────────────────────────────────
-// D-Bus variant discriminator for FocusChanged signal (org.wellbeing.v1.Manager).
-/// Must match Rust handler in daemon/src/platform/linux/manager.rs (Value::U32(0)
-/// for desktop, Value::U32(1) as first struct field for app).
-/// Zero-based: no desktop tag collision, Rust side checks for U32(0).
-///
+// D-Bus variant discriminator for FocusChanged signal.
 /// Cross-reference: Rust FOCUS_TAG_DESKTOP / FOCUS_TAG_APP in
 /// crates/core/src/dbus_constants.rs.
 enum class FocusVariantTag : uint8_t {
     Desktop = 0,
     App = 1,
+    Blocked = 2,
 };
 
 // ── FocusActivityTag ───────────────────────────────────────────────────────────
-// Discriminator for ActivityChanged signal replacing the old bool encoding.
 // Idle=0 means user activity has stopped; Resumed=1 means activity resumed.
 ///
 /// Cross-reference: Rust ACTIVITY_TAG_IDLE / ACTIVITY_TAG_RESUMED in
@@ -141,41 +121,28 @@ enum class FocusActivityTag : uint8_t {
 
 // ── FocusChanged app-struct field indices ─────────────────────────────────────
 // When the FocusChanged variant carries an app window (FocusVariantTag::App),
-// the inner struct fields are accessed by these indices on the Rust side.
-//
+// the inner struct fields are accessed by these field indices on the Rust side.
 // Cross-reference: Rust FOCUS_FIELD_TAG … FOCUS_FIELD_OVERLAY in
 // crates/core/src/dbus_constants.rs.
-// =============================================================================
 
-/// Index of the variant-tag field.
 inline constexpr size_t FOCUS_FIELD_TAG = 0;
-/// Index of the app_id field.
 inline constexpr size_t FOCUS_FIELD_APP_ID = 1;
-/// Index of the window-title field.
 inline constexpr size_t FOCUS_FIELD_TITLE = 2;
-/// Index of the PID field.
 inline constexpr size_t FOCUS_FIELD_PID = 3;
-/// Index of the UID field.
 inline constexpr size_t FOCUS_FIELD_UID = 4;
-/// Index of the overlay-shown field.
-inline constexpr size_t FOCUS_FIELD_OVERLAY = 5;
-/// Total number of fields in the FocusChanged app struct.
-inline constexpr size_t FOCUS_STRUCT_FIELD_COUNT = 6;
+inline constexpr size_t FOCUS_STRUCT_FIELD_COUNT = 5;
 
 // ── D-Bus type signatures (cross-language contract) ───────────────────────────
 // These strings pin the D-Bus wire signatures that both Rust (zvariant) and C++
 // (sdbus-c++) must agree on. Change with extreme care — mismatches cause
-// "Failed to enter a container" or "Failed to open a variant" serialization
-// errors.
-//
-// Cross-reference: Rust ACTIVE_BLOCK_SIGNATURE / FOCUS_STRUCT_SIGNATURE in
+// serialization errors.
+// Cross-reference: Rust BLOCKED_APP_SIGNATURE / FOCUS_STRUCT_SIGNATURE in
 // crates/core/src/dbus_constants.rs.
-// =============================================================================
 
-/// D-Bus struct signature for ActiveBlockEntry: (string, uint64, uint32, uint64, array<uint32>).
-inline constexpr auto ACTIVE_BLOCK_SIGNATURE = "(stutau)";
+/// (string, uint64, uint32, uint64) — no actions vector, close button handled locally.
+inline constexpr auto BLOCKED_APP_SIGNATURE = "(stut)";
 
-/// D-Bus struct signature for FocusChanged app variant: (uint32, string, string, uint32, uint32, bool).
-inline constexpr auto FOCUS_STRUCT_SIGNATURE = "(ussuub)";
+/// (uint32, string, string, uint32, uint32).
+inline constexpr auto FOCUS_STRUCT_SIGNATURE = "(ussuu)";
 
 } // namespace wellbeing

@@ -3,8 +3,7 @@ use wellbeing_core::AppId;
 /// Signals emitted by actors and forwarded to D-Bus by main.rs.
 #[derive(Debug, Clone)]
 pub enum DaemonSignal {
-    /// Block state changed for an app (shown / hidden).
-    BlockStateChanged {
+    BlockedAppsChanged {
         uid: u32,
         app_id: AppId,
         blocked: bool,

@@ -3,10 +3,10 @@
 //
 // Implements the declarative architecture:
 //   - Registers with daemon via RegisterPlugin
-//   - Reads ActiveBlocks for initial overlay state
-//   - Subscribes to BlockStateChanged for live updates
-//   - Emits FocusChanged / ActivityChanged / UserAction signals
-//   - Exposes CurrentFocus property
+//   - Reads BlockedApps for initial overlay state
+//   - Subscribes to BlockedAppsChanged for live updates
+//   - Emits FocusChanged / ActivityChanged signals
+//   - Close button handled locally (no UserAction signal)
 //   - Watches daemon bus name via NameOwnerChanged for auto-recovery
 //
 // The plugin connects to BOTH system and session D-Bus busses simultaneously
@@ -54,35 +54,22 @@ namespace {
 /// Encode an Option<WindowInfo> as a D-Bus variant for FocusChanged.
 ///
 /// Encoding:
-///   None          → variant(uint32 FocusVariantTag::Desktop)
-///   Some{...}     → variant(struct{FocusVariantTag::App, app_id, title, pid,
-///                                   uid, overlay_shown})
-auto windowInfoToVariant(const std::optional<WindowInfo> &info) -> sdbus::Variant {
+///   None                → variant(uint32 FocusVariantTag::Desktop)
+///   Some{unblocked}     → variant(struct{FocusVariantTag::App, app_id, title, pid, uid})
+///   Some{blocked}       → variant(struct{FocusVariantTag::Blocked, app_id, title, pid, uid})
+auto windowInfoToVariant(const std::optional<WindowInfo> &info, bool blocked) -> sdbus::Variant {
     if (!info.has_value()) {
         return sdbus::Variant{static_cast<uint32_t>(FocusVariantTag::Desktop)};
     }
-    // Use sdbus::Struct (not std::tuple) inside the Variant: sdbus::Struct
-    // opens a D-Bus struct container, which the variant's signature `(ussuub)`
-    // requires. std::tuple writes fields flat (no struct container), which
-    // causes sd_bus_message_open_container to fail with EINVAL.
+    auto tag = blocked ? FocusVariantTag::Blocked : FocusVariantTag::App;
     return sdbus::Variant{sdbus::Struct{
-        static_cast<uint32_t>(FocusVariantTag::App),
+        static_cast<uint32_t>(tag),
         info->appId.value(),
         info->title,
         info->pid,
         info->uid,
-        info->overlayShown,
     }};
 }
-
-/// Build the CurrentFocus variant.
-///
-/// The CurrentFocus readable property MUST encode exactly what the
-/// FocusChanged signal carries, so a late-joining client that missed the
-/// ephemeral signal can read identical state from the property. Both call
-/// windowInfoToVariant(currentFocus): no focus → Desktop (tag 0); focused app
-/// → App (tag 1) with overlay_shown reflecting whether that app is blocked.
-auto buildCurrentFocusVariant() -> sdbus::Variant { return windowInfoToVariant(g_ctx->currentFocus); }
 
 } // anonymous namespace
 
@@ -92,7 +79,6 @@ auto buildCurrentFocusVariant() -> sdbus::Variant { return windowInfoToVariant(g
 
 namespace {
 
-/// Probe whether `name` is owned on `conn` via org.freedesktop.DBus.NameHasOwner.
 auto nameHasOwner(sdbus::IConnection &conn, const std::string &name) -> bool {
     try {
         auto proxy = sdbus::createProxy(conn, sdbus::ServiceName{wellbeing::DBUS_INTERFACE},
@@ -108,7 +94,6 @@ auto nameHasOwner(sdbus::IConnection &conn, const std::string &name) -> bool {
     }
 }
 
-/// Activate a service by calling org.freedesktop.DBus.StartServiceByName.
 auto startServiceByName(sdbus::IConnection &conn, const std::string &name) -> bool {
     try {
         auto proxy = sdbus::createProxy(conn, sdbus::ServiceName{wellbeing::DBUS_INTERFACE},
@@ -134,38 +119,32 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
                                    std::shared_ptr<sdbus::IConnection> sysConnection,
                                    std::shared_ptr<sdbus::IConnection> sessConnection)
     : m_sysConn(std::move(sysConnection)), m_sessConn(std::move(sessConnection)),
-      m_object(sdbus::createObject(*m_sysConn, sdbus::ObjectPath{wellbeing::MANAGER_OBJECT_PATH})),
+      m_sysObject(sdbus::createObject(*m_sysConn, sdbus::ObjectPath{wellbeing::MANAGER_OBJECT_PATH})),
       m_sessObject(sdbus::createObject(*m_sessConn, sdbus::ObjectPath{wellbeing::MANAGER_OBJECT_PATH})),
       m_lockManager(std::move(lockManager)), m_activeBus(resolveActiveDaemonBus(wellbeing::DAEMON_INTERFACE)),
       m_daemonBusName(daemonBusName()) {
     // ── VTable on system bus object ────────────────────────────────────
-    m_object
-        ->addVTable(sdbus::registerProperty(wellbeing::CURRENT_FOCUS_PROPERTY).withGetter([]() -> sdbus::Variant {
-            return buildCurrentFocusVariant();
-        }),
-                    sdbus::registerSignal(wellbeing::USER_ACTION_SIGNAL)
-                        .withParameters<std::string, uint32_t>({"app_id", "action"}),
-                    sdbus::registerSignal(wellbeing::FOCUS_CHANGED_SIGNAL).withParameters<sdbus::Variant>({"window"}),
-                    sdbus::registerSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL).withParameters<uint32_t>({"activity"}))
+    m_sysObject
+        ->addVTable(sdbus::registerSignal(wellbeing::FOCUS_CHANGED_SIGNAL).withParameters<sdbus::Variant>({"window"}),
+                    sdbus::registerSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL).withParameters<uint32_t>({"activity"}),
+                    sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
+                        bool blocked =
+                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appId);
+                        return windowInfoToVariant(g_ctx->focusState, blocked);
+                    }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
 
-    // ── VTable on session bus object (same interface, same properties) ─
+    // ── VTable on session bus object ──
     m_sessObject
-        ->addVTable(sdbus::registerProperty(wellbeing::CURRENT_FOCUS_PROPERTY).withGetter([]() -> sdbus::Variant {
-            return buildCurrentFocusVariant();
-        }),
-                    sdbus::registerSignal(wellbeing::USER_ACTION_SIGNAL)
-                        .withParameters<std::string, uint32_t>({"app_id", "action"}),
-                    sdbus::registerSignal(wellbeing::FOCUS_CHANGED_SIGNAL).withParameters<sdbus::Variant>({"window"}),
-                    sdbus::registerSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL).withParameters<uint32_t>({"activity"}))
+        ->addVTable(sdbus::registerSignal(wellbeing::FOCUS_CHANGED_SIGNAL).withParameters<sdbus::Variant>({"window"}),
+                    sdbus::registerSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL).withParameters<uint32_t>({"activity"}),
+                    sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
+                        bool blocked =
+                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appId);
+                        return windowInfoToVariant(g_ctx->focusState, blocked);
+                    }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
 
-    m_lockManager->setUserActionCallback(
-        [this](const AppId &appId, ActionType action) -> void { emitUserAction(appId.value(), action); });
-
-    // ── Resolve active daemon bus ──────────────────────────────────────
-
-    // ── Create daemon proxy on the active bus (if found) ──────────────
     if (m_activeBus != DaemonBus::None) {
         auto &conn = (m_activeBus == DaemonBus::System) ? *m_sysConn : *m_sessConn;
         try {
@@ -192,13 +171,12 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
     setupNameOwnerWatch(true);  // system bus
     setupNameOwnerWatch(false); // session bus
 
-    // ── Reverse-discovery + initial state sync ────────────────────────
-    // Both registerWithDaemonAsync and readActiveBlocksAsync are coroutines
-    // that start immediately (FireAndForget). readActiveBlocksAsync may fail if
-    // the daemon is not yet available, which is fine — it retries on focus events.
+    // ── Initial state sync ────────────────────────────────────────────
+    // initialSync registers with the daemon, reads blocked apps, and emits
+    // the current focus state — all asynchronously via coroutines.
     if (m_daemonProxy) {
-        registerWithDaemonAsync();
-        readActiveBlocksAsync();
+        handshake();
+        setupBlockedAppsWatch();
     } else {
         logInfo("WellbeingManager: daemon not reachable on either bus — waiting for NameOwnerChanged");
     }
@@ -212,74 +190,138 @@ WellbeingManager::~WellbeingManager() {
     m_sessConn->leaveEventLoop();
 }
 
-auto WellbeingManager::registerWithDaemonAsync() -> FireAndForget {
+// ── Handshake: register → fetch blocks → emit ───────────────────────
+
+auto WellbeingManager::handshake() -> fire_and_forget {
     if (!m_daemonProxy) {
-        logErr("registerWithDaemonAsync: no daemon proxy available");
+        logErr("handshake: no daemon proxy");
         co_return;
     }
+
     try {
         co_await m_daemonProxy->callMethodAsync(wellbeing::REGISTER_PLUGIN_METHOD)
             .onInterface(wellbeing::DAEMON_INTERFACE)
             .getResultAsAwaitable();
-        logInfo("registerWithDaemonAsync: registered plugin instance");
+        logInfo("handshake: registered plugin instance");
+        m_registered = true;
     } catch (const sdbus::Error &e) {
-        logInfo("registerWithDaemonAsync: daemon not reachable (" + std::string(e.what()) + ")");
-    }
-}
-
-auto WellbeingManager::readActiveBlocksAsync() -> FireAndForget {
-    if (!m_daemonProxy) {
-        logErr("readActiveBlocksAsync: no daemon proxy");
+        logInfo("handshake: daemon not reachable (" + std::string(e.what()) + ")");
         co_return;
     }
 
+    co_await fetchBlocks();
+
+    emitHandshake();
+}
+
+// ── Fetch BlockedApps property (async) ─────────────────────────────
+
+auto WellbeingManager::fetchBlocks() -> task {
     try {
         // sdbus::Struct (NOT std::tuple) — signature_of adds () struct delimiters.
-        // std::tuple's signature_of omits (), producing "astutau" (invalid D-Bus).
-        using BlockEntry = sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t, std::vector<uint32_t>>;
+        // std::tuple's signature_of omits (), producing "astut" (invalid D-Bus).
+        using BlockEntry = sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>;
         using BlockEntries = std::vector<BlockEntry>;
 
-        // Properties.Get returns v(a(stutau)) — Use getProperty + Variant::get<>()
-        // (canonical sdbus-c++ property-read pattern).
-        auto var = m_daemonProxy->getProperty("ActiveBlocks").onInterface(wellbeing::DAEMON_INTERFACE);
-        auto blocks = var.get<BlockEntries>();
+        auto result = co_await m_daemonProxy->callMethodAsync("Get")
+                          .onInterface("org.freedesktop.DBus.Properties")
+                          .withArguments(wellbeing::DAEMON_INTERFACE, "BlockedApps")
+                          .getResultAsAwaitable<sdbus::Variant>();
+        auto blocks = result.get<BlockEntries>();
 
         for (auto &block : blocks) {
             auto &rawAppId = std::get<0>(block);
             auto policyId = std::get<1>(block);
             auto reason = std::get<2>(block);
             auto blockedSince = std::get<3>(block);
-            auto &actions = std::get<4>(block);
 
             auto appId = AppId::from_raw(rawAppId);
             if (!appId.has_value()) {
-                logErr("readActiveBlocksAsync: invalid appId '" + rawAppId + "' skipped");
+                logErr("fetchBlocks: invalid appId '" + rawAppId + "' skipped");
                 continue;
             }
 
             auto br = wellbeing::raw_to_block_reason(reason);
             if (!br.has_value()) {
-                logErr("readActiveBlocksAsync: invalid BlockReason " + std::to_string(reason) + " skipped");
+                logErr("fetchBlocks: invalid BlockReason " + std::to_string(reason) + " skipped");
                 continue;
             }
 
-            std::vector<ActionType> typedActions;
-            typedActions.reserve(actions.size());
-            for (auto a : actions) {
-                auto at = wellbeing::raw_to_action_type(a);
-                if (at.has_value()) {
-                    typedActions.push_back(*at);
-                }
-            }
-
-            m_lockManager->showOverlay(*appId, policyId, *br, blockedSince, typedActions);
-
-            if (g_ctx->currentFocus.has_value() && g_ctx->currentFocus->appId == *appId) {
-                g_ctx->currentFocus->overlayShown = true;
-            }
+            // Close button is local — no actions vector from daemon.
+            m_lockManager->showOverlay(*appId, policyId, *br, blockedSince, {ActionType::Close});
         }
     } catch (const sdbus::Error &e) {
-        logInfo("readActiveBlocksAsync: daemon not available yet (" + std::string(e.what()) + ")");
+        logInfo("syncBlockedApps: daemon not available (" + std::string(e.what()) + ")");
+    }
+}
+
+// ── Handshake emit ────────────────────────────────────────────────
+
+void WellbeingManager::emitHandshake() {
+    if (g_ctx->focusState.has_value()) {
+        emitFocusChanged(g_ctx->focusState);
+    } else {
+        emitFocusChanged(std::nullopt);
+    }
+}
+
+// ── BlockedAppsChanged signal subscription ────────────────────────
+
+void WellbeingManager::setupBlockedAppsWatch() {
+    if (!m_daemonProxy) {
+        logErr("setupBlockedAppsWatch: no daemon proxy");
+        return;
+    }
+
+    auto &conn = (m_activeBus == DaemonBus::System) ? *m_sysConn : *m_sessConn;
+
+    const auto matchExpr = std::string("type='signal',"
+                                       "interface='") +
+                           wellbeing::DAEMON_INTERFACE +
+                           "',"
+                           "member='" +
+                           wellbeing::BLOCKED_APPS_CHANGED_SIGNAL +
+                           "',"
+                           "path='" +
+                           wellbeing::DAEMON_OBJECT_PATH + "'";
+
+    try {
+        m_blockedAppsSlot = conn.addMatch(
+            matchExpr,
+            [this](sdbus::Message msg) -> void {
+                try {
+                    uint32_t uid = 0;
+                    std::string rawAppId;
+                    bool blocked = false;
+                    uint32_t reason = 0;
+                    msg >> uid >> rawAppId >> blocked >> reason;
+
+                    auto appId = AppId::from_raw(rawAppId);
+                    if (!appId.has_value()) {
+                        logErr("setupBlockedAppsWatch: invalid appId '" + rawAppId + "' skipped");
+                        return;
+                    }
+
+                    if (blocked) {
+                        // A new block appeared — re-read the full BlockedApps
+                        // property to get policyId and blockedSince.
+                        [this]() -> fire_and_forget { co_await fetchBlocks(); }();
+                    } else {
+                        // Block was removed — hide overlay directly.
+                        m_lockManager->hideOverlay(*appId);
+                    }
+                } catch (const std::exception &e) {
+                    logErr("BlockedAppsChanged handler: " + std::string(e.what()));
+                } catch (...) {
+                    logErr("BlockedAppsChanged handler: unknown exception");
+                }
+            },
+            sdbus::return_slot);
+
+        logInfo("setupBlockedAppsWatch: subscribed to BlockedAppsChanged on " +
+                std::string(m_activeBus == DaemonBus::System ? "system" : "session") + " bus");
+    } catch (const sdbus::Error &e) {
+        logErr("setupBlockedAppsWatch: addMatch failed: " + std::string(e.what()));
     }
 }
 
@@ -288,25 +330,21 @@ auto WellbeingManager::readActiveBlocksAsync() -> FireAndForget {
 auto WellbeingManager::resolveActiveDaemonBus(const std::string &daemonBusName) -> DaemonBus {
     logInfo("resolveActiveDaemonBus: resolving daemon bus (4-step)");
 
-    // Step 1: NameHasOwner on system bus
     if (m_sysConn && nameHasOwner(*m_sysConn, daemonBusName)) {
         logInfo("resolveActiveDaemonBus: daemon found on system bus (step 1)");
         return DaemonBus::System;
     }
 
-    // Step 2: NameHasOwner on session bus
     if (m_sessConn && nameHasOwner(*m_sessConn, daemonBusName)) {
         logInfo("resolveActiveDaemonBus: daemon found on session bus (step 2)");
         return DaemonBus::Session;
     }
 
-    // Step 3: StartServiceByName on system bus
     if (m_sysConn && startServiceByName(*m_sysConn, daemonBusName)) {
         logInfo("resolveActiveDaemonBus: daemon activated on system bus (step 3)");
         return DaemonBus::System;
     }
 
-    // Step 4: StartServiceByName on session bus
     if (m_sessConn && startServiceByName(*m_sessConn, daemonBusName)) {
         logInfo("resolveActiveDaemonBus: daemon activated on session bus (step 4)");
         return DaemonBus::Session;
@@ -379,15 +417,14 @@ void WellbeingManager::reconnectToDaemon() {
         return;
     }
 
-    // Re-register plugin instance — the daemon may have restarted.
+    // Re-register, re-sync blocked apps, and emit current focus.
     // Uses the async variant to avoid a D-Bus deadlock: the daemon calls
     // back to the plugin (CurrentFocus property) during registration, and a
     // synchronous callMethod would block the event loop thread, preventing
     // that callback from being dispatched.
-    registerWithDaemonAsync();
+    handshake();
 
-    // Re-read all active blocks to synchronise overlay state (non-blocking coroutine).
-    readActiveBlocksAsync();
+    setupBlockedAppsWatch();
 }
 
 void WellbeingManager::onDaemonAppeared() {
@@ -422,30 +459,26 @@ void WellbeingManager::onNameOwnerChanged(const std::string &name, const std::st
 
 // ── Signal emission ────────────────────────────────────────────────
 
-/// Emit UserAction(app_id, action) on BOTH busses so the daemon receives it
-/// regardless of which bus it is connected to.
-void WellbeingManager::emitUserAction(const std::string &appId, ActionType action) {
-    m_object->emitSignal(wellbeing::USER_ACTION_SIGNAL)
-        .onInterface(wellbeing::MANAGER_INTERFACE)
-        .withArguments(appId, static_cast<uint32_t>(action));
-    m_sessObject->emitSignal(wellbeing::USER_ACTION_SIGNAL)
-        .onInterface(wellbeing::MANAGER_INTERFACE)
-        .withArguments(appId, static_cast<uint32_t>(action));
-}
-
 /// Emit FocusChanged(variant) on BOTH busses.
+/// Only emits after `register_plugin` has completed — the first
+/// `FocusChanged` after registration serves as the initial focus state.
 void WellbeingManager::emitFocusChanged(const std::optional<WindowInfo> &info) {
-    m_object->emitSignal(wellbeing::FOCUS_CHANGED_SIGNAL)
+    if (!m_registered) {
+        return; // Gate: wait until register_plugin returns
+    }
+    bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appId);
+    auto variant = windowInfoToVariant(info, blocked);
+    m_sysObject->emitSignal(wellbeing::FOCUS_CHANGED_SIGNAL)
         .onInterface(wellbeing::MANAGER_INTERFACE)
-        .withArguments(windowInfoToVariant(info));
+        .withArguments(variant);
     m_sessObject->emitSignal(wellbeing::FOCUS_CHANGED_SIGNAL)
         .onInterface(wellbeing::MANAGER_INTERFACE)
-        .withArguments(windowInfoToVariant(info));
+        .withArguments(variant);
 }
 
 /// Emit ActivityChanged(tag) on BOTH busses.
 void WellbeingManager::emitActivityChanged(FocusActivityTag tag) {
-    m_object->emitSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL)
+    m_sysObject->emitSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL)
         .onInterface(wellbeing::MANAGER_INTERFACE)
         .withArguments(static_cast<uint32_t>(tag));
     m_sessObject->emitSignal(wellbeing::ACTIVITY_CHANGED_SIGNAL)

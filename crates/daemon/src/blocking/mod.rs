@@ -1,5 +1,3 @@
-//! Blocking enforcement module.
-//!
 //! [`EnforcerActor`] is the core enforcement engine. It receives
 //! [`PlatformEvent`]s, evaluates policies **gate-first** (before any event
 //! is persisted), and manages overlay state declaratively.
@@ -17,7 +15,7 @@
 //! ## Declarative Block State
 //!
 //! Block state is maintained in `active_blocks` and exposed to the compositor
-//! plugin via the `BlockStateChanged` D-Bus signal. The daemon never commands
+//! plugin via the `BlockedAppsChanged` D-Bus signal. The daemon never commands
 //! the plugin directly — the plugin reads daemon state and manages its own
 //! overlays.
 
@@ -25,7 +23,6 @@ mod buffer;
 mod core;
 pub mod data;
 mod domain;
-mod overlay;
 
 #[cfg(test)]
 mod test_support;

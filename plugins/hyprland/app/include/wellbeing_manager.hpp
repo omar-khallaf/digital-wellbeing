@@ -9,11 +9,11 @@
 
 #include "lockdown.hpp"
 
-// FireAndForget coroutine return type — async D-Bus operations that don't
-// need a result propagated back. Starts immediately, auto-destroys on completion.
-struct FireAndForget {
+// fire_and_forget — eager start, no return value, auto-cleanup on completion.
+// Use for top-level entry points (signal handlers, init) where no one awaits.
+struct fire_and_forget {
     struct promise_type {
-        static auto get_return_object() noexcept -> FireAndForget { return {}; }
+        static auto get_return_object() noexcept -> fire_and_forget { return {}; }
         static auto initial_suspend() noexcept -> std::suspend_never { return {}; }
         static auto final_suspend() noexcept -> std::suspend_never { return {}; }
         void return_void() {}
@@ -21,69 +21,108 @@ struct FireAndForget {
     };
 };
 
-// WellbeingManager — Implements org.wellbeing.v1.Manager for overlay/focus IPC.
+// task — eager start, awaitable from another coroutine, move-only.
+// The caller MUST co_await or store it as a member. Dropping a running task
+// without awaiting is a programming error (coroutine frame would leak).
+// Uses symmetric transfer on final_suspend for safe frame destruction.
+struct task {
+    struct promise_type {
+        std::coroutine_handle<> waiter;
+
+        auto get_return_object() noexcept -> task {
+            return task{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        static auto initial_suspend() noexcept -> std::suspend_never { return {}; }
+
+        struct final_awaiter {
+            static auto await_ready() noexcept -> bool { return false; }
+            auto await_suspend(std::coroutine_handle<promise_type> h) noexcept -> std::coroutine_handle<> {
+                auto w = h.promise().waiter;
+                return w ? w : std::noop_coroutine();
+            }
+            static void await_resume() noexcept {}
+        };
+
+        static auto final_suspend() noexcept -> final_awaiter { return {}; }
+        void return_void() {}
+
+        static void unhandled_exception() { std::terminate(); }
+    };
+
+    std::coroutine_handle<promise_type> m_handle;
+
+    explicit task(std::coroutine_handle<promise_type> h) noexcept : m_handle(h) {}
+
+    task(task &&other) noexcept : m_handle(std::exchange(other.m_handle, nullptr)) {}
+
+    task(const task &) = delete;
+    task &operator=(const task &) = delete;
+
+    ~task() {
+        if (m_handle) m_handle.destroy();
+    }
+
+    struct awaiter {
+        std::coroutine_handle<promise_type> m_handle;
+
+        explicit awaiter(std::coroutine_handle<promise_type> h) noexcept : m_handle(h) {}
+
+        auto await_ready() noexcept -> bool { return !m_handle || m_handle.done(); }
+
+        void await_suspend(std::coroutine_handle<> caller) noexcept { m_handle.promise().waiter = caller; }
+
+        void await_resume() noexcept {}
+    };
+
+    auto operator co_await() noexcept -> awaiter { return awaiter{m_handle}; }
+};
+
 class WellbeingManager {
   public:
-    /// Daemon bus resolution result: which bus the daemon is reachable on.
     enum class DaemonBus { None, System, Session };
 
     WellbeingManager(std::shared_ptr<LockManager> lockManager, std::shared_ptr<sdbus::IConnection> sysConnection,
                      std::shared_ptr<sdbus::IConnection> sessConnection);
     ~WellbeingManager();
 
-    // Signal emission
-    void emitUserAction(const std::string &appId, ActionType action);
+    // Signal emission (synchronous — D-Bus signals are fire-and-forget)
     void emitFocusChanged(const std::optional<WindowInfo> &info);
     void emitActivityChanged(wellbeing::FocusActivityTag tag);
 
-    // Async helpers (coroutine-based, non-blocking)
-    auto registerWithDaemonAsync() -> FireAndForget;
-    auto readActiveBlocksAsync() -> FireAndForget;
+    /// Called on startup and daemon reconnect.
+    auto handshake() -> fire_and_forget;
 
-    /// Called on daemon bus name appearance — re-registers and re-reads blocks.
+    /// Shared by handshake and the BlockedAppsChanged signal handler.
+    auto fetchBlocks() -> task;
+
     void onDaemonAppeared();
 
-    // Daemon bus resolution
-    /// Resolve which bus hosts the daemon via NameHasOwner/StartServiceByName.
-    /// Returns DaemonBus::None if all buses fail.
     auto resolveActiveDaemonBus(const std::string &daemonBusName) -> DaemonBus;
-
-    /// Resolve daemon bus name — "org.wellbeing.v1.Controller"
     auto daemonBusName() -> std::string;
 
-    // Cross-bus daemon lifecycle
-    /// Called on active daemon disappearance.
     void onDaemonDisappeared();
-
-    /// Re-resolve the daemon and re-establish the proxy.
     void reconnectToDaemon();
 
   private:
-    // NameOwnerChanged callback — isSystem flags which connection fired.
+    void emitHandshake();
     void onNameOwnerChanged(const std::string &name, const std::string &oldOwner, const std::string &newOwner,
                             bool isSystem);
 
-    // NameOwnerChanged watcher
     void setupNameOwnerWatch(bool system);
     sdbus::Slot m_sysDaemonWatchSlot;
     sdbus::Slot m_sessDaemonWatchSlot;
 
-    // Daemon proxy (for ActiveBlocks reads + BlockStateChanged subscription)
-    std::shared_ptr<sdbus::IProxy> m_daemonProxy;
+    void setupBlockedAppsWatch();
+    sdbus::Slot m_blockedAppsSlot;
 
-    // Two D-Bus connections (system + session)
+    std::shared_ptr<sdbus::IProxy> m_daemonProxy;
     std::shared_ptr<sdbus::IConnection> m_sysConn;
     std::shared_ptr<sdbus::IConnection> m_sessConn;
-
-    // Manager interface objects on both busses
-    std::unique_ptr<sdbus::IObject> m_object;     // system bus
-    std::unique_ptr<sdbus::IObject> m_sessObject; // session bus
-
+    std::unique_ptr<sdbus::IObject> m_sysObject;
+    std::unique_ptr<sdbus::IObject> m_sessObject;
     std::shared_ptr<LockManager> m_lockManager;
 
-    // Active daemon bus tracking
     DaemonBus m_activeBus{DaemonBus::None};
-
-    // Daemon bus name (resolved at construction)
     std::string m_daemonBusName;
+    bool m_registered{false};
 };

@@ -16,7 +16,7 @@ where AppId accepts empty input.
 
 A test should construct a realistic scenario, trigger the behavior under test,
 and assert on the outcome. For example, constructing a PolicyConfig::TimeLimit
-with time_limit_minutes, extra_minutes, and a schedule, then calling evaluate()
+with time_limit_minutes and a schedule, then calling evaluate()
 with the policy and elapsed usage, and asserting on the returned PolicyVerdict
 variant (e.g., PolicyVerdict::Block when elapsed exceeds limit).
 
@@ -35,7 +35,7 @@ events are ephemeral (they exit the actor boundary), while the DB is the
 canonical record for reports and crash recovery.
 
 A test might construct a TrackerState, feed it a WindowFocused event for an
-Alacritty window with a zsh title, pid 1234, uid 1000, and overlay_shown false,
+Alacritty window with a zsh title, pid 1234, and uid 1000,
 and then assert that the resulting domain events include WindowFocusChanged. It
 then queries the database and asserts that exactly one event row exists for
 Alacritty with event type WindowFocused.
@@ -100,9 +100,8 @@ random policy vectors of size 0 to 5, elapsed values from 0 to 86400 seconds
 (0–24h), and random datetimes. It asserts that if no policy has a limit, the
 verdict must not be Block. It asserts that when multiple policies would block,
 they collapse to a single Block with the most restrictive reason. It asserts
-that when a TimeLimit policy has extra_minutes, the effective limit must be
-time_limit_minutes plus extra_minutes, never more. If elapsed exceeds
-effective_limit, the verdict must allow extension (or already be Extended).
+that when elapsed exceeds the policy's time_limit_minutes, the verdict must be
+Block (not Ok).
 
 ### Strategies
 
@@ -164,7 +163,7 @@ intervals. These tests simulate crash scenarios.
 ### Scenario: Daemon restart during active block
 
 A test seeds an event trace with a WindowFocused event for firefox with
-overlay_shown true and pid 100, uid 1000. It builds a MockPlatform from those
+WindowBlocked for firefox with pid 100 and uid 1000 (tag=2 variant). It builds a MockPlatform from those
 events, creates a new EnforcerActor with a cloned pool and clock, calls
 reconcile_on_startup(), and asserts that the block state for firefox is still
 blocked. It also asserts that the events table contains exactly one row — the
@@ -185,7 +184,7 @@ process exits.
 ### Test infrastructure
 
 - All crash recovery tests use VirtualClock and in-memory SQLite
-- MockPlatform replays recorded event traces including the overlay_shown flag
+- MockPlatform replays recorded event traces including focus variant tags
 - The EnforcerActor exposes a reconcile_on_startup() method that the production
   main.rs also calls on restart
 - Tests verify final DB state by reading the events table directly

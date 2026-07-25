@@ -1,6 +1,6 @@
 //! Shared event type constants for the Digital Wellbeing system.
 //!
-//! Single source of truth for the eight event types that cover every
+//! Single source of truth for the nine event types that cover every
 //! focus switch and state change. Used by both the daemon (persistence
 //! layer, enforcement) and the GUI (day timeline builder, hourly
 //! aggregation).
@@ -33,12 +33,18 @@ pub const EVENT_LOCKED: i32 = 6;
 /// User logged out — closes a focus interval.
 pub const EVENT_LOGGED_OUT: i32 = 7;
 
+/// A blocked window was shown (compositor plugin detected a blocked app
+/// gained focus) — closes the previous focus interval and starts a
+/// blocked interval.
+pub const EVENT_WINDOW_BLOCKED: i32 = 8;
+
 pub const CLOSE_EVENT_TYPES: &[i32] = &[
     EVENT_UNFOCUSED,
     EVENT_SLEPT,
     EVENT_SHUT_DOWN,
     EVENT_LOCKED,
     EVENT_LOGGED_OUT,
+    EVENT_WINDOW_BLOCKED,
 ];
 
 /// Accepts any integer type via `Into<i32>` so both the daemon (i32

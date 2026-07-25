@@ -13,7 +13,7 @@
 //! | Daily usage  | `DailyUsageChanged` signal    |
 //! | Policies     | `PolicyMutated` signal        |
 //! | Categories   | `PolicyMutated` signal        |
-//! | Block states | `BlockStateChanged` signal    |
+//! | Block states | `BlockedAppsChanged` signal    |
 
 use std::collections::HashMap;
 use std::hash::Hash;

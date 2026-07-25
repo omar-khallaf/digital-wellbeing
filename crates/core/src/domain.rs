@@ -8,7 +8,7 @@ use crate::valuetypes::*;
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use zvariant::{OwnedValue, Type, Value};
+use zvariant::{Type, Value};
 
 /// Policy action discriminant — maps to DB integer.
 #[repr(u8)]
@@ -54,7 +54,6 @@ pub struct PolicyData {
     pub app_id: String,
     pub category_id: i64,
     pub time_limit_minutes: i64,
-    pub extra_minutes: i64,
     pub notification_repeat_interval_minutes: i64,
     pub schedule_json: String,
     pub active: bool,
@@ -72,7 +71,6 @@ pub struct PolicyInput {
     pub app_id: String,
     pub category_id: i64,
     pub time_limit_minutes: i64,
-    pub extra_minutes: i64,
     pub notification_repeat_interval_minutes: i64,
     pub schedule_json: String,
     pub active: bool,
@@ -80,19 +78,36 @@ pub struct PolicyInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailyUsageEntry {
+pub struct DailyUsageByAppEntry {
     pub date: String,
     pub user_id: u32,
     pub app_id: String,
     pub total_millis: i64,
-    pub extended: bool,
+}
+
+/// Per-title usage projection — one row per (date, user_id, app_id, title).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DailyUsageByTitleEntry {
+    pub date: String,
+    pub user_id: u32,
+    pub app_id: String,
+    pub title: String,
+    pub total_millis: i64,
+}
+
+/// Per-title usage summary for a date range — groups entries by date.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct DailyUsageByTitleSummary {
+    pub date: String,
+    pub user_id: u32,
+    pub entries: Vec<DailyUsageByTitleEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct DailySummary {
     pub date: String,
     pub user_id: u32,
-    pub entries: Vec<DailyUsageEntry>,
+    pub entries: Vec<DailyUsageByAppEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -113,13 +128,6 @@ pub struct AppCategoryRow {
     pub ignore: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ActiveWindowInfo {
-    pub app_id: String,
-    pub title: String,
-    pub pid: u32,
-}
-
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub enum BlockReason {
@@ -129,48 +137,12 @@ pub enum BlockReason {
     CategoryBlock = 3,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct BlockStateInfo {
-    pub uid: u32,
-    pub app_id: String,
-    pub blocked: bool,
-    pub reason: BlockReason,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Value)]
-pub struct ActiveBlockEntry {
+pub struct BlockedAppEntry {
     pub app_id: String,
     pub policy_id: u64,
     pub reason: u32,
     pub blocked_since: u64,
-    pub available_actions: Vec<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct ActiveBlocks(pub Vec<ActiveBlockEntry>);
-
-impl TryFrom<OwnedValue> for ActiveBlocks {
-    type Error = zvariant::Error;
-    fn try_from(value: OwnedValue) -> Result<Self, Self::Error> {
-        Vec::<ActiveBlockEntry>::try_from(value).map(Self)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct WindowInfo {
-    pub app_id: String,
-    pub title: String,
-    pub pid: u32,
-    pub overlay_shown: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct SessionState {
-    pub variant: u32,
-    pub app_id: String,
-    pub title: String,
-    pub pid: u32,
-    pub overlay_shown: bool,
 }
 
 /// A single row from the `events` table, exposed over D-Bus.
@@ -193,11 +165,11 @@ pub struct DayEventRow {
 mod tests {
     use super::*;
     use crate::dbus_constants::{
-        ACTIVE_BLOCK_SIGNATURE, ACTIVITY_TAG_IDLE, ACTIVITY_TAG_RESUMED, FOCUS_FIELD_APP_ID,
-        FOCUS_FIELD_OVERLAY, FOCUS_FIELD_PID, FOCUS_FIELD_TAG, FOCUS_FIELD_TITLE, FOCUS_FIELD_UID,
+        ACTIVITY_TAG_IDLE, ACTIVITY_TAG_RESUMED, BLOCKED_APP_SIGNATURE, FOCUS_FIELD_APP_ID,
+        FOCUS_FIELD_PID, FOCUS_FIELD_TAG, FOCUS_FIELD_TITLE, FOCUS_FIELD_UID,
         FOCUS_STRUCT_FIELD_COUNT, FOCUS_STRUCT_SIGNATURE, FOCUS_TAG_APP, FOCUS_TAG_DESKTOP,
     };
-    use zvariant::{DynamicType, LE, Value, to_bytes};
+    use zvariant::{DynamicType, LE, OwnedValue, Value, to_bytes};
 
     #[test]
     fn policy_kind_roundtrips_as_u8() {
@@ -235,7 +207,6 @@ mod tests {
             app_id: "firefox".to_string(),
             category_id: 0,
             time_limit_minutes: 0,
-            extra_minutes: 0,
             notification_repeat_interval_minutes: 0,
             schedule_json: "{}".to_string(),
             active: true,
@@ -283,7 +254,6 @@ mod tests {
             "Mozilla Firefox",
             12345u32,
             1000u32,
-            false,
         )));
         let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
         let bytes = to_bytes(ctxt, &val).expect("serialize app variant");
@@ -305,7 +275,6 @@ mod tests {
                 assert_eq!(f[FOCUS_FIELD_TITLE], Value::Str("Mozilla Firefox".into()));
                 assert_eq!(f[FOCUS_FIELD_PID], Value::U32(12345u32));
                 assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32));
-                assert_eq!(f[FOCUS_FIELD_OVERLAY], Value::Bool(false));
             }
             _ => panic!("expected Value::Structure variant"),
         }
@@ -322,39 +291,36 @@ mod tests {
     // The C++ side mirrors these in test/dbus_serialization_test.cpp.
 
     #[test]
-    fn active_block_entry_dbus_signature_matches_cpp() {
-        let entry = ActiveBlockEntry {
+    fn blocked_app_entry_dbus_signature_matches_cpp() {
+        let entry = BlockedAppEntry {
             app_id: "firefox".into(),
             policy_id: 42,
             reason: 0,
             blocked_since: 1_700_000_000_000,
-            available_actions: vec![0, 1],
         };
         assert_eq!(
             entry.signature().to_string(),
-            ACTIVE_BLOCK_SIGNATURE,
-            "ActiveBlockEntry D-Bus signature changed. Update C++ readActiveBlocks tuple type."
+            BLOCKED_APP_SIGNATURE,
+            "BlockedAppEntry D-Bus signature changed. Update C++ readBlockedApps tuple type."
         );
     }
 
     #[test]
-    fn active_block_entry_binary_roundtrip() {
-        let entry = ActiveBlockEntry {
+    fn blocked_app_entry_binary_roundtrip() {
+        let entry = BlockedAppEntry {
             app_id: "firefox".into(),
             policy_id: 42,
             reason: 2,
             blocked_since: 1_700_000_000_000,
-            available_actions: vec![0, 1],
         };
         let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
-        let bytes = to_bytes(ctxt, &entry).expect("serialize ActiveBlockEntry");
-        let (decoded, _): (ActiveBlockEntry, _) =
-            bytes.deserialize().expect("deserialize ActiveBlockEntry");
+        let bytes = to_bytes(ctxt, &entry).expect("serialize BlockedAppEntry");
+        let (decoded, _): (BlockedAppEntry, _) =
+            bytes.deserialize().expect("deserialize BlockedAppEntry");
         assert_eq!(decoded.app_id, entry.app_id);
         assert_eq!(decoded.policy_id, entry.policy_id);
         assert_eq!(decoded.reason, entry.reason);
         assert_eq!(decoded.blocked_since, entry.blocked_since);
-        assert_eq!(decoded.available_actions, entry.available_actions);
     }
 
     #[test]
@@ -374,15 +340,14 @@ mod tests {
 
     #[test]
     fn focus_changed_app_variant_matches_cpp_struct_encoding() {
-        // C++ emits: sdbus::Variant{sdbus::Struct{uint32_t(App), str, str, uint32, uint32, bool}}
-        // D-Bus wire: variant containing struct(u32, string, string, u32, u32, bool) = v(ussuub)
+        // C++ emits: sdbus::Variant{sdbus::Struct{uint32_t(App), str, str, uint32, uint32}}
+        // D-Bus wire: variant containing struct(u32, string, string, u32, u32) = v(ussuu)
         // Rust handler in manager.rs destructures this as:
         //   f[FOCUS_FIELD_TAG]     → Value::U32(FOCUS_TAG_APP)
         //   f[FOCUS_FIELD_APP_ID]  → Value::Str(app_id)
         //   f[FOCUS_FIELD_TITLE]   → Value::Str(title)
         //   f[FOCUS_FIELD_PID]     → Value::U32(pid)
         //   f[FOCUS_FIELD_UID]     → Value::U32(uid)
-        //   f[FOCUS_FIELD_OVERLAY] → Value::Bool(overlay)
         use zvariant::Structure;
 
         let app_val: OwnedValue = Value::Structure(Structure::from((
@@ -391,7 +356,6 @@ mod tests {
             "main.rs",
             9999u32,
             1000u32,
-            true,
         )))
         .try_into()
         .expect("convert Value to OwnedValue");
@@ -422,11 +386,6 @@ mod tests {
                 );
                 assert_eq!(f[FOCUS_FIELD_PID], Value::U32(9999u32), "field 3 = pid");
                 assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32), "field 4 = uid");
-                assert_eq!(
-                    f[FOCUS_FIELD_OVERLAY],
-                    Value::Bool(true),
-                    "field 5 = overlay_shown"
-                );
             }
             _ => panic!("unexpected variant type"),
         }
@@ -435,7 +394,7 @@ mod tests {
     #[test]
     fn focus_changed_app_variant_raw_signature() {
         use zvariant::Structure;
-        let s = Structure::from((FOCUS_TAG_APP, "term", "Terminal", 7777u32, 1000u32, false));
+        let s = Structure::from((FOCUS_TAG_APP, "term", "Terminal", 7777u32, 1000u32));
         assert_eq!(
             s.signature().to_string(),
             FOCUS_STRUCT_SIGNATURE,
@@ -491,7 +450,6 @@ mod tests {
             "main.rs — VS Code",
             9999u32,
             1000u32,
-            true,
         )))
         .try_into()
         .expect("convert Value to OwnedValue");
@@ -509,7 +467,6 @@ mod tests {
                 assert_eq!(f[FOCUS_FIELD_TITLE], Value::Str("main.rs — VS Code".into()));
                 assert_eq!(f[FOCUS_FIELD_PID], Value::U32(9999u32));
                 assert_eq!(f[FOCUS_FIELD_UID], Value::U32(1000u32));
-                assert_eq!(f[FOCUS_FIELD_OVERLAY], Value::Bool(true));
             }
             _ => panic!("expected Value::Structure variant"),
         }

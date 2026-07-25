@@ -16,7 +16,6 @@
 
 #include <cstdint>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -29,9 +28,9 @@ using namespace wellbeing;
 // ═════════════════════════════════════════════════════════════════════════════
 // FocusChanged signal variant encoding
 //
-// C++ emits:   sdbus::Variant{sdbus::Struct{tag, app_id, title, pid, uid, overlay}}
-// Rust expects: zvariant variant containing struct(u32, string, string, u32, u32, bool)
-// D-Bus wire:   v(ussuub)
+// C++ emits:   sdbus::Variant{sdbus::Struct{tag, app_id, title, pid, uid}}
+// Rust expects: zvariant variant containing struct(u32, string, string, u32, u32)
+// D-Bus wire:   v(ussuu)
 // ═════════════════════════════════════════════════════════════════════════════
 
 TEST(DbusSerializationTest, FocusChangedAppVariantRoundtrip) {
@@ -42,7 +41,6 @@ TEST(DbusSerializationTest, FocusChangedAppVariantRoundtrip) {
     const std::string expectedTitle = "Mozilla Firefox";
     const uint32_t expectedPid = 12345;
     const uint32_t expectedUid = 1000;
-    const bool expectedOverlay = true;
 
     auto variant = sdbus::Variant{sdbus::Struct{
         expectedTag,
@@ -50,22 +48,46 @@ TEST(DbusSerializationTest, FocusChangedAppVariantRoundtrip) {
         expectedTitle,
         expectedPid,
         expectedUid,
-        expectedOverlay,
     }};
 
-    // Verify the D-Bus signature matches what Rust expects: FOCUS_STRUCT_SIGNATURE
     EXPECT_STREQ(variant.peekValueType(), FOCUS_STRUCT_SIGNATURE)
         << "FocusChanged App variant content signature must match Rust handler";
 
-    // Extract back and verify all fields survive round-trip.
-    auto extracted = variant.get<sdbus::Struct<uint32_t, std::string, std::string, uint32_t, uint32_t, bool>>();
+    auto extracted = variant.get<sdbus::Struct<uint32_t, std::string, std::string, uint32_t, uint32_t>>();
 
     EXPECT_EQ(std::get<FOCUS_FIELD_TAG>(extracted), expectedTag);
     EXPECT_EQ(std::get<FOCUS_FIELD_APP_ID>(extracted), expectedAppId);
     EXPECT_EQ(std::get<FOCUS_FIELD_TITLE>(extracted), expectedTitle);
     EXPECT_EQ(std::get<FOCUS_FIELD_PID>(extracted), expectedPid);
     EXPECT_EQ(std::get<FOCUS_FIELD_UID>(extracted), expectedUid);
-    EXPECT_EQ(std::get<FOCUS_FIELD_OVERLAY>(extracted), expectedOverlay);
+}
+
+TEST(DbusSerializationTest, FocusChangedBlockedVariantRoundtrip) {
+    // Blocked variant uses FocusVariantTag::Blocked (tag=2) with the same
+    // struct layout as App (no overlay_bool).
+    const auto expectedTag = static_cast<uint32_t>(FocusVariantTag::Blocked);
+    const std::string expectedAppId = "firefox";
+    const std::string expectedTitle = "Blocked Window";
+    const uint32_t expectedPid = 12345;
+    const uint32_t expectedUid = 1000;
+
+    auto variant = sdbus::Variant{sdbus::Struct{
+        expectedTag,
+        expectedAppId,
+        expectedTitle,
+        expectedPid,
+        expectedUid,
+    }};
+
+    EXPECT_STREQ(variant.peekValueType(), FOCUS_STRUCT_SIGNATURE)
+        << "FocusChanged Blocked variant content signature must match Rust handler";
+
+    auto extracted = variant.get<sdbus::Struct<uint32_t, std::string, std::string, uint32_t, uint32_t>>();
+    EXPECT_EQ(std::get<FOCUS_FIELD_TAG>(extracted), expectedTag);
+    EXPECT_EQ(std::get<FOCUS_FIELD_APP_ID>(extracted), expectedAppId);
+    EXPECT_EQ(std::get<FOCUS_FIELD_TITLE>(extracted), expectedTitle);
+    EXPECT_EQ(std::get<FOCUS_FIELD_PID>(extracted), expectedPid);
+    EXPECT_EQ(std::get<FOCUS_FIELD_UID>(extracted), expectedUid);
 }
 
 TEST(DbusSerializationTest, FocusChangedDesktopVariantRoundtrip) {
@@ -75,8 +97,7 @@ TEST(DbusSerializationTest, FocusChangedDesktopVariantRoundtrip) {
 
     auto variant = sdbus::Variant{desktopTag};
 
-    EXPECT_STREQ(variant.peekValueType(), "u")
-        << "Desktop variant must be uint32 to match Rust handler (Value::U32)";
+    EXPECT_STREQ(variant.peekValueType(), "u") << "Desktop variant must be uint32 to match Rust handler (Value::U32)";
 
     auto extracted = variant.get<uint32_t>();
     EXPECT_EQ(extracted, desktopTag);
@@ -84,56 +105,64 @@ TEST(DbusSerializationTest, FocusChangedDesktopVariantRoundtrip) {
 
 TEST(DbusSerializationTest, FocusChangedVariantTagValues) {
     // Critical: the Rust handler in daemon/src/platform/linux/manager.rs
-    // checks for Value::U32(0) = desktop, Value::U32(1) = app.
+    // checks for Value::U32(0) = desktop, Value::U32(1) = app, Value::U32(2) = blocked.
     // These values live in FocusVariantTag enum (types.hpp).
-    // Rust mirror: FOCUS_TAG_DESKTOP=0, FOCUS_TAG_APP=1 (dbus_constants.rs).
-    EXPECT_EQ(static_cast<uint32_t>(FocusVariantTag::Desktop), 0u)
+    // Rust mirror: FOCUS_TAG_DESKTOP=0, FOCUS_TAG_APP=1, FOCUS_TAG_BLOCKED=2 (dbus_constants.rs).
+    EXPECT_EQ(static_cast<uint32_t>(FocusVariantTag::Desktop), 0U)
         << "FocusVariantTag::Desktop must be 0 to match Rust FOCUS_TAG_DESKTOP";
-    EXPECT_EQ(static_cast<uint32_t>(FocusVariantTag::App), 1u)
+    EXPECT_EQ(static_cast<uint32_t>(FocusVariantTag::App), 1U)
         << "FocusVariantTag::App must be 1 to match Rust FOCUS_TAG_APP";
+    EXPECT_EQ(static_cast<uint32_t>(FocusVariantTag::Blocked), 2U)
+        << "FocusVariantTag::Blocked must be 2 to match Rust FOCUS_TAG_BLOCKED";
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// ActiveBlocks property encoding
+// BlockedApps property encoding
 //
 // C++ reads via Properties.Get:  variant containing a(stutau)
-// Rust sends:                    v(a(stutau))  →  Vec<ActiveBlockEntry>
+// Rust sends:                    v(a(stutau))  →  Vec<BlockedAppEntry>
 // ═════════════════════════════════════════════════════════════════════════════
 
-TEST(DbusSerializationTest, ActiveBlocksPropertyRoundtrip) {
-    // Verify that the tuple type used in readActiveBlocks() round-trips through
+TEST(DbusSerializationTest, BlockedAppsPropertyRoundtrip) {
+    // Verify that the tuple type used in readBlockedApps() round-trips through
     // an sdbus::Variant, mirroring how Properties.Get wraps the response.
-    using BlockTuple = std::tuple<std::string, uint64_t, uint32_t, uint64_t, std::vector<uint32_t>>;
+    // Must match Rust BlockedAppEntry: (string, uint64, uint32, uint64) = (stut)
+    // No actions vector — close button is handled locally.
+    using BlockTuple = sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>;
     using BlockEntries = std::vector<BlockTuple>;
 
     BlockEntries original = {
-        BlockTuple{"firefox", 42, 0, 1700000000000ULL, {0, 1}},
-        BlockTuple{"code",    99, 2, 1700000000001ULL, {1}},
+        BlockTuple{"firefox", 42, 0, 1700000000000ULL},
+        BlockTuple{"code", 99, 2, 1700000000001ULL},
     };
 
-    // Serialize: wrap in variant (as Properties.Get does).
     auto variant = sdbus::Variant{original};
 
-    // Verify the variant's content signature: ACTIVE_BLOCK_SIGNATURE
-    EXPECT_STREQ(variant.peekValueType(), ACTIVE_BLOCK_SIGNATURE)
-        << "ActiveBlocks variant content signature must match Rust ActiveBlockEntry";
+    // Properties.Get returns v(a(stut)) — the variant content is an array of structs.
+    // BLOCKED_APP_SIGNATURE describes the inner struct "(stut)"; the full array
+    // signature is "a" + BLOCKED_APP_SIGNATURE.
+    std::string expectedSig = std::string("a") + BLOCKED_APP_SIGNATURE;
+    EXPECT_STREQ(variant.peekValueType(), expectedSig.c_str())
+        << "BlockedApps variant content signature must match Rust BlockedAppEntry array";
 
-    // Deserialize back.
     auto extracted = variant.get<BlockEntries>();
 
     ASSERT_EQ(extracted.size(), original.size());
-    EXPECT_EQ(extracted[0], original[0]);
-    EXPECT_EQ(extracted[1], original[1]);
+    EXPECT_EQ(std::get<0>(extracted[0]), std::get<0>(original[0]));
+    EXPECT_EQ(std::get<1>(extracted[0]), std::get<1>(original[0]));
+    EXPECT_EQ(std::get<2>(extracted[0]), std::get<2>(original[0]));
+    EXPECT_EQ(std::get<3>(extracted[0]), std::get<3>(original[0]));
 }
 
-TEST(DbusSerializationTest, ActiveBlocksEmptyArrayRoundtrip) {
-    // Edge case: empty ActiveBlocks array.
-    using BlockEntries = std::vector<std::tuple<std::string, uint64_t, uint32_t, uint64_t, std::vector<uint32_t>>>;
+TEST(DbusSerializationTest, BlockedAppsEmptyArrayRoundtrip) {
+    // Edge case: empty BlockedApps array.
+    using BlockEntries = std::vector<sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>>;
 
     BlockEntries original;
     auto variant = sdbus::Variant{original};
 
-    EXPECT_STREQ(variant.peekValueType(), ACTIVE_BLOCK_SIGNATURE);
+    std::string expectedSig = std::string("a") + BLOCKED_APP_SIGNATURE;
+    EXPECT_STREQ(variant.peekValueType(), expectedSig.c_str());
 
     auto extracted = variant.get<BlockEntries>();
     EXPECT_TRUE(extracted.empty());
@@ -148,13 +177,13 @@ TEST(DbusSerializationTest, ActiveBlocksEmptyArrayRoundtrip) {
 
 TEST(DbusSerializationTest, ActivityChangedIdleTagValue) {
     // Rust handler in manager.rs checks args.tag == ACTIVITY_TAG_IDLE (0).
-    EXPECT_EQ(static_cast<uint32_t>(FocusActivityTag::Idle), 0u)
+    EXPECT_EQ(static_cast<uint32_t>(FocusActivityTag::Idle), 0U)
         << "FocusActivityTag::Idle must be 0 to match Rust ACTIVITY_TAG_IDLE";
 }
 
 TEST(DbusSerializationTest, ActivityChangedResumedTagValue) {
     // Rust handler in manager.rs treats any non-zero as Resumed.
-    EXPECT_EQ(static_cast<uint32_t>(FocusActivityTag::Resumed), 1u)
+    EXPECT_EQ(static_cast<uint32_t>(FocusActivityTag::Resumed), 1U)
         << "FocusActivityTag::Resumed must be 1 to match Rust ACTIVITY_TAG_RESUMED";
 }
 
@@ -170,13 +199,7 @@ TEST(DbusSerializationTest, DbUsConstantsMatchRust) {
     EXPECT_STREQ(MANAGER_OBJECT_PATH, "/org/wellbeing/Manager");
     EXPECT_STREQ(FOCUS_CHANGED_SIGNAL, "FocusChanged");
     EXPECT_STREQ(ACTIVITY_CHANGED_SIGNAL, "ActivityChanged");
-    EXPECT_STREQ(USER_ACTION_SIGNAL, "UserAction");
-    EXPECT_STREQ(CURRENT_FOCUS_PROPERTY, "CurrentFocus");
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Entry point
-// ═════════════════════════════════════════════════════════════════════════════
 
 auto main(int argc, char **argv) -> int {
     ::testing::InitGoogleTest(&argc, argv);

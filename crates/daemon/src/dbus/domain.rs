@@ -1,10 +1,10 @@
 //! Domain types for the D-Bus interface module.
 
-use wellbeing_core::{ActiveBlockEntry, AppId, Uid};
+use wellbeing_core::{AppId, BlockedAppEntry, Uid};
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Active blocks shared across the daemon.
-pub(crate) type ActiveBlocksMap = Arc<RwLock<HashMap<Uid, HashMap<AppId, ActiveBlockEntry>>>>;
+/// Blocked apps shared across the daemon.
+pub(crate) type BlockedAppsMap = Arc<RwLock<HashMap<Uid, HashMap<AppId, BlockedAppEntry>>>>;

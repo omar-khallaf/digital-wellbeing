@@ -19,7 +19,17 @@ diesel::table! {
         app_id -> Text,
         closed_millis -> Integer,
         open_millis -> Integer,
-        extended -> Bool,
+    }
+}
+
+diesel::table! {
+    daily_usage_by_title (date, user_id, app_id, title) {
+        date -> Text,
+        user_id -> Integer,
+        app_id -> Text,
+        title -> Text,
+        closed_millis -> Integer,
+        open_millis -> Integer,
     }
 }
 
@@ -43,7 +53,6 @@ diesel::table! {
         created_by -> Integer,
         owner_id -> Integer,
         time_limit_minutes -> Nullable<Integer>,
-        extra_minutes -> Integer,
         notification_repeat_interval_minutes -> Nullable<Integer>,
         schedule_start_hour -> Nullable<Integer>,
         schedule_end_hour -> Nullable<Integer>,

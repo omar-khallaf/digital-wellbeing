@@ -1,8 +1,7 @@
 //! Diesel Queryable structs for reports.
 
-use crate::store::schema::{daily_usage, events};
+use crate::store::schema::{daily_usage, daily_usage_by_title, events};
 
-/// Row type for the `events` table.
 #[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
 #[diesel(table_name = events)]
 pub struct EventRow {
@@ -23,7 +22,17 @@ pub struct DailyUsageRow {
     pub app_id: String,
     pub closed_millis: i32,
     pub open_millis: i32,
-    pub extended: bool,
+}
+
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = daily_usage_by_title)]
+pub struct DailyUsageByTitleRow {
+    pub date: String,
+    pub user_id: i32,
+    pub app_id: String,
+    pub title: String,
+    pub closed_millis: i32,
+    pub open_millis: i32,
 }
 
 /// One hour bucket (0-23) with total focus milliseconds.

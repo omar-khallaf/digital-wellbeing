@@ -7,6 +7,7 @@
 #if __has_include(<hyprland/Compositor.hpp>)
 #include <hyprland/Compositor.hpp>
 #include <hyprland/desktop/view/Window.hpp>
+#include <hyprland/render/OpenGL.hpp>
 #endif
 
 using wellbeing::ActionType;
@@ -37,8 +38,7 @@ void LockManager::showOverlay(const AppId &appId, uint64_t policyId, BlockReason
         const auto &windows = g_pCompositor->m_windows;
         for (const auto &w : windows) {
             if (w->m_initialClass == appId.value()) {
-                const auto handle = reinterpret_cast<uint64_t>(w.get());
-                overlay.windowHandles.push_back(handle);
+                overlay.windowHandles.push_back(w->m_stableID);
             }
         }
     }
@@ -56,7 +56,7 @@ void LockManager::showOverlay(const AppId &appId, uint64_t policyId, BlockReason
         // Find the window that matches our first handle.
         const auto &windows = g_pCompositor->m_windows;
         for (const auto &ww : windows) {
-            if (reinterpret_cast<uint64_t>(ww.get()) == overlay.windowHandles[0]) {
+            if (ww->m_stableID == overlay.windowHandles[0]) {
                 const auto box = ww->getWindowMainSurfaceBox();
                 const int winX = static_cast<int>(box.x);
                 const int winY = static_cast<int>(box.y);
@@ -100,7 +100,7 @@ auto LockManager::hideOverlay(const AppId &appId) -> LockManagerError {
 }
 
 // =============================================================================
-// Focus gate — single source of truth is g_ctx->currentFocus
+// Focus gate — single source of truth is g_ctx->focusState
 // =============================================================================
 
 void LockManager::setFocusedApp(std::optional<AppId> appId) { m_focusedApp = std::move(appId); }
@@ -117,18 +117,23 @@ void LockManager::drawOverlay() {
     for (auto &[appId, overlay] : m_overlays) {
         (void)appId;
         for (auto windowHandle : overlay.windowHandles) {
-            (void)windowHandle;
-            // TODO: draw backdrop over each blocked window using
-            //   g_pHyprOpenGL->renderRect(...). When windowHandles is
-            //   empty, draw a single placeholder backdrop per overlay.
+#if __has_include(<hyprland/Compositor.hpp>)
+            const auto &windows = g_pCompositor->m_windows;
+            for (const auto &w : windows) {
+                if (w->m_stableID == windowHandle) {
+                    const auto box = w->getWindowMainSurfaceBox();
+                    Render::GL::g_pHyprOpenGL->renderRect(box, CHyprColor{0.0F, 0.0F, 0.0F, 0.6F}, {});
+                    break;
+                }
+            }
+#endif
         }
 
-        // Placeholder structure: when windowHandles is empty, draw a single
-        // backdrop using the first button's position (fixed coords for now).
         if (overlay.windowHandles.empty()) {
-            // TODO: render placeholder backdrop + buttons for this overlay
-            //   once window geometry capture is implemented.
-            //   For now the drawing path is structurally visible but empty.
+#if __has_include(<hyprland/Compositor.hpp>)
+            const CBox fallbackBox = {100, 100, 800, 600};
+            Render::GL::g_pHyprOpenGL->renderRect(fallbackBox, CHyprColor{0.0F, 0.0F, 0.0F, 0.6F}, {});
+#endif
         }
     }
 }
@@ -139,12 +144,12 @@ auto LockManager::onMouseClick(double x, double y) -> bool {
     }
 
     // Hit-test action buttons for the focused app's overlay in order.
+    // Only ActionType::Close exists — handled locally by hiding the
+    // overlay immediately. No other action types remain.
     const auto &buttons = m_overlays.at(*m_focusedApp).buttons;
-    const bool buttonConsumed = std::ranges::any_of(buttons, [this, x, y](const auto &btn) -> auto {
-        if (withinRect(btn, x, y)) {
-            if (m_userActionCb) {
-                m_userActionCb(*m_focusedApp, btn.actionId);
-            }
+    const bool buttonConsumed = std::ranges::any_of(buttons, [this, x, y](const auto &btn) -> bool {
+        if (withinRect(btn, x, y) && btn.actionId == ActionType::Close) {
+            hideOverlay(*m_focusedApp);
             return true;
         }
         return false;
@@ -154,9 +159,22 @@ auto LockManager::onMouseClick(double x, double y) -> bool {
         return buttonConsumed;
     }
 
-    // TODO: check if click falls inside the blocked window bounds.
-    //   If it does → swallow so the blocked app never receives input.
-    //   If outside → let pass through normally.
+#if __has_include(<hyprland/Compositor.hpp>)
+    for (const auto &[appId, overlay] : m_overlays) {
+        (void)appId;
+        for (auto handle : overlay.windowHandles) {
+            for (const auto &w : g_pCompositor->m_windows) {
+                if (w->m_stableID == handle) {
+                    const auto box = w->getWindowMainSurfaceBox();
+                    if (x >= box.x && x < box.x + box.w && y >= box.y && y < box.y + box.h) {
+                        return true;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+#endif
     return false;
 }
 
@@ -169,9 +187,16 @@ auto LockManager::isTarget(uint64_t windowHandle) const -> bool {
     if (m_overlays.empty()) {
         return false;
     }
-    // TODO: check windowHandle against all overlays' windowHandles once
-    //   geometry capture is implemented.
-    (void)windowHandle;
+#if __has_include(<hyprland/Compositor.hpp>)
+    for (const auto &[appId, overlay] : m_overlays) {
+        (void)appId;
+        for (auto handle : overlay.windowHandles) {
+            if (handle == windowHandle) {
+                return true;
+            }
+        }
+    }
+#endif
     return false;
 }
 

@@ -2,20 +2,15 @@ use anyhow::Result;
 use futures::StreamExt;
 use tracing::{error, info};
 use zbus::proxy;
+use zbus::zvariant::OwnedFd;
 
 #[proxy(
     interface = "org.freedesktop.login1.Manager",
     default_service = "org.freedesktop.login1",
     default_path = "/org/freedesktop/login1"
 )]
-trait LoginManager {
-    fn inhibit(
-        &self,
-        what: &str,
-        who: &str,
-        why: &str,
-        mode: &str,
-    ) -> zbus::Result<zbus::zvariant::OwnedFd>;
+pub(crate) trait LoginManager {
+    fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<OwnedFd>;
 
     #[zbus(signal)]
     fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
@@ -68,16 +63,6 @@ impl PowerStateWatcher {
             p.path().to_string()
         };
 
-        let _inhibit_fd = manager
-            .inhibit(
-                "sleep:shutdown",
-                "digital-wellbeing",
-                "Flush session data before power state change",
-                "delay",
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to inhibit logind: {e}"))?;
-
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::spawn(async move {
@@ -125,7 +110,7 @@ impl PowerStateWatcher {
                     }
                     Some(signal) = session_removed_stream.next() => {
                         if let Ok(args) = signal.args()
-                            && args.object_path.to_string() == session_path
+                            && *args.object_path == session_path
                         {
                             info!("logind: session removed (logged out)");
                             tx.send(PowerEvent::LoggedOut).ok();
@@ -137,4 +122,27 @@ impl PowerStateWatcher {
 
         Ok(rx)
     }
+}
+
+/// Create a logind delay inhibitor for sleep/shutdown events.
+///
+/// The returned `OwnedFd` must be held open — when it is dropped, logind
+/// proceeds with the power state change. The caller is responsible for
+/// dropping this fd only after all pending state has been flushed.
+pub async fn inhibit_shutdown() -> anyhow::Result<OwnedFd> {
+    let conn = zbus::Connection::system()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to connect to system bus: {e}"))?;
+    let manager = LoginManagerProxy::new(&conn)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to get login manager: {e}"))?;
+    manager
+        .inhibit(
+            "sleep:shutdown",
+            "digital-wellbeing",
+            "Flush session data before power state change",
+            "delay",
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to inhibit logind: {e}"))
 }

@@ -8,7 +8,11 @@ pub enum PlatformEvent {
         title: WindowTitle,
         pid: Pid,
         uid: Uid,
-        overlay_shown: bool,
+    },
+    WindowBlocked {
+        app_id: AppId,
+        title: WindowTitle,
+        uid: Uid,
     },
     Unfocused,
     IdleActivity,
@@ -18,11 +22,6 @@ pub enum PlatformEvent {
     ShutDown,
     Locked,
     LoggedOut,
-    UserAction {
-        app_id: AppId,
-        action: u32,
-        uid: Uid,
-    },
 }
 
 pub trait Platform: Send + Sync + 'static {

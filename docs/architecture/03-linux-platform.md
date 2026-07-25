@@ -8,8 +8,9 @@ trait it implements is in [02-platform.md](./02-platform.md).
 ## Directory Structure
 
 platform/linux/ ├── mod.rs # impl Platform for Linux ├── manager.rs # D-Bus
-ManagerClient — plugin registration, signal subscriptions └── suspend.rs #
-systemd-logind D-Bus (PrepareForSleep/Shutdown)
+ManagerClient — plugin registration, signal subscriptions ├── screen_lock.rs #
+GNOME ScreenSaver D-Bus (lock/unlock) └── suspend.rs # systemd-logind D-Bus
+(PrepareForSleep/Shutdown)
 
 ## App Metadata Resolution
 
@@ -40,15 +41,23 @@ events — never a synthetic Unfocused:
 - Session removed → LoggedOut
 
 Slept/ShutDown/Locked/LoggedOut are close events: they credit the active
-interval via `accumulate_daily_usage` and clear the in-memory FocusState. They
+interval via `accumulate_daily_usage` and clear the in-memory `current_focus`. They
 carry no app_id.
 
 Flow (suspend/shutdown example; lock/logout are analogous):
 
-logind signal (PrepareForSleep / PrepareForShutdown = TRUE) │ ▼
-PowerStateWatcher (platform/linux/suspend.rs) │ │ INSERT Slept / ShutDown into
-events table │ (accumulate_daily_usage credits elapsed time, clears focus state)
-▼ Dropped inhibitor → power state change proceeds
+logind signal (PrepareForSleep / PrepareForShutdown = TRUE)
+│
+▼
+PowerStateWatcher (platform/linux/suspend.rs) creates logind delay inhibitor
+│
+├─► Sends Slept/ShutDown to EnforcerActor → buffered in memory
+├─► Waits 50ms for enforcer to process the event
+├─► Sends Flush with acknowledgement → events + deltas persisted to DB
+├─► Awaits flush completion
+│
+▼
+Drops the inhibitor fd → logind proceeds with power state change
 
 | State     | Signal                   | Event emitted |
 | --------- | ------------------------ | ------------- |
@@ -58,13 +67,28 @@ events table │ (accumulate_daily_usage credits elapsed time, clears focus stat
 | Lock      | Session Lock             | Locked        |
 | Logout    | Session removed          | LoggedOut     |
 
-The delay mode gives a few seconds to flush before the system pauses. LoggedOut
-is also emitted by the SIGTERM/SIGHUP handler on daemon termination (see
-[persistence/01-database.md](../persistence/01-database.md)).
+If the flush fails, the error is logged and the inhibitor is released anyway.
+Losing a few seconds of usage data is acceptable; blocking a power state change
+indefinitely is not.
 
-Error handling: if the DB flush fails, log the error and release the inhibitor
-anyway. Losing a few seconds of usage data is acceptable; blocking a power state
-change is not.
+Shutdown is also emitted by the SIGTERM/SIGHUP handler on daemon termination
+(see [persistence/01-database.md](../persistence/01-database.md)).
+
+### Resume & Screen Unlock
+
+On system resume (`PrepareForSleep(FALSE)`) the daemon checks the screen lock
+state:
+
+- **Screen locked** → no action. The `ResumedSystem` event is a no-op in the
+  enforcer. Focus resync happens when the screen is unlocked.
+- **Screen unlocked** → the daemon sends an `Unlocked` platform event to the
+  enforcer. The enforcer queries the database for the most recent
+  `WindowFocused` event from today and buffers a synthetic `WindowFocused` with
+  the same app_id and title. This restores focus tracking without waiting for a
+  compositor focus switch.
+
+On screen unlock (via the `ScreenLockWatcher`), the daemon sends an
+`Unlocked` platform event that triggers the same focus resync path.
 
 ## Compositor Support
 

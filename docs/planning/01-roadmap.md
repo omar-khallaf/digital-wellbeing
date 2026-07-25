@@ -86,8 +86,8 @@ milestones that the phases deliver.
 
 - [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentFocus`;
       `RegisterPlugin()` reverse discovery; `ActivityChanged` (FocusActivityTag)
-      signal; verify `SignedEnvelope` (read `DaemonPublicKey`, ±30s skew —
-      `features/01-blocking.md`, `architecture/05-daemon-auth.md`).
+signal; read `ActiveBlocks` property on startup and on `BlockStateChanged`
+signal (`features/01-blocking.md`).
 - [ ] `deploy/*.conf`: D-Bus system policy files for both interfaces
       (`architecture/10-deployment.md`).
 
@@ -108,7 +108,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 
 1. **Hyprland `FocusChanged`** — C++ `wellbeing-lockdown.so`, sdbus-cpp,
    `RENDER_PASS_POST_WINDOW` hook →
-   `WindowInfo{app_id,title,pid,uid, overlay_shown}` (`features/01-blocking.md`,
+   `WindowInfo{app_id,title,pid,uid}` (`features/01-blocking.md`,
    `architecture/04-plugin-ipc.md`).
 2. **Event-driven usage** — `EnforcerActor` writes one append-only `events` row
    per `WindowFocused`/`Unfocused`; `accumulate_daily_usage` updates
@@ -124,14 +124,15 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
    `tokio::sleep(remaining)` on focus; re-evaluates on expiry; cancels on switch
    (`features/01-blocking.md`).
 2. **Policy engine** — pure `evaluate(app_id, &[Policy], elapsed, now)` with AND
-   semantics; `Block`/`TimeLimit`/`Notify`; `extra_minutes`; `TimeWindow`
+   semantics; `Block`/`TimeLimit`/`Notify`; `TimeWindow`
    (`features/01-blocking.md`, `features/02-categorization.md`).
 3. **Overlay-only blocking** — gate-first evaluate before DB write; blocked app
    never logged; `grant_extension()` writes synthetic `WindowFocused` +
-   `extended`; no in-memory block state (`features/01-blocking.md`).
+   no in-memory block state — block state is declarative via ActiveBlocks
+(`features/01-blocking.md`).
 4. **Block overlay (plugin)** — OpenGL backdrop + `Extra`/`Close` buttons; traps
-   input; `UserAction` carries plugin `app_id`+`action` and daemon-signed
-   `policy_id` token (`features/01-blocking.md`).
+input; Close button handled locally in plugin via `LockManager::hideOverlay()`
+(`features/01-blocking.md`).
 
 ### UI · `Ready`
 
@@ -170,7 +171,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 ### v1 hardening · `Open`
 
 - [ ] **Crash recovery with active overlay** — re-issue `Overlay(show)` with
-      fresh token when plugin reports `overlay_shown==true`
+      re-read ActiveBlocks property on daemon restart
       (`12-open-questions.md#3`, `features/01-blocking.md`).
 - [ ] **GUI startup when daemon down** — D-Bus activation vs error dialog
       (`12-open-questions.md#2`).
@@ -191,7 +192,7 @@ already exist (`architecture/03-linux-platform.md`).
 1. **KWin** — `wellbeing-effect` (`KWin::Effect` + D-Bus).
 2. **Wayfire** — `wellbeing-plugin` (Wayfire API + D-Bus).
 3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies
-   `SignedEnvelope`).
+   `ActiveBlocks` property).
 4. **Shared extension template** — `LockManager`/render-hook/input-trap adapter
    over the D-Bus contract.
 

@@ -11,15 +11,14 @@
 // Provides:
 //   - FocusChanged    signal   (Option<WindowInfo> on every focus switch)
 //   - ActivityChanged signal   (FocusActivityTag: idle / resumed)
-//   - UserAction      signal   (button click — app_id + action only)
-//   - CurrentFocus    property (read-only FocusVariant)
 //
-// Uses declarative block state: reads the daemon's ActiveBlocks property
-// and subscribes to BlockStateChanged signal — never receives commands.
+// Uses declarative block state: reads the daemon's BlockedApps property
+// for initial sync and subscribes to BlockedAppsChanged signal for reactive
+// overlay updates — never receives commands, never polls on focus changes.
 //
-// Single source of truth for focus: g_ctx->currentFocus is the only focus
-// state. LockManager queries it via getFocusedApp() instead of receiving
-// duplicate setFocusedApp calls.
+// Single source of truth for focus: g_ctx->focusState is the only focus
+// state (serialized over D-Bus as FocusChanged). LockManager queries it
+// via getFocusedApp() instead of receiving duplicate setFocusedApp calls.
 //
 // See docs/architecture/04-plugin-ipc.md and 05-daemon-auth.md.
 // =============================================================================
@@ -54,7 +53,6 @@ using wellbeing::IdleTracker;
 using wellbeing::logErr;
 using wellbeing::logInfo;
 
-// Handle returned by PLUGIN_INIT; required by Hyprland plugin API.
 inline HANDLE PHANDLE = nullptr;
 
 // =============================================================================
@@ -69,17 +67,14 @@ namespace {
 // On state transitions, IdleTracker fires its injected callback which
 // emits the D-Bus ActivityChanged signal and logs the transition.
 
-/// Returns true when the focused Hyprland window has an active Wayland
-/// idle-inhibit protocol inhibitor (zwp_idle_inhibitor_v1).
-/// Uses the weak ref stored in PluginState::focusedWindow (set on every
-/// focus switch by WINDOW_FOCUS_HOOK) — no window iteration needed.
-/// Delegates to CInputManager::isWindowInhibiting() which checks both
-/// the idle-inhibit protocol and shell surface constraints.
+/// Whether the focused window has an active idle inhibitor.
+/// Delegates to CInputManager::isWindowInhibiting() via the weak ref
+/// stored in PluginState::focusedHyprWindow (set by WINDOW_FOCUS_HOOK).
 auto focusedWindowHasIdleInhibitor() -> bool {
     if (!g_pInputManager) {
         return false;
     }
-    const auto window = g_ctx->focusedWindow.lock();
+    const auto window = g_ctx->focusedHyprWindow.lock();
     if (!window) {
         return false;
     }
@@ -281,66 +276,43 @@ void registerInputHooks() {
 }
 
 void registerWindowHooks() {
-    static auto WINDOW_CLOSE_HOOK = Event::bus()->m_events.window.close.listen([](const PHLWINDOW &w) -> void {
-        try {
-            // Focus tracking is handled entirely by the window.active hook below.
-            // Hyprland fires window.active reliably for every focus transition
-            // (window→window, window→desktop, desktop→window).  Preemptively
-            // resetting currentFocus here would emit stale Desktop signals when
-            // focus actually transfers to another window (e.g. terminal after
-            // closing a browser) before window.active catches up.
-            (void)w;
-        } catch (const std::exception &e) {
-            logErr("window close: " + std::string(e.what()));
-        } catch (...) {
-            logErr("window close: unknown exception");
-        }
-    });
+    // Focus tracking handled by window.active hook — fires reliably
+    // for every focus transition and avoids stale Desktop signals.
+    static auto WINDOW_CLOSE_HOOK =
+        Event::bus()->m_events.window.close.listen([](const PHLWINDOW &w) -> void { (void)w; });
 
     static auto WINDOW_FOCUS_HOOK =
         Event::bus()->m_events.window.active.listen([](const PHLWINDOW &w, Desktop::eFocusReason) -> void {
             try {
                 if (!w) {
-                    // Focus moved to desktop / no window
-                    g_ctx->currentFocus.reset();
-                    g_ctx->focusedWindow.reset();
+                    g_ctx->focusState.reset();
+                    g_ctx->focusedHyprWindow.reset();
                     g_ctx->lockManager->setFocusedApp(std::nullopt);
                 } else {
-                    // Populate window info from Hyprland's CWindow fields.
-                    // Use m_initialClass (stable) instead of m_class (changes at runtime).
                     const auto appIdRaw = w->m_initialClass;
                     const auto title = w->m_title;
                     const auto pid = w->getPID();
 
                     auto appId = AppId::from_raw(appIdRaw);
                     if (!appId.has_value()) {
-                        // Skip focus events for windows without a valid class
-                        // (e.g. tooltips, popups). Keep last known focus.
                         return;
                     }
 
-                    const bool shown = g_ctx->lockManager->isOverlayShown(*appId);
-
-                    g_ctx->focusedWindow = w;
-                    g_ctx->currentFocus = WindowInfo{
+                    g_ctx->focusedHyprWindow = w;
+                    g_ctx->focusState = WindowInfo{
                         .appId = *appId,
                         .title = title,
                         .pid = static_cast<uint32_t>(pid),
                         .uid = g_ctx->uid,
-                        .overlayShown = shown,
                     };
-                    // LockManager queries g_ctx->currentFocus directly as single
+                    // LockManager queries g_ctx->focusState directly as single
                     // source of truth. setFocusedApp is only for initial sync.
                     g_ctx->lockManager->setFocusedApp(appId);
-
-                    // Re-sync ActiveBlocks on focus change for low-latency
-                    // overlay state updates (currently polling-based).
-                    if (g_ctx->manager) {
-                        g_ctx->manager->readActiveBlocksAsync();
-                    }
+                    // Overlay state updates are handled reactively via the
+                    // BlockedAppsChanged signal subscription in WellbeingManager.
                 }
-                if (g_ctx->manager) {
-                    g_ctx->manager->emitFocusChanged(g_ctx->currentFocus);
+                if (g_ctx->wellbeingManager) {
+                    g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
                 }
             } catch (const std::exception &e) {
                 logErr("window focus: " + std::string(e.what()));
@@ -348,12 +320,50 @@ void registerWindowHooks() {
                 logErr("window focus: unknown exception");
             }
         });
+    static auto WINDOW_TITLE_HOOK = Event::bus()->m_events.window.title.listen([](const PHLWINDOW &w) -> void {
+        try {
+            const auto focused = g_ctx->focusedHyprWindow.lock();
+
+            // Startup sync: window.active fired before our hooks were
+            // registered, so we never saw the initial focus.  The first
+            // title event after plugin load is reliably from the focused
+            // window — use it to initialize focus state.
+            if (!focused && !g_ctx->focusState.has_value()) {
+                const auto appIdRaw = w->m_initialClass;
+                const auto title = w->m_title;
+                const auto pid = w->getPID();
+
+                auto appId = AppId::from_raw(appIdRaw);
+                if (!appId.has_value()) return;
+
+                g_ctx->focusedHyprWindow = w;
+                g_ctx->focusState = WindowInfo{
+                    .appId = *appId,
+                    .title = title,
+                    .pid = static_cast<uint32_t>(pid),
+                    .uid = g_ctx->uid,
+                };
+                g_ctx->lockManager->setFocusedApp(appId);
+                if (g_ctx->wellbeingManager) g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
+                return;
+            }
+
+            if (!focused || focused != w || !g_ctx->focusState.has_value()) return;
+
+            g_ctx->focusState->title = w->m_title;
+            if (g_ctx->wellbeingManager) g_ctx->wellbeingManager->emitFocusChanged(g_ctx->focusState);
+        } catch (const std::exception &e) {
+            logErr("window title: " + std::string(e.what()));
+        } catch (...) {
+            logErr("window title: unknown exception");
+        }
+    });
 
     (void)WINDOW_CLOSE_HOOK;
     (void)WINDOW_FOCUS_HOOK;
+    (void)WINDOW_TITLE_HOOK;
 }
 
-/// Register all compositor event listeners. Called ONCE from PLUGIN_INIT.
 void registerHooks() {
     registerRenderHook();
     registerInputHooks();
@@ -373,35 +383,26 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     // ── Version hash check (prevents crashes from mismatched headers) ──
     {
-        const std::string HASH = __hyprland_api_get_hash();
-        const std::string CLIENT_HASH = __hyprland_api_get_client_hash();
+        const std::string hash = __hyprland_api_get_hash();
+        const std::string client_hash = __hyprland_api_get_client_hash();
 
-        if (HASH != CLIENT_HASH) {
+        if (hash != client_hash) {
             HyprlandAPI::addNotification(PHANDLE,
                                          "[wellbeing-lockdown] Failure in initialization: Version mismatch (headers "
                                          "ver is not equal to running hyprland ver)",
                                          CHyprColor{1.0, 0.2F, 0.2F, 1.0}, 5000);
-            logErr("version mismatch: headers hash '" + CLIENT_HASH + "' != compositor hash '" + HASH + "'");
-            throw std::runtime_error("version mismatch: headers hash '" + CLIENT_HASH + "' != compositor hash '" +
-                                     HASH + "'");
+            logErr("version mismatch: headers hash '" + client_hash + "' != compositor hash '" + hash + "'");
+            throw std::runtime_error("version mismatch: headers hash '" + client_hash + "' != compositor hash '" +
+                                     hash + "'");
         }
     }
 
-    // ── Create PluginState (RAII) ──────────────────────────────────────
     auto state = std::make_unique<wellbeing::PluginState>();
 
-    // ── Cache uid in PluginState ───────────────────────────────────────
     state->uid = static_cast<uint32_t>(getuid());
 
-    // ── Create shared LockManager (used by both hooks and WellbeingManager) ──
     state->lockManager = std::make_shared<LockManager>();
 
-    // ── Create BOTH D-Bus connections ───────────────────────────────────
-    // Always connect to system and session busses. The daemon may be on
-    // either one; resolveActiveDaemonBus() selects the active bus at
-    // construction and re-selects on NameOwnerChanged. No background retry
-    // thread needed — NameOwnerChanged watches on both busses detect
-    // daemon (re)appearance without polling.
     try {
         auto sysConn = sdbus::createSystemBusConnection();
         auto sessConn = sdbus::createSessionBusConnection();
@@ -413,7 +414,7 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             return PLUGIN_DESCRIPTION_INFO{"", "", "", ""};
         }
 
-        state->manager =
+        state->wellbeingManager =
             std::make_unique<WellbeingManager>(state->lockManager, state->sysConnection, state->sessConnection);
     } catch (const std::exception &e) {
         logErr("PLUGIN_INIT: D-Bus init failed: " + std::string(e.what()));
@@ -426,16 +427,16 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     // destroyed before PluginState during PLUGIN_EXIT).
     {
         auto onTransition = [](IdleState newState) -> void {
-            if (!g_ctx || !g_ctx->manager) {
+            if (!g_ctx || !g_ctx->wellbeingManager) {
                 return;
             }
             switch (newState) {
             case IdleState::Idle:
-                g_ctx->manager->emitActivityChanged(FocusActivityTag::Idle);
+                g_ctx->wellbeingManager->emitActivityChanged(FocusActivityTag::Idle);
                 logInfo("activity: idle");
                 break;
             case IdleState::Active:
-                g_ctx->manager->emitActivityChanged(FocusActivityTag::Resumed);
+                g_ctx->wellbeingManager->emitActivityChanged(FocusActivityTag::Resumed);
                 logInfo("activity: resumed");
                 break;
             }
@@ -447,13 +448,10 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             );
     }
 
-    // ── Install global state after everything is ready ─────────────────
     g_ctx = std::move(state);
 
-    // ── Register compositor event listeners (after bus is ready) ──────
     registerHooks();
 
-    // ── Return description ────────────────────────────────────────────
     return PLUGIN_DESCRIPTION_INFO{
         "wellbeing-lockdown",
         "Digital Wellbeing — compositor plugin for screen-time "

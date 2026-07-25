@@ -5,14 +5,15 @@ use std::collections::HashMap;
 use diesel::{ExpressionMethods, QueryDsl, insert_into, update};
 use diesel_async::RunQueryDsl;
 use wellbeing_core::{
-    AppCategoryRow, Category, CategoryId, DailySummary, DailyUsageEntry, DayEventRow, PolicyData,
-    PolicyInput, TimeWindow,
+    AppCategoryRow, Category, CategoryId, DailySummary, DailyUsageByAppEntry,
+    DailyUsageByTitleEntry, DailyUsageByTitleSummary, DayEventRow, PolicyData, PolicyInput,
+    TimeWindow,
 };
 
 use crate::policy::data::{NewPolicy, UpdatePolicy};
 use crate::policy::{DieselPolicyRepo, PolicyRepo};
 use crate::store::DbPool;
-use crate::store::schema::{app_categories, categories, daily_usage, events};
+use crate::store::schema::{app_categories, categories, daily_usage, daily_usage_by_title, events};
 
 pub(crate) async fn list_policies(
     pool: &DbPool,
@@ -62,7 +63,6 @@ pub(crate) async fn create_policy(
         created_by: caller as i32,
         owner_id: input.owner_id as i32,
         time_limit_minutes: time_limit,
-        extra_minutes: input.extra_minutes as i32,
         notification_repeat_interval_minutes: notify_repeat,
         schedule_start_hour,
         schedule_end_hour,
@@ -116,7 +116,6 @@ pub(crate) async fn update_policy(
         } else {
             None
         }),
-        extra_minutes: Some(input.extra_minutes as i32),
         notification_repeat_interval_minutes: Some(
             if input.notification_repeat_interval_minutes > 0 {
                 Some(input.notification_repeat_interval_minutes as i32)
@@ -148,12 +147,11 @@ pub(crate) async fn get_policy_owner(pool: &DbPool, id: i32) -> anyhow::Result<i
     repo.get_policy_owner(&mut conn, id).await
 }
 
-/// Get daily usage entries for a date and user.
 pub(crate) async fn get_daily_usage(
     pool: &DbPool,
     date: &str,
     uid: u32,
-) -> anyhow::Result<Vec<DailyUsageEntry>> {
+) -> anyhow::Result<Vec<DailyUsageByAppEntry>> {
     let mut conn = pool.get().await?;
 
     let rows: Vec<crate::policy::DailyUsageRow> = daily_usage::table
@@ -165,7 +163,6 @@ pub(crate) async fn get_daily_usage(
             daily_usage::app_id,
             daily_usage::closed_millis,
             daily_usage::open_millis,
-            daily_usage::extended,
         ))
         .load(&mut conn)
         .await?;
@@ -173,18 +170,100 @@ pub(crate) async fn get_daily_usage(
     Ok(rows.into_iter().map(daily_usage_row_to_entry).collect())
 }
 
-/// Convert a `DailyUsageRow` to a `DailyUsageEntry` for D-Bus transport.
-fn daily_usage_row_to_entry(r: crate::policy::DailyUsageRow) -> DailyUsageEntry {
-    DailyUsageEntry {
+fn daily_usage_row_to_entry(r: crate::policy::DailyUsageRow) -> DailyUsageByAppEntry {
+    DailyUsageByAppEntry {
         date: r.date,
         user_id: r.user_id as u32,
         app_id: r.app_id,
         total_millis: (r.closed_millis as i64) + (r.open_millis as i64),
-        extended: r.extended,
     }
 }
 
-/// Get daily usage grouped by date for a date range.
+pub(crate) async fn get_daily_usage_by_title(
+    pool: &DbPool,
+    date: &str,
+    uid: u32,
+) -> anyhow::Result<Vec<DailyUsageByTitleEntry>> {
+    let mut conn = pool.get().await?;
+
+    let rows: Vec<(String, i32, String, String, i32, i32)> = daily_usage_by_title::table
+        .filter(daily_usage_by_title::date.eq(date))
+        .filter(daily_usage_by_title::user_id.eq(uid as i32))
+        .select((
+            daily_usage_by_title::date,
+            daily_usage_by_title::user_id,
+            daily_usage_by_title::app_id,
+            daily_usage_by_title::title,
+            daily_usage_by_title::closed_millis,
+            daily_usage_by_title::open_millis,
+        ))
+        .load(&mut conn)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(date, user_id, app_id, title, closed, open)| DailyUsageByTitleEntry {
+                date,
+                user_id: user_id as u32,
+                app_id,
+                title,
+                total_millis: (closed as i64) + (open as i64),
+            },
+        )
+        .collect())
+}
+
+pub(crate) async fn get_usage_range_by_title(
+    pool: &DbPool,
+    start_date: &str,
+    end_date: &str,
+    uid: u32,
+) -> anyhow::Result<Vec<DailyUsageByTitleSummary>> {
+    let mut conn = pool.get().await?;
+
+    let rows: Vec<(String, i32, String, String, i32, i32)> = daily_usage_by_title::table
+        .filter(daily_usage_by_title::date.ge(start_date))
+        .filter(daily_usage_by_title::date.le(end_date))
+        .filter(daily_usage_by_title::user_id.eq(uid as i32))
+        .select((
+            daily_usage_by_title::date,
+            daily_usage_by_title::user_id,
+            daily_usage_by_title::app_id,
+            daily_usage_by_title::title,
+            daily_usage_by_title::closed_millis,
+            daily_usage_by_title::open_millis,
+        ))
+        .load(&mut conn)
+        .await?;
+
+    let mut summaries: Vec<DailyUsageByTitleSummary> = Vec::new();
+    for (date, user_id, app_id, title, closed, open) in rows {
+        let entry = DailyUsageByTitleEntry {
+            date: date.clone(),
+            user_id: user_id as u32,
+            app_id,
+            title,
+            total_millis: (closed as i64) + (open as i64),
+        };
+
+        if let Some(s) = summaries.last_mut()
+            && s.date == date
+        {
+            s.entries.push(entry);
+            continue;
+        }
+
+        summaries.push(DailyUsageByTitleSummary {
+            date,
+            user_id: user_id as u32,
+            entries: vec![entry],
+        });
+    }
+
+    Ok(summaries)
+}
+
 pub(crate) async fn get_usage_range(
     pool: &DbPool,
     start_date: &str,
@@ -203,12 +282,11 @@ pub(crate) async fn get_usage_range(
             daily_usage::app_id,
             daily_usage::closed_millis,
             daily_usage::open_millis,
-            daily_usage::extended,
         ))
         .load(&mut conn)
         .await?;
 
-    let mut grouped: HashMap<String, Vec<DailyUsageEntry>> = HashMap::new();
+    let mut grouped: HashMap<String, Vec<DailyUsageByAppEntry>> = HashMap::new();
     for r in rows {
         grouped
             .entry(r.date.clone())
@@ -342,9 +420,6 @@ pub(crate) async fn set_app_category(
     Ok(())
 }
 
-/// Get raw events for a user within a millisecond-range.
-///
-/// Queries the `events` table directly. Returns `DayEventRow` for D-Bus transport.
 type EventRowRaw = (i32, i32, i32, i64, Option<String>, Option<String>);
 pub(crate) async fn get_day_events(
     pool: &DbPool,

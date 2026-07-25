@@ -27,22 +27,20 @@ consumer of daemon block state.
 
 Signals (plugin -> daemon):
 
-| Signal          | Payload                                                                         | When                                     |
-| --------------- | ------------------------------------------------------------------------------- | ---------------------------------------- |
-| FocusChanged    | v — variant: 1 (Desktop) or 2 + struct {app_id, title, pid, uid, overlay_shown} | On every compositor focus switch         |
-| ActivityChanged | FocusActivityTag — Idle=0, Resumed=1                                            | User idle state changes                  |
-| UserAction      | {app_id, action}                                                                | User presses a button on a block overlay |
+| Signal          | Payload                                         | When                                     |
+| --------------- | ----------------------------------------------- | ---------------------------------------- |
+| FocusChanged    | v — variant: u32(0) = Desktop, u32(1) + struct{app_id, title, pid, uid} = WindowFocused, u32(2) + struct{app_id, title, pid, uid} = WindowBlocked | On every compositor focus switch         |
+| ActivityChanged | FocusActivityTag — Idle=0, Resumed=1            | User idle state changes                  |
 
 Property (readable):
 
-| Property     | Type | Returns                                                  |
-| ------------ | ---- | -------------------------------------------------------- |
-| CurrentFocus | v    | Same variant as FocusChanged — queryable source of truth |
+| Property     | Type | Returns                                                                 |
+| ------------ | ---- | ----------------------------------------------------------------------- |
+| CurrentFocus | v    | Same variant as FocusChanged — Desktop / WindowFocused / WindowBlocked   |
 
-UserAction simplified: the daemon is the authority on which policy is blocking
-which app. When UserAction arrives, the daemon looks up the active block state
-for app_id and derives policy_id from its own records — the plugin does not echo
-back a signed token.
+Close button handling is entirely local to the plugin. The plugin calls
+`LockManager::hideOverlay()` to dismiss the overlay without sending any signal
+to the daemon.
 
 ### CurrentFocus property
 
@@ -51,6 +49,14 @@ GUI that subscribes after the fact misses the current state. CurrentFocus is a
 readable D-Bus property that returns the same variant as the FocusChanged
 signal, giving clients a queryable, always-current source of truth on startup.
 The signal remains useful as a lightweight change notification.
+
+The daemon also uses CurrentFocus after termination events (suspend, lock,
+logout) to resync focus tracking. On resume (if screen unlocked), screen
+unlock, or login, the daemon queries each registered plugin's CurrentFocus
+property and buffers the appropriate event — WindowFocused, WindowBlocked,
+or Unfocused (when the property returns Desktop). This restores tracking
+without waiting for a compositor focus switch. The property-query path gates
+on login + unlock state; signal delivery already implies both.
 
 ## Declarative Block State — org.wellbeing.v1.Controller
 
@@ -88,7 +94,7 @@ The plugin treats every window of the app_id as a single logical surface. When
 an app_id appears in ActiveBlocks, the plugin renders a block overlay over every
 window owned by the app and traps both mouse and keyboard input on each blocked
 window. The overlay presents the daemon-specified action buttons
-(available_actions); a click on a button is reported back via UserAction.
+(available_actions).
 
 Multiple distinct apps can be blocked at the same time. The plugin tracks an
 unordered set of active overlays keyed by app_id, populated entirely from daemon
@@ -170,7 +176,7 @@ or session |-- Call RegisterPlugin on the selected connection
 Daemon receives RegisterPlugin: |-- Reads caller's unique bus name from
 header.sender() |-- Reads SO_PEERCRED uid from connection credentials |--
 Creates proxy to plugin via its unique bus name |-- Subscribes to FocusChanged +
-ActivityChanged + UserAction streams |-- Plugin reads ActiveBlocks property
+ActivityChanged streams |-- Plugin reads ActiveBlocks property
 (initial state sync) |-- Plugin subscribes to BlockStateChanged signal (live
 updates) |-- Plugin reconciles overlays: shows for any app in ActiveBlocks
 
@@ -209,10 +215,10 @@ blocked: true} | v Plugin (via signal subscription + property read) | |--
 Receives BlockStateChanged -> updates local overlay set |-- Reads ActiveBlocks
 for full block details (reason, actions, etc.) |-- Renders overlay on all
 windows of app X | |-- Focus changes to app X -> overlay already present |--
-Focus changes to app Y -> overlay for X persists | |-- User clicks overlay
-button -> Emits UserAction {app_id: X, action: Extra|Close} -> Daemon receives,
-looks up policy_id from ActiveBlocks -> Grants extension or removes block ->
-Updates ActiveBlocks -> plugin removes overlay
+Focus changes to app Y -> overlay for X persists | |-- User clicks Close
+button -> Plugin calls LockManager::hideOverlay() locally -> Daemon state
+unchanged (block resolves when app no longer focused, or on next policy
+re-evaluation)
 
 ## Degraded Operation
 

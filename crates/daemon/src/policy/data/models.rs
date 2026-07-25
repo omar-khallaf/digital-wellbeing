@@ -16,7 +16,6 @@ pub(crate) struct PolicyRow {
     pub(crate) created_by: i32,
     pub(crate) owner_id: i32,
     pub(crate) time_limit_minutes: Option<i32>,
-    pub(crate) extra_minutes: i32,
     pub(crate) notification_repeat_interval_minutes: Option<i32>,
     pub(crate) schedule_start_hour: Option<i32>,
     pub(crate) schedule_end_hour: Option<i32>,
@@ -29,7 +28,6 @@ pub(crate) struct PolicyRow {
 impl PolicyRow {
     pub(crate) fn into_domain_policy(self) -> policy::Policy {
         let tlm = self.time_limit_minutes.map_or(1, |v| (v as i64).max(1));
-        let extra = self.extra_minutes as i64;
         let repeat = self
             .notification_repeat_interval_minutes
             .map(|v| v as i64)
@@ -56,6 +54,7 @@ impl PolicyRow {
             created_at: self.created_at.parse().ok().unwrap_or_else(Utc::now),
             updated_at: self.updated_at.parse().ok().unwrap_or_else(Utc::now),
         };
+        let default_cat_id = CategoryId(self.category_id.unwrap_or(0) as i64);
 
         match (self.action, self.app_id) {
             (0, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
@@ -70,10 +69,7 @@ impl PolicyRow {
                     app_id: AppId::new(&aid).unwrap_or_else(|_| AppId::new("unknown").unwrap()),
                 },
                 meta,
-                action: policy::AppAction::TimeLimit {
-                    limit_minutes: tlm,
-                    extra_minutes: extra,
-                },
+                action: policy::AppAction::TimeLimit { limit_minutes: tlm },
             })),
             (2, Some(aid)) => policy::Policy::App(Box::new(policy::AppPolicy {
                 target: policy::AppTarget {
@@ -87,24 +83,21 @@ impl PolicyRow {
             })),
             (0, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
+                    category_id: default_cat_id,
                 },
                 meta,
                 action: policy::CategoryAction::Block,
             })),
             (1, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
+                    category_id: default_cat_id,
                 },
                 meta,
-                action: policy::CategoryAction::TimeLimit {
-                    limit_minutes: tlm,
-                    extra_minutes: extra,
-                },
+                action: policy::CategoryAction::TimeLimit { limit_minutes: tlm },
             })),
             (2, None) => policy::Policy::Category(Box::new(policy::CategoryPolicy {
                 target: policy::CategoryTarget {
-                    category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
+                    category_id: default_cat_id,
                 },
                 meta,
                 action: policy::CategoryAction::Notify {
@@ -119,7 +112,7 @@ impl PolicyRow {
                 );
                 policy::Policy::Category(Box::new(policy::CategoryPolicy {
                     target: policy::CategoryTarget {
-                        category_id: CategoryId(self.category_id.unwrap_or(0) as i64),
+                        category_id: default_cat_id,
                     },
                     meta,
                     action: policy::CategoryAction::Block,
@@ -137,5 +130,4 @@ pub(crate) struct DailyUsageRow {
     pub(crate) app_id: String,
     pub(crate) closed_millis: i32,
     pub(crate) open_millis: i32,
-    pub(crate) extended: bool,
 }

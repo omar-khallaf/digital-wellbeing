@@ -6,28 +6,21 @@ use wellbeing_core::BlockReason;
 use super::domain::*;
 
 /// Compute the tracked state for an app given usage data and policy config.
-pub fn app_state(usage: (i64, bool), policy: &PolicyConfig) -> TrackedApp {
+pub fn app_state(usage: i64, policy: &PolicyConfig) -> TrackedApp {
     match policy {
         PolicyConfig::Block { .. } => {
             unreachable!("Block policy has no tracked state")
         }
         PolicyConfig::TimeLimit {
-            time_limit_minutes,
-            extra_minutes,
-            ..
-        } => {
-            // usage.0 is already in minutes (converted from ms at policy boundary)
-            let app = if usage.1 {
-                TimeLimitedApp::Extended(usage.0, *time_limit_minutes + *extra_minutes)
-            } else {
-                TimeLimitedApp::Normal(usage.0, *time_limit_minutes)
-            };
-            TrackedApp::TimeLimited(app)
-        }
+            time_limit_minutes, ..
+        } => TrackedApp::TimeLimited(TimeLimitedApp {
+            used: usage,
+            limit: *time_limit_minutes,
+        }),
         PolicyConfig::Notify {
             time_limit_minutes, ..
         } => TrackedApp::TimeTracked(TimeTrackedApp {
-            used: usage.0,
+            used: usage,
             limit: *time_limit_minutes,
         }),
     }
@@ -57,7 +50,6 @@ fn eval_block_policy(policy: &PolicyConfig, first_block: bool) -> Option<PolicyV
 fn eval_timelimit_policy(
     policy: &PolicyConfig,
     elapsed_usage: i64,
-    extended: bool,
     first_block: bool,
 ) -> Option<PolicyVerdict> {
     if first_block {
@@ -68,14 +60,9 @@ fn eval_timelimit_policy(
             id,
             app_id,
             time_limit_minutes,
-            extra_minutes,
             ..
         } => {
-            let effective_limit_minutes = if extended {
-                *time_limit_minutes + *extra_minutes
-            } else {
-                *time_limit_minutes
-            };
+            let effective_limit_minutes = *time_limit_minutes;
             let remaining = effective_limit_minutes - elapsed_usage;
             if remaining <= 0 {
                 let reason = if app_id.is_some() {
@@ -126,7 +113,7 @@ fn eval_notify_policy(
 }
 
 /// Evaluate policies for an app and produce a verdict.
-pub fn evaluate(policies: &[PolicyConfig], elapsed_usage: i64, extended: bool) -> PolicyVerdict {
+pub fn evaluate(policies: &[PolicyConfig], elapsed_usage: i64) -> PolicyVerdict {
     let mut first_block: Option<PolicyVerdict> = None;
     let mut first_notify: Option<PolicyVerdict> = None;
 
@@ -134,9 +121,9 @@ pub fn evaluate(policies: &[PolicyConfig], elapsed_usage: i64, extended: bool) -
         if !policy.active() {
             continue;
         }
-        if let Some(block) = eval_block_policy(policy, first_block.is_some()).or_else(|| {
-            eval_timelimit_policy(policy, elapsed_usage, extended, first_block.is_some())
-        }) {
+        if let Some(block) = eval_block_policy(policy, first_block.is_some())
+            .or_else(|| eval_timelimit_policy(policy, elapsed_usage, first_block.is_some()))
+        {
             first_block = Some(block);
         } else if let Some(notify) =
             eval_notify_policy(policy, elapsed_usage, first_notify.is_some())
@@ -165,8 +152,6 @@ mod tests {
 
     use super::*;
 
-    // PolicyConfig test helpers removed — callers construct variants directly.
-
     #[test]
     fn test_evaluate_all_pass() {
         let policies = vec![
@@ -175,7 +160,6 @@ mod tests {
                 app_id: Some(AppId::new("test.app").unwrap()),
                 category_id: None,
                 time_limit_minutes: 60,
-                extra_minutes: 300,
                 active: true,
             },
             PolicyConfig::Notify {
@@ -187,13 +171,13 @@ mod tests {
                 active: true,
             },
         ];
-        let verdict = evaluate(&policies, 50, false);
+        let verdict = evaluate(&policies, 50);
         assert!(matches!(verdict, PolicyVerdict::Ok));
     }
 
     #[test]
     fn test_evaluate_empty_policies() {
-        let verdict = evaluate(&[], 0, false);
+        let verdict = evaluate(&[], 0);
         assert!(matches!(verdict, PolicyVerdict::Ok));
     }
 
@@ -205,7 +189,7 @@ mod tests {
             category_id: None,
             active: true,
         }];
-        let verdict = evaluate(&policies, 0, false);
+        let verdict = evaluate(&policies, 0);
         assert!(matches!(
             verdict,
             PolicyVerdict::Block {
@@ -223,7 +207,7 @@ mod tests {
             category_id: Some(CategoryId(1)),
             active: true,
         }];
-        let verdict = evaluate(&policies, 0, false);
+        let verdict = evaluate(&policies, 0);
         assert!(matches!(
             verdict,
             PolicyVerdict::Block {
@@ -240,10 +224,9 @@ mod tests {
             app_id: Some(AppId::new("test.app").unwrap()),
             category_id: None,
             time_limit_minutes: 60,
-            extra_minutes: 300,
             active: true,
         }];
-        let verdict = evaluate(&policies, 4000, false);
+        let verdict = evaluate(&policies, 4000);
         assert!(matches!(
             verdict,
             PolicyVerdict::Block {
@@ -260,10 +243,9 @@ mod tests {
             app_id: None,
             category_id: Some(CategoryId(1)),
             time_limit_minutes: 60,
-            extra_minutes: 300,
             active: true,
         }];
-        let verdict = evaluate(&policies, 4000, false);
+        let verdict = evaluate(&policies, 4000);
         assert!(matches!(
             verdict,
             PolicyVerdict::Block {
@@ -283,7 +265,7 @@ mod tests {
             notification_repeat_interval_minutes: None,
             active: true,
         }];
-        let verdict = evaluate(&policies, 4000, false);
+        let verdict = evaluate(&policies, 4000);
         assert!(matches!(verdict, PolicyVerdict::Notify { .. }));
     }
 
@@ -305,7 +287,7 @@ mod tests {
                 active: true,
             },
         ];
-        let verdict = evaluate(&policies, 4000, false);
+        let verdict = evaluate(&policies, 4000);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
     }
 
@@ -323,11 +305,10 @@ mod tests {
                 app_id: Some(AppId::new("test.app").unwrap()),
                 category_id: None,
                 time_limit_minutes: 100,
-                extra_minutes: 300,
                 active: true,
             },
         ];
-        let verdict = evaluate(&policies, 0, false);
+        let verdict = evaluate(&policies, 0);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
     }
 
@@ -339,7 +320,6 @@ mod tests {
                 app_id: Some(AppId::new("test.app").unwrap()),
                 category_id: None,
                 time_limit_minutes: 2,
-                extra_minutes: 300,
                 active: true,
             },
             PolicyConfig::Block {
@@ -349,7 +329,7 @@ mod tests {
                 active: true,
             },
         ];
-        let verdict = evaluate(&policies, 200, false);
+        let verdict = evaluate(&policies, 200);
         assert!(
             matches!(verdict, PolicyVerdict::Block { policy_id, .. } if policy_id == PolicyId(1))
         );
@@ -357,29 +337,13 @@ mod tests {
 
     #[test]
     fn test_evaluate_inactive_policy_skipped() {
-        let p = PolicyConfig::Block {
+        let policies = vec![PolicyConfig::Block {
             id: PolicyId(1),
             app_id: Some(AppId::new("test.app").unwrap()),
             category_id: None,
-            active: true,
-        };
-        let policies = match p {
-            PolicyConfig::Block {
-                id,
-                app_id,
-                category_id,
-                ..
-            } => {
-                vec![PolicyConfig::Block {
-                    id,
-                    app_id,
-                    category_id,
-                    active: false,
-                }]
-            }
-            _ => unreachable!(),
-        };
-        let verdict = evaluate(&policies, 0, false);
+            active: false,
+        }];
+        let verdict = evaluate(&policies, 0);
         assert!(matches!(verdict, PolicyVerdict::Ok));
     }
 
@@ -393,7 +357,7 @@ mod tests {
             notification_repeat_interval_minutes: Some(5),
             active: true,
         }];
-        let verdict = evaluate(&policies, 60, false);
+        let verdict = evaluate(&policies, 60);
         assert!(matches!(
             verdict,
             PolicyVerdict::Notify {
@@ -410,11 +374,9 @@ mod tests {
             app_id: Some(AppId::new("test.app").unwrap()),
             category_id: None,
             time_limit_minutes: 60,
-            extra_minutes: 300,
             active: true,
         }];
-        // elapsed_usage in minutes: 60 minutes used, limit 60 minutes → blocked
-        let verdict = evaluate(&policies, 60, false);
+        let verdict = evaluate(&policies, 60);
         assert!(matches!(verdict, PolicyVerdict::Block { .. }));
     }
 
@@ -428,8 +390,7 @@ mod tests {
             notification_repeat_interval_minutes: None,
             active: true,
         }];
-        // elapsed_usage in minutes: 60 minutes used, limit 60 minutes → notify
-        let verdict = evaluate(&policies, 60, false);
+        let verdict = evaluate(&policies, 60);
         assert!(matches!(verdict, PolicyVerdict::Notify { .. }));
     }
 
@@ -442,7 +403,7 @@ mod tests {
             category_id: None,
             active: true,
         };
-        app_state((0, false), &policy);
+        app_state(0, &policy);
     }
 
     #[test]
@@ -452,38 +413,30 @@ mod tests {
             app_id: Some(AppId::new("test.app").unwrap()),
             category_id: None,
             time_limit_minutes: 60,
-            extra_minutes: 300,
             active: true,
         };
-        // usage in minutes: 30 min used, 60 min limit → 30 min remaining
-        let state = app_state((30, false), &policy);
+        let state = app_state(30, &policy);
         match state {
             TrackedApp::TimeLimited(app) => {
                 assert_eq!(app.remaining(), 30);
-                assert!(app.can_extend());
-                assert_eq!(app.effective_limit(), 60);
             }
             _ => panic!("expected TimeLimited"),
         }
     }
 
     #[test]
-    fn test_app_state_time_limit_extended() {
+    fn test_app_state_time_limit_normal_base_used() {
         let policy = PolicyConfig::TimeLimit {
             id: PolicyId(1),
             app_id: Some(AppId::new("test.app").unwrap()),
             category_id: None,
             time_limit_minutes: 60,
-            extra_minutes: 10,
             active: true,
         };
-        // usage in minutes: 50 min used, 70 min effective limit → 20 min remaining
-        let state = app_state((50, true), &policy);
+        let state = app_state(50, &policy);
         match state {
             TrackedApp::TimeLimited(app) => {
-                assert_eq!(app.remaining(), 20);
-                assert!(!app.can_extend());
-                assert_eq!(app.effective_limit(), 70);
+                assert_eq!(app.remaining(), 10);
             }
             _ => panic!("expected TimeLimited"),
         }
@@ -499,8 +452,7 @@ mod tests {
             notification_repeat_interval_minutes: None,
             active: true,
         };
-        // usage in minutes: 30 min used, 60 min limit → 30 min remaining
-        let state = app_state((30, false), &policy);
+        let state = app_state(30, &policy);
         match state {
             TrackedApp::TimeTracked(app) => {
                 assert_eq!(app.remaining(), 30);
@@ -528,7 +480,6 @@ mod tests {
             },
             action: AppAction::TimeLimit {
                 limit_minutes: 3600,
-                extra_minutes: 0,
             },
         }));
         let result = filter_policies_by_schedule(vec![p], Utc::now());

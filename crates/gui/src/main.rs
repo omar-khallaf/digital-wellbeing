@@ -14,6 +14,7 @@ use gpui::px;
 use gpui::*;
 use gpui_component::{ActiveTheme, Root, theme::Theme};
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use tracing::{info, warn};
 
 use chrono::{DateTime, Duration, Utc};
@@ -59,6 +60,7 @@ async fn main() {
         app_category_cache: Vec::new(),
         block_cards: Vec::new(),
         day_events_cache: Vec::new(),
+        title_cache: Vec::new(),
         daemon_available,
         connection_status,
     }));
@@ -89,7 +91,6 @@ async fn main() {
         .await;
     });
 
-    // Run gpui application on the main thread.
     Application::new_inaccessible(gpui_platform::current_platform(false)).run(move |app| {
         // MUST be called before any gpui_component feature is used (Root, Theme,
         // Button, Input, charts, ...). Visible wiring — no hidden init.
@@ -137,8 +138,6 @@ async fn main() {
 }
 
 /// Connect to daemon and set up signal subscription.
-///
-/// Returns `(client, signal_rx, coalescer, signal_tx, daemon_available, connection_status)`.
 async fn setup_daemon_connection() -> (
     DaemonClient,
     mpsc::UnboundedReceiver<CoalescedNotifications>,
@@ -173,7 +172,6 @@ async fn setup_daemon_connection() -> (
     }
 }
 
-/// Background loop: processes signals + daemon-reconnect resync.
 /// Builds ViewModels after each refresh and emits them through `vm_tx` to the
 /// GPUI entity — the foreground half of the StateFlow.
 async fn background_loop(
@@ -185,6 +183,13 @@ async fn background_loop(
     signal_tx: mpsc::UnboundedSender<CoalescedNotifications>,
     mut presence_rx: mpsc::UnboundedReceiver<DaemonPresenceEvent>,
 ) {
+    // Periodic fallback refresh — catches missed D-Bus signals or dead
+    // signal streams without requiring the user to restart the GUI.
+    let mut ticker = interval(std::time::Duration::from_secs(60));
+    // Skip the first immediate tick so the initial refresh from startup
+    // isn't immediately overwritten by the periodic loop.
+    ticker.tick().await;
+
     loop {
         tokio::select! {
             Some(event) = presence_rx.recv() => {
@@ -203,6 +208,7 @@ async fn background_loop(
                     s.category_cache.clear();
                     s.app_category_cache.clear();
                     s.day_events_cache.clear();
+                    s.title_cache.clear();
                     drop(s);
                     dbus::spawn_signal_listener(&client, coalescer.clone(), signal_tx.clone());
                     // Refresh immediately so the UI shows data
@@ -224,7 +230,9 @@ async fn background_loop(
                 // or reconnect) explicitly wants fresh data.
                 if notif.usage {
                     client.invalidate_range_cache();
+                    client.invalidate_range_by_title_cache();
                     client.invalidate_day_events_cache();
+                    client.invalidate_daily_title_cache();
                 }
                 if notif.policy {
                     client.invalidate_policy_cache();
@@ -232,12 +240,21 @@ async fn background_loop(
                 let _ = coalescer.drain();
                 refresh_and_emit(&state, &client, &vm_tx).await;
             }
+            _ = ticker.tick() => {
+                // Periodic fallback refresh — ensures the dashboard stays
+                // current even if D-Bus signals are missed or streams die.
+                client.invalidate_range_cache();
+                client.invalidate_day_events_cache();
+                client.invalidate_daily_title_cache();
+                client.invalidate_policy_cache();
+                client.invalidate_category_caches();
+                let _ = coalescer.drain();
+                refresh_and_emit(&state, &client, &vm_tx).await;
+            }
         }
     }
 }
 
-/// Fetch fresh data from the daemon, rebuild all ViewModels, and emit them to
-/// the GPUI foreground.
 async fn refresh_and_emit(
     state: &Arc<tokio::sync::Mutex<AppState>>,
     client: &DaemonClient,
@@ -287,16 +304,18 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
     let policy_fut = client.list_policies(uid);
     let cat_fut = client.list_categories();
     let app_cat_fut = client.get_app_categories();
-    let blocks_fut = client.get_active_blocks();
+    let blocks_fut = client.get_blocked_apps();
     let day_events_fut = client.get_day_events(uid, day_start_ms, day_end_ms);
+    let title_fut = client.get_daily_usage_by_title(&start, uid);
 
-    let (usage, policies, categories, app_categories, blocks, day_events) = tokio::join!(
+    let (usage, policies, categories, app_categories, blocks, day_events, title) = tokio::join!(
         usage_fut,
         policy_fut,
         cat_fut,
         app_cat_fut,
         blocks_fut,
-        day_events_fut
+        day_events_fut,
+        title_fut
     );
 
     let mut s = state.lock().await;
@@ -336,4 +355,5 @@ async fn refresh_all_data(state: &Arc<tokio::sync::Mutex<AppState>>, client: &Da
         |s, v| s.day_events_cache = v,
         "day events",
     );
+    set_or_warn(&mut s, title, |s, v| s.title_cache = v, "title usage");
 }

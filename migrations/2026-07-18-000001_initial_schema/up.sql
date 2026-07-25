@@ -3,7 +3,7 @@
 
 CREATE TABLE events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    event_type  INTEGER NOT NULL CHECK(event_type >= 0 AND event_type <= 7),
+    event_type  INTEGER NOT NULL CHECK(event_type >= 0 AND event_type <= 8),
     user_id     INTEGER NOT NULL,
     timestamp   INTEGER NOT NULL,                -- epoch milliseconds (i64)
     app_id      TEXT,
@@ -11,18 +11,21 @@ CREATE TABLE events (
 
     -- Per-event-type shape enforcement:
     --   WindowFocused (0): requires app_id NOT NULL (identifies the app)
-    --   Unfocused (1): app_id is optional — the interval's app is implied by
+    --   Unfocused (1): app_id MUST be NULL. The interval's app is implied by
     --     the preceding WindowFocused event (derived by timeline builder and
-    --     pre-buffer close resolver). Storing app_id here is redundant.
+    --     pre-buffer close resolver).
     --   Activity events (2: idle, 3: resumed): app_id identifies the focused app
     --   Power events (4-7: slept, shutdown, locked, loggedout):
     --     require app_id IS NULL AND title IS NULL
+    --   WindowBlocked (8): carries app_id of the blocked window
     CHECK (
         (event_type = 0 AND app_id IS NOT NULL)
         OR
-        (event_type IN (1, 2, 3))
+        (event_type IN (1, 2, 3) AND (event_type != 1 OR app_id IS NULL))
         OR
         (event_type >= 4 AND event_type <= 7 AND app_id IS NULL AND title IS NULL)
+        OR
+        (event_type = 8 AND app_id IS NOT NULL)
     ),
     CHECK (title IS NULL OR length(title) <= 1024)
 );
@@ -37,9 +40,21 @@ CREATE TABLE daily_usage (
     app_id         TEXT NOT NULL,
     closed_millis  INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
     open_millis    INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
-    extended       INTEGER NOT NULL DEFAULT 0 CHECK(extended IN (0, 1)),
     PRIMARY KEY (date, user_id, app_id)
 );
+
+CREATE TABLE daily_usage_by_title (
+    date           TEXT NOT NULL,
+    user_id        INTEGER NOT NULL,
+    app_id         TEXT NOT NULL,
+    title          TEXT NOT NULL CHECK(length(title) <= 1024),
+    closed_millis  INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
+    open_millis    INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
+    PRIMARY KEY (date, user_id, app_id, title)
+);
+
+CREATE INDEX idx_daily_usage_by_title_date ON daily_usage_by_title(date);
+CREATE INDEX idx_daily_usage_by_title_user_date ON daily_usage_by_title(user_id, date);
 
 CREATE TABLE categories (
     id          INTEGER PRIMARY KEY,
@@ -58,7 +73,6 @@ CREATE TABLE policies (
     created_by  INTEGER NOT NULL DEFAULT 0,
     owner_id    INTEGER NOT NULL DEFAULT 0,
     time_limit_minutes            INTEGER,
-    extra_minutes                 INTEGER NOT NULL DEFAULT 10 CHECK(extra_minutes >= 0),
     notification_repeat_interval_minutes INTEGER,
     schedule_start_hour           INTEGER CHECK (schedule_start_hour BETWEEN 0 AND 23),
     schedule_end_hour             INTEGER CHECK (schedule_end_hour BETWEEN 0 AND 23),

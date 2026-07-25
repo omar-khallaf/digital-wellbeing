@@ -22,11 +22,6 @@ use crate::theme::*;
 
 use super::data::App;
 use super::domain::{AppState, AppViewModels, Tab};
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Render implementation
-// ═════════════════════════════════════════════════════════════════════════════
-
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Lazily create policy editor and custom date range input entities.
@@ -51,10 +46,6 @@ impl Render for App {
             )
     }
 }
-
-// ═════════════════════════════════════════════════════════════════════════════
-// Sidebar
-// ═════════════════════════════════════════════════════════════════════════════
 
 fn sidebar(
     cx: &gpui::App,
@@ -239,10 +230,6 @@ fn nav_item(
         .into_any_element()
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Header
-// ═════════════════════════════════════════════════════════════════════════════
-
 fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
     h_flex()
         .h(px(56.0))
@@ -285,10 +272,6 @@ fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
         .into_any_element()
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Content area
-// ═════════════════════════════════════════════════════════════════════════════
-
 impl App {
     fn content_area(&mut self, cx: &mut Context<Self>, active_tab: Tab) -> AnyElement {
         let state = self.state.clone();
@@ -297,7 +280,6 @@ impl App {
         let custom_end = self.custom_end_input.clone();
         let app_entity = cx.entity();
 
-        // Factory that creates a range-change callback bound to an entity.
         let make_on_range = |app_entity: Entity<Self>| {
             let state = state.clone();
             move |new_range: DateRange, gpui_app: &mut gpui::App| {
@@ -314,6 +296,7 @@ impl App {
                         new_range,
                         &s.range_cache,
                         &s.app_category_cache,
+                        &s.title_cache,
                     );
                     entity.update(gpui_app, |app, cx| {
                         app.reports_vm = Some(rep_vm);
@@ -322,7 +305,6 @@ impl App {
                     });
                 }
 
-                // ASYNC: Update persistent state + fetch fresh data in background.
                 spawn_async_refresh(state.clone(), entity.clone(), new_range, gpui_app);
             }
         };
@@ -411,10 +393,16 @@ fn spawn_async_refresh(
             )
         };
         client.invalidate_range_cache();
+        client.invalidate_daily_title_cache();
         if client.connection_status().is_connected()
             && let Ok(entries) = client.get_usage_range(&start, &end, uid).await
         {
             state.lock().await.range_cache = entries;
+        }
+        if client.connection_status().is_connected()
+            && let Ok(entries) = client.get_daily_usage_by_title(&start, uid).await
+        {
+            state.lock().await.title_cache = entries;
         }
 
         let (db, pol, rep) = App::refresh_viewmodels(&state).await;
@@ -463,7 +451,6 @@ fn reports_content(
     }
 }
 
-/// Centered spinner shown while content is loading.
 fn loading_state(cx: &gpui::App) -> AnyElement {
     v_flex()
         .h_full()

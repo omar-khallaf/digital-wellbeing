@@ -11,7 +11,7 @@ use crate::platform::PlatformEvent;
 use crate::platform::linux::PluginRegistry;
 use crate::store::DbPool;
 
-use super::domain::ActiveBlocksMap;
+use super::domain::BlockedAppsMap;
 
 /// The main D-Bus interface object, registered on the bus as
 /// `org.wellbeing.v1.Controller`.
@@ -21,7 +21,7 @@ pub struct DaemonInterface {
     pub(crate) event_tx: UnboundedSender<PlatformEvent>,
     pub(crate) plugin_reg_cooldown: RwLock<HashMap<u32, Instant>>,
     pub(crate) clock: Box<dyn Clock>,
-    pub(crate) active_blocks: ActiveBlocksMap,
+    pub(crate) blocked_apps: BlockedAppsMap,
     pub(crate) tokio_handle: tokio::runtime::Handle,
 }
 
@@ -31,7 +31,7 @@ impl DaemonInterface {
         registry: Arc<RwLock<PluginRegistry>>,
         event_tx: UnboundedSender<PlatformEvent>,
         clock: Box<dyn Clock>,
-        active_blocks: ActiveBlocksMap,
+        blocked_apps: BlockedAppsMap,
         tokio_handle: tokio::runtime::Handle,
     ) -> Self {
         Self {
@@ -40,7 +40,7 @@ impl DaemonInterface {
             event_tx,
             plugin_reg_cooldown: RwLock::new(HashMap::new()),
             clock,
-            active_blocks,
+            blocked_apps,
             tokio_handle,
         }
     }
