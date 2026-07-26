@@ -34,7 +34,7 @@ pub fn build_reports_viewmodel(
     for entry in &usage {
         let ms = entry.total_millis as f64;
         *by_date.entry(entry.date.clone()).or_insert(0.0) += ms;
-        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
+        *by_app.entry(entry.app_class.to_string()).or_insert(0) += entry.total_millis;
         total += ms;
     }
     let today = chrono::Utc::now().date_naive();
@@ -54,16 +54,16 @@ pub fn build_reports_viewmodel(
 
     let meta: std::collections::HashMap<&str, &str> = app_categories
         .iter()
-        .map(|ac| (ac.app_id.as_str(), ac.display_name.as_str()))
+        .map(|ac| (ac.app_class.as_str(), ac.display_name.as_str()))
         .collect();
 
     let mut app_list: Vec<ReportAppEntry> = by_app
         .into_iter()
-        .map(|(app_id, total_millis)| {
+        .map(|(app_class, total_millis)| {
             let display_name = meta
-                .get(app_id.as_str())
+                .get(app_class.as_str())
                 .copied()
-                .unwrap_or(&app_id)
+                .unwrap_or(&app_class)
                 .to_string();
             ReportAppEntry {
                 rank: 0,
@@ -73,7 +73,7 @@ pub fn build_reports_viewmodel(
                 } else {
                     0.0
                 },
-                app_id,
+                app_class,
                 display_name,
             }
         })
@@ -87,22 +87,22 @@ pub fn build_reports_viewmodel(
         std::collections::BTreeMap::new();
     let mut title_total: f64 = 0.0;
     for entry in title_entries {
-        let key = (entry.app_id.clone(), entry.title.clone());
+        let key = (entry.app_class.to_string(), entry.title.clone());
         *by_title.entry(key).or_insert(0) += entry.total_millis;
         title_total += entry.total_millis as f64;
     }
 
     let mut title_list: Vec<ReportTitleEntry> = by_title
         .into_iter()
-        .map(|((app_id, title), total_millis)| {
+        .map(|((app_class, title), total_millis)| {
             let display_name = meta
-                .get(app_id.as_str())
+                .get(app_class.as_str())
                 .copied()
-                .unwrap_or(&app_id)
+                .unwrap_or(&app_class)
                 .to_string();
             ReportTitleEntry {
                 rank: 0,
-                app_id: display_name,
+                app_class: display_name,
                 title,
                 total_millis,
                 percentage: if title_total > 0.0 {

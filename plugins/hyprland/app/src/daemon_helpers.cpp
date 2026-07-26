@@ -31,7 +31,7 @@ auto windowInfoToVariant(const std::optional<WindowInfo> &info, bool blocked) ->
     auto tag = blocked ? EventTag::Block : EventTag::Focus;
     return sdbus::Variant{sdbus::Struct{
         static_cast<uint32_t>(tag),
-        info->appId.value(),
+        info->appClass.value(),
         info->title,
         info->pid,
         static_cast<uint32_t>(0),

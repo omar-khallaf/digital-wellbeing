@@ -75,7 +75,7 @@ displays information only and cannot grant time or close an app.
 
 ### App Selector
 
-A combined free-text input and select dropdown lets the user choose an app_id
+A combined free-text input and select dropdown lets the user choose an app_class
 for policy targeting. Typing filters the dropdown of known app IDs from the
 event log, and typing a new app ID followed by Enter creates a new target.
 
@@ -94,7 +94,7 @@ integer, lower = evaluated first), and a `schedule` (list of time windows).
 
 **Target selector:**
 
-- `App` — select or type an `app_id`.
+- `App` — select or type an `app_class`.
 - `Category` — pick from the category list.
 - `Domain` — type a domain pattern (e.g. `reddit.com`, `*.social.com`).
 - `Any` — matches everything. Used as a catch-all with `Block` effect to
@@ -124,9 +124,9 @@ directly and on app_categories rows to map apps to categories.
 ### Usage Charts
 
 The reports screen shows the same chart shapes as the dashboard but for the
-selected report range. Total minutes are computed from daily_usage over the date
-range, and per-app or per-category breakdowns are built from joins equivalent to
-the dashboard read paths.
+selected report range. Total minutes are computed from `daily_usage_by_app` over
+the date range, and per-app or per-category breakdowns are built from joins
+equivalent to the dashboard read paths.
 
 ### Export
 
@@ -151,19 +151,19 @@ minutes, and the top app identifier. It is also built from DailySummary groups.
 PoliciesViewModel carries the distinct app list available for targeting, the
 currently selected policy target and its editable configuration, all categories,
 and any validation errors from the editor forms. The selected policy target is
-either an AppId or a CategoryId with its apps.
+either an AppClass or a CategoryId with its apps.
 
 ## DB Read Paths for Screens
 
 All screen data originates from daemon-side data modules. The dashboard issues
 GetUsageRange(start, end, uid) and receives DailySummary groups. The policy
-screen reads distinct app_ids from the events table and all categories and
+screen reads distinct app_classs from the events table and all categories and
 app_categories rows for the user. The reports screen issues the same
 GetUsageRange call as the dashboard.
 
 Daily totals for the selected date range come from summing total_minutes in
-daily_usage grouped by date. Per-app breakdown adds display_name, icon_path,
-category name, and category color by left joining app_categories and categories.
-Per-category breakdown joins through app_categories to categories and sums per
-category. Distinct app_ids for the policy selector are read from events where
-app_id is not null.
+`daily_usage_by_app` grouped by date. Per-app breakdown adds display_name,
+icon_path, category name, and category color by left joining app_categories and
+categories. Per-category breakdown joins through app_categories to categories
+and sums per category. Distinct app_classs for the policy selector are read from
+events where app_class is not null.

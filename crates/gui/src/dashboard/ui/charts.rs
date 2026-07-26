@@ -76,7 +76,7 @@ pub fn day_timeline_chart(cx: &App, timeline: &DayTimeline) -> AnyElement {
                 if frag.is_gap {
                     els.push(timeline_bar_segment(left, width, border, track_height));
                 } else {
-                    let color = theme::color_from_str(&frag.app_id);
+                    let color = theme::color_from_str(&frag.app_class);
                     // Slightly transparent so the 1 px divider lines show through.
                     let segment_bg = Hsla { a: 0.75, ..color };
                     els.push(timeline_bar_segment(left, width, segment_bg, track_height));

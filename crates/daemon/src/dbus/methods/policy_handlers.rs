@@ -5,6 +5,8 @@
 
 use zbus::fdo;
 
+use crate::policy::data::PolicyRepo;
+
 /// Look up the owner of a policy by ID and verify that the caller
 /// is authorized to modify/delete it.
 ///
@@ -14,16 +16,14 @@ use zbus::fdo;
 /// Returns `Err(fdo::Error::AccessDenied)` if a non-root caller tries to
 /// act on another user's policy.
 pub(crate) async fn verify_policy_owner(
-    pool: &crate::store::DbPool,
+    repo: &PolicyRepo,
     policy_id: i32,
     caller: u32,
 ) -> Result<i32, fdo::Error> {
-    let owner_id = crate::dbus::data::get_policy_owner(pool, policy_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "query failed");
-            fdo::Error::Failed("internal error".into())
-        })?;
+    let owner_id = repo.get_owner(policy_id).await.map_err(|e| {
+        tracing::error!(error = %e, "query failed");
+        fdo::Error::Failed("internal error".into())
+    })?;
     if caller != 0 && owner_id != caller as i32 {
         return Err(fdo::Error::AccessDenied("access denied".into()));
     }

@@ -38,9 +38,9 @@ and Reports screens.
 
 ### Block State (Declarative)
 
-| Property      | Type          | Access | Description                                                                                                                                                                                                                                                           |
-| ------------- | ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BlockedApps` | `a(s(tutau))` | read   | Currently blocked apps. Each entry: `{app_id, policy_id, blocked_since, reason, available_actions}`. The canonical source of truth for blocking state. Consumed by the compositor plugin (reads on startup for crash recovery) and GUI (reads for dashboard display). |
+| Property      | Type          | Access | Description                                                                                                                                                                                                                                                              |
+| ------------- | ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BlockedApps` | `a(s(tutau))` | read   | Currently blocked apps. Each entry: `{app_class, policy_id, blocked_since, reason, available_actions}`. The canonical source of truth for blocking state. Consumed by the compositor plugin (reads on startup for crash recovery) and GUI (reads for dashboard display). |
 
 The `BlockedApps` property is the sole source of truth for which apps are
 blocked and why. The daemon writes to it; all consumers (plugin, GUI) read from
@@ -49,11 +49,11 @@ back to `BlockedApps` for initial state and reconciliation.
 
 ### Signals
 
-| Signal               | Fields                                       | When                                                                                                                |
-| -------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `BlockedAppsChanged` | `{uid: u, app_id: s, blocked: b, reason: u}` | An app is blocked or unblocked. Consumed by plugin (real-time overlay sync) and GUI (dashboard cache invalidation). |
-| `DailyUsageChanged`  | `{uid: u}`                                   | Daily usage data mutated. Consumed by GUI for cache invalidation.                                                   |
-| `PolicyMutated`      | `{uid: u}`                                   | Policy created, updated, or deleted. Consumed by GUI for cache invalidation.                                        |
+| Signal               | Fields                                          | When                                                                                                                |
+| -------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `BlockedAppsChanged` | `{uid: u, app_class: s, blocked: b, reason: u}` | An app is blocked or unblocked. Consumed by plugin (real-time overlay sync) and GUI (dashboard cache invalidation). |
+| `DailyUsageChanged`  | `{uid: u}`                                      | Daily usage data mutated. Consumed by GUI for cache invalidation.                                                   |
+| `PolicyMutated`      | `{uid: u}`                                      | Policy created, updated, or deleted. Consumed by GUI for cache invalidation.                                        |
 
 ### D-Bus Message Size Limits
 

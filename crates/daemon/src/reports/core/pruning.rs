@@ -47,7 +47,7 @@ async fn prune_cycle(pool: &DbPool, clock: &dyn Clock) -> anyhow::Result<()> {
 
     loop {
         let count = sql_query(
-            "DELETE FROM daily_usage WHERE rowid IN (SELECT rowid FROM daily_usage WHERE date < $1 LIMIT $2)"
+            "DELETE FROM daily_usage_by_app WHERE rowid IN (SELECT rowid FROM daily_usage_by_app WHERE date < $1 LIMIT $2)"
         )
             .bind::<Text, _>(&cutoff_date)
             .bind::<Integer, _>(500)

@@ -48,10 +48,8 @@ impl GuiApp {
                                 move |_, _window, app| {
                                     entity.update(app, |this, cx2| {
                                         this.policy_edit_id = None;
-                                        this.policy_edit = Some((
-                                            PolicyTarget::App(String::new()),
-                                            PolicyConfigForm::default(),
-                                        ));
+                                        this.policy_edit =
+                                            Some((PolicyTarget::Any, PolicyConfigForm::default()));
                                         cx2.notify();
                                     });
                                 }

@@ -34,9 +34,10 @@ available.
 ## 4. Window-Handle Set Tracking for Multi-App Blocking
 
 Resolved. The per-app overlay model is implemented in the compositor plugin.
-When an app_id appears in BlockedApps, the plugin renders a block overlay over
-every window owned by the app and traps both mouse and keyboard input on each
-blocked window. The overlay is managed by the compositor plugin, not the daemon.
+When an app_class appears in BlockedApps, the plugin renders a block overlay
+over every window owned by the app and traps both mouse and keyboard input on
+each blocked window. The overlay is managed by the compositor plugin, not the
+daemon.
 
 ## 5. Signal Subscription in the gpui Main Loop
 

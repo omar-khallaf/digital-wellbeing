@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <cstdint>
 
-// Hyprland compositor API for window enumeration and geometry.
 // Guarded: test builds don't have Hyprland headers.
 #if __has_include(<hyprland/Compositor.hpp>)
 #include <hyprland/Compositor.hpp>
@@ -11,40 +10,33 @@
 #endif
 
 using wellbeing::ActionType;
-using wellbeing::AppId;
+using wellbeing::AppClass;
 
-// =============================================================================
-// Overlay lifecycle
-// =============================================================================
-
-void LockManager::showOverlay(const AppId &appId, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
+void LockManager::showOverlay(const AppClass &appClass, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
                               const std::vector<ActionType> &actions) {
     ActiveOverlay overlay;
-    overlay.appId = appId;
+    overlay.appClass = appClass;
     overlay.policyId = policyId;
     overlay.blockedSince = blockedSince;
     overlay.actions = actions;
     overlay.reason = reason;
 
-    // ── Build button rects — preallocate to avoid reallocation ──────────
     overlay.buttons.reserve(actions.size());
 
-    // ── Capture window geometry from compositor ─────────────────────────
-    // Find all compositor windows whose initial class matches this appId.
+    // Find all compositor windows whose initial class matches this appClass.
     // We use m_initialClass because m_class can change after window start.
     // Window handles are stored as raw pointers for later compositor API use.
 #if __has_include(<hyprland/Compositor.hpp>)
     {
         const auto &windows = g_pCompositor->m_windows;
         for (const auto &w : windows) {
-            if (w->m_initialClass == appId.value()) {
+            if (w->m_initialClass == appClass.value()) {
                 overlay.windowHandles.push_back(w->m_stableID);
             }
         }
     }
 #endif
 
-    // ── Build button rects: window-relative positioning ─────────────────
     // If we captured windows, center buttons at the lower third of the
     // first captured window. Otherwise use fallback coordinates.
     constexpr int btnW = 140;
@@ -88,34 +80,26 @@ void LockManager::showOverlay(const AppId &appId, uint64_t policyId, BlockReason
         }
     }
 
-    m_overlays.insert_or_assign(appId, std::move(overlay));
+    m_overlays.insert_or_assign(appClass, std::move(overlay));
 }
 
-auto LockManager::hideOverlay(const AppId &appId) -> LockManagerError {
-    if (!m_overlays.contains(appId)) {
-        return LockManagerError::AppIdMismatch;
+auto LockManager::hideOverlay(const AppClass &appClass) -> LockManagerError {
+    if (!m_overlays.contains(appClass)) {
+        return LockManagerError::AppClassMismatch;
     }
-    m_overlays.erase(appId);
+    m_overlays.erase(appClass);
     return LockManagerError::None;
 }
 
-// =============================================================================
-// Focus gate — single source of truth is g_ctx->focusState
-// =============================================================================
-
-void LockManager::setFocusedApp(std::optional<AppId> appId) { m_focusedApp = std::move(appId); }
-
-// =============================================================================
-// Compositor hooks
-// =============================================================================
+void LockManager::setFocusedApp(std::optional<AppClass> appClass) { m_focusedApp = std::move(appClass); }
 
 void LockManager::drawOverlay() {
     if (m_overlays.empty()) {
         return;
     }
 
-    for (auto &[appId, overlay] : m_overlays) {
-        (void)appId;
+    for (auto &[appClass, overlay] : m_overlays) {
+        (void)appClass;
         for (auto windowHandle : overlay.windowHandles) {
 #if __has_include(<hyprland/Compositor.hpp>)
             const auto &windows = g_pCompositor->m_windows;
@@ -160,8 +144,8 @@ auto LockManager::onMouseClick(double x, double y) -> bool {
     }
 
 #if __has_include(<hyprland/Compositor.hpp>)
-    for (const auto &[appId, overlay] : m_overlays) {
-        (void)appId;
+    for (const auto &[appClass, overlay] : m_overlays) {
+        (void)appClass;
         for (auto handle : overlay.windowHandles) {
             for (const auto &w : g_pCompositor->m_windows) {
                 if (w->m_stableID == handle) {
@@ -188,8 +172,8 @@ auto LockManager::isTarget(uint64_t windowHandle) const -> bool {
         return false;
     }
 #if __has_include(<hyprland/Compositor.hpp>)
-    for (const auto &[appId, overlay] : m_overlays) {
-        (void)appId;
+    for (const auto &[appClass, overlay] : m_overlays) {
+        (void)appClass;
         for (auto handle : overlay.windowHandles) {
             if (handle == windowHandle) {
                 return true;
@@ -199,10 +183,6 @@ auto LockManager::isTarget(uint64_t windowHandle) const -> bool {
 #endif
     return false;
 }
-
-// =============================================================================
-// Helpers
-// =============================================================================
 
 auto LockManager::withinRect(const ButtonRect &r, double x, double y) -> bool {
     return x >= static_cast<double>(r.x) && x < static_cast<double>(r.x + r.w) && y >= static_cast<double>(r.y) &&

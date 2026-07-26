@@ -53,9 +53,9 @@ the mode unrepresentable as "unknown".
 
 ### logind stays on the system bus
 
-A session-mode daemon still needs power/session state (Slept/ShutDown/
-Locked/LoggedOut). systemd-logind lives on the system bus and is reachable by
-any user, so PowerStateWatcher ([03-linux-platform.md](./03-linux-platform.md))
+A session-mode daemon still needs power/session state (Suspend/Shutdown/
+Locked/LogOut). systemd-logind lives on the system bus and is reachable by any
+user, so PowerStateWatcher ([03-linux-platform.md](./03-linux-platform.md))
 always connects to the system bus regardless of daemon mode. Only the daemon's
 own org.wellbeing.v1.Controller name and the plugin RegisterPlugin target move
 to the session bus. A session-mode daemon therefore holds two connections:
@@ -73,7 +73,7 @@ mode the scope is SingleUser, carrying the daemon's own uid.
 In SingleUser scope the caller is always the daemon's own user, so the RBAC
 matrix collapses to pass-through:
 
-- owner_id / created_by are always written with the daemon's uid.
+- user_id / created_by are always written with the daemon's uid.
 - All policy CRUD and usage queries are permitted (equivalent to the "root" row
   of the [07-rbac.md](./07-rbac.md) matrix), but scoped to the single user's
   rows — the daemon never holds another user's data.

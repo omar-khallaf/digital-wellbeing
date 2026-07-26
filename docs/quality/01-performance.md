@@ -8,10 +8,10 @@ Window events arrive as D-Bus signal payloads and are parsed directly from the
 zbus message without copying. Zero allocations beyond the event payload.
 
 Event parsing converts the D-Bus Event payload directly into a
-PlatformEvent::Focus by constructing the strongly-typed newtypes (AppId,
+PlatformEvent::Focus by constructing the strongly-typed newtypes (AppClass,
 WindowTitle, Pid, Uid) from the payload fields. The only allocation is the
-app_id string inside AppId::new. Unfocus events require no string allocation at
-all.
+app_class string inside AppClass::new. Unfocus events require no string
+allocation at all.
 
 Parsing avoids regex entirely. Compositor event parsing uses str::split and
 str::starts_with rather than compiled patterns. Compiled regex on D-Bus args is
@@ -24,7 +24,7 @@ forbidden — it would allocate and compile per call.
 - The compositor socket read buffer reuses a BytesMut or Vec<u8> with capacity
   4096 instead of allocating per read.
 - The app classification HashMap is pre-sized to the expected number of tracked
-  apps (common: 50 to 200 unique app_ids).
+  apps (common: 50 to 200 unique app_classs).
 
 ### Cache Strategy
 
@@ -32,11 +32,11 @@ forbidden — it would allocate and compile per call.
 | ----------------- | ------------- | ---------- |
 | AI classification | HashMap + TTL | 60 seconds |
 
-The classification cache is a `HashMap<AppId, (CategoryId, Instant)>` inside the
-Categorizer. Cache entries are evicted when the wall-clock check indicates TTL
-expiry. The categorizer exposes a public `invalidate(app_id)` method used on
-`PolicyMutated` signal receipt. No size limit is needed — the number of unique
-app_ids per user is bounded (typically 50–200).
+The classification cache is a `HashMap<AppClass, (CategoryId, Instant)>` inside
+the Categorizer. Cache entries are evicted when the wall-clock check indicates
+TTL expiry. The categorizer exposes a public `invalidate(app_class)` method used
+on `PolicyMutated` signal receipt. No size limit is needed — the number of
+unique app_classs per user is bounded (typically 50–200).
 
 ### No Clone in Hot Path
 
@@ -65,7 +65,7 @@ write in the sub-10-microsecond budget.
 
 Classifying a window involves an app_categories DB lookup (PK point query), AI
 classification as fallback (cached 60 seconds), and pattern matching on title
-(for browser tabs). The AI result per AppId is cached for 60 seconds.
+(for browser tabs). The AI result per AppClass is cached for 60 seconds.
 
 ### Event-Driven Writes (Buffered Flush)
 
@@ -93,9 +93,9 @@ flushed on the next tick or count trigger.
 
 Mark hot domain functions with inline:
 
-- Classification matches (AppPattern::matches(AppId))
+- Classification matches (AppPattern::matches(AppClass))
 - Policy evaluation (evaluate — pure domain function)
-- Newtype accessors (AppId::as_str(), DurationSecs::get())
+- Newtype accessors (AppClass::as_str(), DurationSecs::get())
 - Time window checks (TimeWindow::is_active())
 
 Let the compiler decide on the rest.

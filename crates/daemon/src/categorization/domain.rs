@@ -1,13 +1,13 @@
 //! Domain types for the categorization feature.
 
 use futures::future::BoxFuture;
-use wellbeing_core::{AppId, CategoryId};
+use wellbeing_core::{AppClass, CategoryId};
 
 /// A classifier that can categorize an app into a category.
 pub trait AiClassifier: Send + Sync + 'static {
     fn classify(
         &self,
-        app_id: AppId,
+        app_class: AppClass,
         title: Option<String>,
     ) -> BoxFuture<'static, Option<CategoryId>>;
 }
@@ -16,11 +16,11 @@ pub trait AiClassifier: Send + Sync + 'static {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CategorySource {
     AppCategory {
-        app_id: AppId,
+        app_class: AppClass,
         category_id: CategoryId,
     },
     AiClassified {
-        app_id: AppId,
+        app_class: AppClass,
         category_id: CategoryId,
     },
     Uncategorized,
@@ -37,8 +37,8 @@ impl HeuristicClassifier {
     const SOCIAL: i64 = 4;
     const DEVELOPMENT: i64 = 5;
 
-    pub(crate) fn match_keywords(app_id: &str) -> Option<CategoryId> {
-        let lower = app_id.to_lowercase();
+    pub(crate) fn match_keywords(app_class: &str) -> Option<CategoryId> {
+        let lower = app_class.to_lowercase();
 
         const PRODUCTIVITY_KW: &[&str] = &[
             "alacritty",
@@ -112,8 +112,12 @@ impl HeuristicClassifier {
 }
 
 impl AiClassifier for HeuristicClassifier {
-    fn classify(&self, app_id: AppId, _: Option<String>) -> BoxFuture<'static, Option<CategoryId>> {
-        let result = Self::match_keywords(app_id.as_str());
+    fn classify(
+        &self,
+        app_class: AppClass,
+        _: Option<String>,
+    ) -> BoxFuture<'static, Option<CategoryId>> {
+        let result = Self::match_keywords(app_class.as_str());
         Box::pin(async move { result })
     }
 }
@@ -133,7 +137,7 @@ mod tests {
             "tmux",
         ];
         for &app in cases {
-            let id = AppId::new(app).unwrap();
+            let id = AppClass::new(app).unwrap();
             let got = HeuristicClassifier::match_keywords(id.as_str());
             assert_eq!(got, Some(CategoryId(1)), "{app} should be Productivity");
         }
@@ -151,7 +155,7 @@ mod tests {
             "helix",
         ];
         for &app in cases {
-            let id = AppId::new(app).unwrap();
+            let id = AppClass::new(app).unwrap();
             let got = HeuristicClassifier::match_keywords(id.as_str());
             assert_eq!(got, Some(CategoryId(5)), "{app} should be Development");
         }
@@ -167,7 +171,7 @@ mod tests {
             "zen-browser",
         ];
         for &app in cases {
-            let id = AppId::new(app).unwrap();
+            let id = AppClass::new(app).unwrap();
             let got = HeuristicClassifier::match_keywords(id.as_str());
             assert_eq!(got, Some(CategoryId(4)), "{app} should be Social");
         }
@@ -177,7 +181,7 @@ mod tests {
     fn heuristic_communication() {
         let cases = &["slack", "discord", "telegram", "element", "signal"];
         for &app in cases {
-            let id = AppId::new(app).unwrap();
+            let id = AppClass::new(app).unwrap();
             let got = HeuristicClassifier::match_keywords(id.as_str());
             assert_eq!(got, Some(CategoryId(2)), "{app} should be Communication");
         }
@@ -187,7 +191,7 @@ mod tests {
     fn heuristic_entertainment() {
         let cases = &["spotify", "steam", "youtube", "vlc", "twitch"];
         for &app in cases {
-            let id = AppId::new(app).unwrap();
+            let id = AppClass::new(app).unwrap();
             let got = HeuristicClassifier::match_keywords(id.as_str());
             assert_eq!(got, Some(CategoryId(3)), "{app} should be Entertainment");
         }
@@ -195,21 +199,21 @@ mod tests {
 
     #[test]
     fn heuristic_unknown_returns_none() {
-        let id = AppId::new("unknown-app-12345").unwrap();
+        let id = AppClass::new("unknown-app-12345").unwrap();
         assert_eq!(HeuristicClassifier::match_keywords(id.as_str()), None);
     }
 
     #[test]
     fn category_source_variants() {
-        let app_id = AppId::new("test").unwrap();
+        let app_class = AppClass::new("test").unwrap();
         let cat_id = CategoryId(42);
 
         let ac = CategorySource::AppCategory {
-            app_id: app_id.clone(),
+            app_class: app_class.clone(),
             category_id: cat_id,
         };
         let ai = CategorySource::AiClassified {
-            app_id: app_id.clone(),
+            app_class: app_class.clone(),
             category_id: cat_id,
         };
         let uncat = CategorySource::Uncategorized;
@@ -219,7 +223,7 @@ mod tests {
         assert_ne!(ac, uncat);
 
         let ac2 = CategorySource::AppCategory {
-            app_id: app_id.clone(),
+            app_class: app_class.clone(),
             category_id: cat_id,
         };
         assert_eq!(ac, ac2);

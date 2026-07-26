@@ -1,113 +1,241 @@
-//! Policy evaluation logic — decides whether to block, notify, or allow.
+//! Policy evaluation engine — priority-ordered first-match-wins.
+//!
+//! `evaluate()` is a pure domain function that accepts a sorted slice of
+//! policies and returns an `EvalResult`. It does no I/O — all data must
+//! be fetched and filtered beforehand.
+//!
+//! Evaluation rules:
+//! - Policies are already sorted by priority (ascending) by the SQL query.
+//! - `Allow` / `Block` / `TimeLimit` are **terminating**: the first match
+//!   wins and evaluation stops.
+//! - `Notify` is **non-terminating**: appended to `notifies`, evaluation
+//!   continues.
+//! - `Target::Any` matches everything but is evaluated last in priority order.
+//! - Empty slice → `EvalResult::unrestricted()`.
 
-use wellbeing_core::BlockReason;
+use wellbeing_core::{AppClass, PolicyId};
 
-use crate::policy::domain::{PolicyConfig, PolicyVerdict};
+use crate::policy::domain::{Effect, EvalResult, Policy, PolicyTarget};
 
-fn eval_block_policy(policy: &PolicyConfig, first_block: bool) -> Option<PolicyVerdict> {
-    if first_block {
-        return None;
-    }
-    match policy {
-        PolicyConfig::Block { app_id, id, .. } => {
-            let reason = if app_id.is_some() {
-                BlockReason::AppBlock
-            } else {
-                BlockReason::CategoryBlock
-            };
-            Some(PolicyVerdict::Block {
-                policy_id: *id,
-                reason,
-                remaining: 0,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn eval_timelimit_policy(
-    policy: &PolicyConfig,
-    elapsed_usage: i64,
-    first_block: bool,
-) -> Option<PolicyVerdict> {
-    if first_block {
-        return None;
-    }
-    match policy {
-        PolicyConfig::TimeLimit {
-            id,
-            app_id,
-            time_limit_minutes,
-            ..
-        } => {
-            let effective_limit_minutes = *time_limit_minutes;
-            let remaining = effective_limit_minutes - elapsed_usage;
-            if remaining <= 0 {
-                let reason = if app_id.is_some() {
-                    BlockReason::AppTimeLimit
-                } else {
-                    BlockReason::CategoryTimeLimit
-                };
-                Some(PolicyVerdict::Block {
-                    policy_id: *id,
-                    reason,
-                    remaining,
-                })
-            } else {
-                None
-            }
-        }
-        _ => None,
+/// Determine whether a policy's target matches the given app and category names.
+#[allow(dead_code)]
+fn target_matches(target: &PolicyTarget, app_class: &AppClass, category_names: &[String]) -> bool {
+    match target {
+        PolicyTarget::Any => true,
+        PolicyTarget::App(t) => t == app_class,
+        PolicyTarget::Category(cat_name) => category_names.contains(cat_name),
+        PolicyTarget::Domain(_) => false, // DNS-level — excluded from app evaluation
     }
 }
 
-fn eval_notify_policy(
-    policy: &PolicyConfig,
-    elapsed_usage: i64,
-    first_notify: bool,
-) -> Option<PolicyVerdict> {
-    if first_notify {
-        return None;
+/// Check if a schedule (vec of time windows) is active at `now`.
+///
+/// An empty schedule (= no windows) is always active. A non-empty schedule
+/// matches if **any** window is active (OR semantics). Cross-midnight windows
+/// are handled by [`TimeWindow::is_active`].
+pub fn filter_by_schedule(
+    schedule: &[wellbeing_core::TimeWindow],
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if schedule.is_empty() {
+        return true;
     }
-    match policy {
-        PolicyConfig::Notify {
-            id,
-            time_limit_minutes,
-            notification_repeat_interval_minutes,
-            ..
-        } => {
-            let limit_minutes = *time_limit_minutes;
-            if elapsed_usage >= limit_minutes {
-                Some(PolicyVerdict::Notify {
-                    policy_id: *id,
-                    repeat_interval: *notification_repeat_interval_minutes,
-                })
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
+    schedule.iter().any(|tw| tw.is_active(now))
 }
 
-/// Evaluate policies for an app and produce a verdict.
-pub fn evaluate(policies: &[PolicyConfig], elapsed_usage: i64) -> PolicyVerdict {
-    let mut first_block: Option<PolicyVerdict> = None;
-    let mut first_notify: Option<PolicyVerdict> = None;
+/// Evaluate policies for an app given its usage and the current time.
+///
+/// `policies` **must** be pre-sorted by `priority` ascending.
+/// `usage_minutes` is the accumulated usage for the current day.
+///
+/// Returns `EvalResult` with:
+/// - `terminating`: the first Allow/Block/TimeLimit that matched (if any).
+/// - `notifies`: all matching Notify effects, in priority order.
+pub fn evaluate(
+    policies: &[Policy],
+    usage_minutes: u64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> EvalResult {
+    let mut terminating: Option<(PolicyId, Effect)> = None;
+    let mut notifies: Vec<(PolicyId, Effect)> = Vec::new();
 
     for policy in policies {
-        if !policy.active() {
+        if !filter_by_schedule(&policy.schedule, now) {
             continue;
         }
-        if let Some(block) = eval_block_policy(policy, first_block.is_some())
-            .or_else(|| eval_timelimit_policy(policy, elapsed_usage, first_block.is_some()))
-        {
-            first_block = Some(block);
-        } else if let Some(notify) =
-            eval_notify_policy(policy, elapsed_usage, first_notify.is_some())
-        {
-            first_notify = Some(notify);
+
+        match policy.effect {
+            Effect::Allow | Effect::Block | Effect::TimeLimit { .. } => {
+                if terminating.is_none() {
+                    if let Effect::TimeLimit { limit_minutes } = policy.effect
+                        && usage_minutes < limit_minutes
+                    {
+                        continue;
+                    }
+                    terminating = Some((policy.id, policy.effect));
+                    break;
+                }
+            }
+            Effect::Notify { limit_minutes } => {
+                if usage_minutes >= limit_minutes {
+                    notifies.push((policy.id, policy.effect));
+                }
+            }
         }
     }
-    first_block.or(first_notify).unwrap_or(PolicyVerdict::Ok)
+
+    EvalResult {
+        terminating,
+        notifies,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::domain::{Effect, Policy, PolicyTarget};
+    use wellbeing_core::{AppClass, PolicyId, TimeWindow};
+
+    fn policy(id: i64, effect: Effect, priority: u64) -> Policy {
+        Policy {
+            id: PolicyId(id),
+            name: format!("policy-{}", id),
+            effect,
+            target: PolicyTarget::Any,
+            priority,
+            schedule: vec![],
+            time_limit_minutes: match effect {
+                Effect::TimeLimit { limit_minutes } | Effect::Notify { limit_minutes } => {
+                    limit_minutes
+                }
+                _ => 0,
+            },
+            user_id: 1000,
+            created_by: 1000,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-07-17T10:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn test_empty_policies_unrestricted() {
+        let result = evaluate(&[], 0, now());
+        assert!(result.is_unrestricted());
+    }
+
+    #[test]
+    fn test_block_terminates() {
+        let policies = vec![policy(1, Effect::Block, 100)];
+        let result = evaluate(&policies, 0, now());
+        assert_eq!(result.terminating, Some((PolicyId(1), Effect::Block)));
+        assert!(result.notifies.is_empty());
+    }
+
+    #[test]
+    fn test_allow_terminates() {
+        let policies = vec![policy(1, Effect::Allow, 100)];
+        let result = evaluate(&policies, 0, now());
+        assert_eq!(result.terminating, Some((PolicyId(1), Effect::Allow)));
+    }
+
+    #[test]
+    fn test_time_limit_not_yet_exceeded() {
+        let policies = vec![policy(1, Effect::TimeLimit { limit_minutes: 60 }, 100)];
+        let result = evaluate(&policies, 30, now());
+        // Not exceeded — no terminating match.
+        assert!(result.terminating.is_none());
+    }
+
+    #[test]
+    fn test_time_limit_exceeded() {
+        let policies = vec![policy(1, Effect::TimeLimit { limit_minutes: 60 }, 100)];
+        let result = evaluate(&policies, 61, now());
+        assert_eq!(
+            result.terminating,
+            Some((PolicyId(1), Effect::TimeLimit { limit_minutes: 60 }))
+        );
+    }
+
+    #[test]
+    fn test_notify_non_terminating() {
+        let policies = vec![
+            policy(1, Effect::Notify { limit_minutes: 30 }, 100),
+            policy(2, Effect::Block, 200),
+        ];
+        let result = evaluate(&policies, 40, now());
+        // Notify matched and is in notifies, then Block terminates.
+        assert_eq!(result.terminating, Some((PolicyId(2), Effect::Block)));
+        assert_eq!(result.notifies.len(), 1);
+        assert_eq!(result.notifies[0].0, PolicyId(1));
+    }
+
+    #[test]
+    fn test_priority_order_first_match_wins() {
+        // Lower priority = evaluated first.
+        let policies = vec![
+            policy(1, Effect::Block, 10),  // low priority, first
+            policy(2, Effect::Allow, 100), // higher priority
+        ];
+        let result = evaluate(&policies, 0, now());
+        assert_eq!(result.terminating, Some((PolicyId(1), Effect::Block)));
+    }
+
+    #[test]
+    fn test_schedule_inactive_policy_skipped() {
+        let mut p = policy(1, Effect::Block, 100);
+        p.schedule = vec![TimeWindow {
+            start_minute: 0,
+            end_minute: 300, // 00:00–05:00 — now is 10:00, so inactive
+            day_mask: 0x7F,
+        }];
+        let result = evaluate(&[p], 0, now());
+        assert!(result.is_unrestricted());
+    }
+
+    #[test]
+    fn test_notify_only_multiple() {
+        let policies = vec![
+            policy(1, Effect::Notify { limit_minutes: 30 }, 100),
+            policy(2, Effect::Notify { limit_minutes: 60 }, 200),
+        ];
+        let result = evaluate(&policies, 45, now());
+        assert!(result.terminating.is_none());
+        assert_eq!(result.notifies.len(), 1); // Only policy 1 (limit 30) exceeded
+        assert_eq!(result.notifies[0].0, PolicyId(1));
+    }
+
+    #[test]
+    fn test_target_matches_app() {
+        let app = AppClass::new("firefox").unwrap();
+        let cat_a = "Social".to_string();
+        let cat_b = "Entertainment".to_string();
+
+        assert!(target_matches(
+            &PolicyTarget::App(app.clone()),
+            &app,
+            std::slice::from_ref(&cat_a)
+        ));
+        assert!(!target_matches(
+            &PolicyTarget::App(AppClass::new("code").unwrap()),
+            &app,
+            std::slice::from_ref(&cat_a)
+        ));
+        assert!(target_matches(
+            &PolicyTarget::Category(cat_a.clone()),
+            &app,
+            &[cat_a.clone(), cat_b.clone()]
+        ));
+        assert!(!target_matches(
+            &PolicyTarget::Category("Productivity".to_string()),
+            &app,
+            &[cat_a, cat_b]
+        ));
+        assert!(target_matches(&PolicyTarget::Any, &app, &[]));
+    }
 }

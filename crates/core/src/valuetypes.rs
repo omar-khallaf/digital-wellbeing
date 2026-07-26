@@ -1,16 +1,16 @@
 use serde::{Deserialize, Serialize};
-use zvariant::Type;
+use zvariant::{Type, Value};
 
 /// Application identifier (e.g. "firefox", "Code", "org.gnome.gedit").
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "s")]
-pub struct AppId(String);
+pub struct AppClass(String);
 
-impl AppId {
+impl AppClass {
     /// Validate and construct. Rejects empty strings.
     pub fn new(s: &str) -> Result<Self, Error> {
         if s.is_empty() {
-            return Err(Error::EmptyAppId);
+            return Err(Error::EmptyAppClass);
         }
         Ok(Self(s.to_string()))
     }
@@ -20,20 +20,20 @@ impl AppId {
     }
 }
 
-impl AsRef<str> for AppId {
+impl AsRef<str> for AppClass {
     fn as_ref(&self) -> &str {
         &self.0
     }
 }
 
-impl std::fmt::Display for AppId {
+impl std::fmt::Display for AppClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
 /// Window title string.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "s")]
 pub struct WindowTitle(String);
 
@@ -55,22 +55,24 @@ impl WindowTitle {
 }
 
 /// Process ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "u")]
 pub struct Pid(pub u32);
 
 /// Policy identifier (SQLite row id).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "t")]
 pub struct PolicyId(pub i64);
 
 /// Category identifier (SQLite row id).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "t")]
 pub struct CategoryId(pub i64);
 
 /// Duration in seconds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type, Value,
+)]
 #[zvariant(signature = "t")]
 pub struct DurationSecs(pub i64);
 
@@ -81,7 +83,9 @@ impl DurationSecs {
 }
 
 /// Unix user ID.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type, Value,
+)]
 #[zvariant(signature = "u")]
 pub struct Uid(pub u32);
 
@@ -130,7 +134,7 @@ impl DateRange {
 }
 
 /// Opaque plugin instance identifier (unique D-Bus bus name, e.g. ":1.123").
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "s")]
 pub struct PluginInstanceId(String);
 
@@ -148,6 +152,40 @@ impl PluginInstanceId {
 impl AsRef<str> for PluginInstanceId {
     fn as_ref(&self) -> &str {
         &self.0
+    }
+}
+
+/// Domain pattern for domain-targeted policies.
+///
+/// Supports exact match (`"reddit.com"`), subdomain wildcard (`"*.reddit.com"`),
+/// suffix match (`".reddit.com"`), and regex (`"/regex/"`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
+#[zvariant(signature = "s")]
+pub struct DomainPattern(String);
+
+impl DomainPattern {
+    /// Validate and construct. Rejects empty strings.
+    pub fn new(s: &str) -> Result<Self, Error> {
+        if s.is_empty() {
+            return Err(Error::InvalidArgument("DomainPattern cannot be empty"));
+        }
+        Ok(Self(s.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for DomainPattern {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for DomainPattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 

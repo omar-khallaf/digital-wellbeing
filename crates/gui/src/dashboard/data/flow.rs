@@ -120,12 +120,12 @@ pub fn spawn_dashboard_flow(
                 end: today,
             };
             match repo.fetch_all(state.uid, range).await {
-                Ok(data) => {
+                Ok(mut data) => {
                     let block_cards: Vec<BlockCardInfo> = data
                         .blocked
                         .iter()
                         .map(|b| BlockCardInfo {
-                            app_id: b.app_id.clone(),
+                            app_class: b.app_class.to_string(),
                             display_name: String::new(),
                             blocked_since: DateTime::from_timestamp(b.blocked_since as i64, 0)
                                 .unwrap_or(Utc::now()),
@@ -135,20 +135,13 @@ pub fn spawn_dashboard_flow(
                     let app_names: HashMap<String, String> = data
                         .app_categories
                         .iter()
-                        .map(|ac| (ac.app_id.clone(), ac.display_name.clone()))
+                        .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
                         .collect();
 
-                    let day_timeline = Some(build_day_timeline(data.day_events, today, &app_names));
+                    let day_timeline =
+                        Some(build_day_timeline(&mut data.day_events, today, &app_names));
 
-                    let vm = build_dashboard_viewmodel(
-                        range,
-                        &data.summaries,
-                        &data.categories,
-                        &data.app_categories,
-                        block_cards,
-                        day_timeline,
-                        &data.title_entries,
-                    );
+                    let vm = build_dashboard_viewmodel(range, &data, block_cards, day_timeline);
                     let _ = vm_tx.send(Some(vm));
                 }
                 Err(e) => {

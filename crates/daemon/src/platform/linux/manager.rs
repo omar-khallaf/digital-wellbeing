@@ -33,7 +33,7 @@ pub trait Manager {
     ///   field | type   | contents
     ///   ------+--------+-----------------------------------------------
     ///   0     | u32    | event tag (EVENT_TAG_FOCUS / _UNFOCUS / …)
-    ///   1     | string | app_id (Focus, Block)
+    ///   1     | string | app_class (Focus, Block)
     ///   2     | string | title  (Focus, Block)
     ///   3     | u32    | pid    (Focus)
     ///   4     | u32    | power_tag  (PowerEvent: Suspend / Hibernate / Shutdown)
@@ -172,13 +172,13 @@ impl Default for PluginRegistry {
 /// The payload is a D-Bus struct with signature `(ussuu)`:
 ///
 ///   [`EVENT_FIELD_TAG`]       = u32 tag  (EVENT_TAG_FOCUS / …)
-///   [`EVENT_FIELD_APP_ID`]    = string app_id
+///   [`EVENT_FIELD_APP_ID`]    = string app_class
 ///   [`EVENT_FIELD_TITLE`]     = string title
 ///   [`EVENT_FIELD_PID`]       = u32 pid
 ///   [`EVENT_FIELD_POWER_TAG`] = u32 power_tag
 ///
 /// Returns `None` on malformed input (invalid tag, bad struct shape, or
-/// empty `app_id` for Focus/Block which fails [`wellbeing_core::AppId`]
+/// empty `app_class` for Focus/Block which fails [`wellbeing_core::AppClass`]
 /// validation).
 pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
     use zvariant::Value;
@@ -192,7 +192,7 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
 
     match &f[EVENT_FIELD_TAG] {
         Value::U32(EVENT_TAG_FOCUS) => {
-            let app_id_str = match &f[EVENT_FIELD_APP_ID] {
+            let app_class_str = match &f[EVENT_FIELD_APP_ID] {
                 Value::Str(s) => s.as_str(),
                 _ => return None,
             };
@@ -204,9 +204,9 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
                 Value::U32(p) => wellbeing_core::Pid(*p),
                 _ => return None,
             };
-            let aid = wellbeing_core::AppId::new(app_id_str).ok()?;
+            let aid = wellbeing_core::AppClass::new(app_class_str).ok()?;
             Some(PlatformEvent::Focus {
-                app_id: aid,
+                app_class: aid,
                 title: wellbeing_core::WindowTitle::new(title_str),
                 pid: pid_val,
                 uid,
@@ -214,7 +214,7 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
         }
         Value::U32(EVENT_TAG_UNFOCUS) => Some(PlatformEvent::Unfocus { uid }),
         Value::U32(EVENT_TAG_BLOCK) => {
-            let app_id_str = match &f[EVENT_FIELD_APP_ID] {
+            let app_class_str = match &f[EVENT_FIELD_APP_ID] {
                 Value::Str(s) => s.as_str(),
                 _ => return None,
             };
@@ -222,9 +222,9 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
                 Value::Str(s) => s.as_str(),
                 _ => return None,
             };
-            let aid = wellbeing_core::AppId::new(app_id_str).ok()?;
+            let aid = wellbeing_core::AppClass::new(app_class_str).ok()?;
             Some(PlatformEvent::Block {
-                app_id: aid,
+                app_class: aid,
                 title: wellbeing_core::WindowTitle::new(title_str),
                 uid,
             })

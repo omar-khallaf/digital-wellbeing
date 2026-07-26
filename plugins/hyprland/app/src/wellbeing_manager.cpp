@@ -1,24 +1,11 @@
-// =============================================================================
 // WellbeingManager — D-Bus org.wellbeing.v1.Manager interface
 //
-// Implements the declarative architecture:
-//   - Registers with daemon via RegisterPlugin
-//   - Reads BlockedApps for initial overlay state
-//   - Subscribes to BlockedAppsChanged for live updates
-//   - Emits unified Event signal (replaces FocusChanged / ActivityChanged)
-//   - Close button handled locally (no UserAction signal)
-//   - Watches daemon bus name via NameOwnerChanged for auto-recovery
-//
-// The plugin connects to BOTH system and session D-Bus busses simultaneously
-// (no probing, no background retry thread). The daemon bus is resolved at
-// construction time and re-resolved when NameOwnerChanged fires.
-//
-// D-Bus calls to the daemon use C++20 coroutines (co_await) via
-// sdbus-c++'s getResultAsAwaitable() API, driven by sdbus-c++'s
-// internal event loop threads (enterEventLoopAsync).
+// Connects to both system and session D-Bus busses simultaneously (no probing,
+// no retry thread). D-Bus calls use C++20 coroutines via sdbus-c++'s
+// getResultAsAwaitable(). Daemon bus resolved at construction, re-resolved on
+// NameOwnerChanged.
 //
 // See docs/architecture/04-plugin-ipc.md and 05-daemon-auth.md.
-// =============================================================================
 
 #include "wellbeing_manager.hpp"
 
@@ -39,16 +26,12 @@
 #include "types.hpp"
 
 using wellbeing::ActionType;
-using wellbeing::AppId;
+using wellbeing::AppClass;
 using wellbeing::BlockReason;
 using wellbeing::g_ctx;
 using wellbeing::logErr;
 using wellbeing::logInfo;
 using wellbeing::windowInfoToVariant;
-
-// =============================================================================
-// WellbeingManager — implementation
-// =============================================================================
 
 namespace wellbeing {
 
@@ -65,7 +48,7 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
         ->addVTable(sdbus::registerSignal(wellbeing::EVENT_SIGNAL).withParameters<sdbus::Variant>({"payload"}),
                     sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
                         bool blocked =
-                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appId);
+                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appClass);
                         return windowInfoToVariant(g_ctx->focusState, blocked);
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
@@ -74,7 +57,7 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
         ->addVTable(sdbus::registerSignal(wellbeing::EVENT_SIGNAL).withParameters<sdbus::Variant>({"payload"}),
                     sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
                         bool blocked =
-                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appId);
+                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appClass);
                         return windowInfoToVariant(g_ctx->focusState, blocked);
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
@@ -100,8 +83,8 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
         logErr("WellbeingManager: failed to start session event loop: " + std::string(e.what()));
     }
 
-    setupNameOwnerWatch(true);  // system bus
-    setupNameOwnerWatch(false); // session bus
+    setupNameOwnerWatch(true);
+    setupNameOwnerWatch(false);
 
     setupSystemWatchers();
 
@@ -152,14 +135,14 @@ auto WellbeingManager::fetchBlocks() -> task {
         auto blocks = result.get<BlockEntries>();
 
         for (auto &block : blocks) {
-            auto &rawAppId = std::get<0>(block);
+            auto &rawAppClass = std::get<0>(block);
             auto policyId = std::get<1>(block);
             auto reason = std::get<2>(block);
             auto blockedSince = std::get<3>(block);
 
-            auto appId = AppId::from_raw(rawAppId);
-            if (!appId.has_value()) {
-                logErr("fetchBlocks: invalid appId '" + rawAppId + "' skipped");
+            auto appClass = AppClass::from_raw(rawAppClass);
+            if (!appClass.has_value()) {
+                logErr("fetchBlocks: invalid appClass '" + rawAppClass + "' skipped");
                 continue;
             }
 
@@ -169,7 +152,7 @@ auto WellbeingManager::fetchBlocks() -> task {
                 continue;
             }
 
-            m_lockManager->showOverlay(*appId, policyId, *br, blockedSince, {ActionType::Close});
+            m_lockManager->showOverlay(*appClass, policyId, *br, blockedSince, {ActionType::Close});
         }
     } catch (const sdbus::Error &e) {
         logInfo("syncBlockedApps: daemon not available (" + std::string(e.what()) + ")");
@@ -200,21 +183,29 @@ void WellbeingManager::setupBlockedAppsWatch() {
             [this](sdbus::Message msg) -> void {
                 try {
                     uint32_t uid = 0;
-                    std::string rawAppId;
+                    std::string rawAppClass;
                     bool blocked = false;
                     uint32_t reason = 0;
-                    msg >> uid >> rawAppId >> blocked >> reason;
+                    msg >> uid >> rawAppClass >> blocked >> reason;
 
-                    auto appId = AppId::from_raw(rawAppId);
-                    if (!appId.has_value()) {
-                        logErr("setupBlockedAppsWatch: invalid appId '" + rawAppId + "' skipped");
+                    auto appClass = AppClass::from_raw(rawAppClass);
+                    if (!appClass.has_value()) {
+                        logErr("setupBlockedAppsWatch: invalid appClass '" + rawAppClass + "' skipped");
                         return;
                     }
 
                     if (blocked) {
                         [this]() -> fire_and_forget { co_await fetchBlocks(); }();
+                        if (g_ctx->focusState.has_value() &&
+                            g_ctx->focusState->appClass == *appClass) {
+                            this->emitFocusEvent(g_ctx->focusState);
+                        }
                     } else {
-                        m_lockManager->hideOverlay(*appId);
+                        m_lockManager->hideOverlay(*appClass);
+                        if (g_ctx->focusState.has_value() &&
+                            g_ctx->focusState->appClass == *appClass) {
+                            this->emitFocusEvent(g_ctx->focusState);
+                        }
                     }
                 } catch (const std::exception &e) {
                     logErr("BlockedAppsChanged handler: " + std::string(e.what()));
@@ -231,14 +222,14 @@ void WellbeingManager::setupBlockedAppsWatch() {
     }
 }
 
-void WellbeingManager::emitEvent(EventTag tag, const std::string &app_id, const std::string &title, uint32_t pid,
+void WellbeingManager::emitEvent(EventTag tag, const std::string &app_class, const std::string &title, uint32_t pid,
                                  uint32_t power_tag) {
     if (!m_registered) {
         return;
     }
     auto variant = sdbus::Variant{sdbus::Struct{
         static_cast<uint32_t>(tag),
-        app_id,
+        app_class,
         title,
         pid,
         power_tag,
@@ -251,7 +242,7 @@ void WellbeingManager::emitFocusEvent(const std::optional<WindowInfo> &info) {
     if (!m_registered) {
         return;
     }
-    bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appId);
+    bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appClass);
     auto variant = windowInfoToVariant(info, blocked);
     m_sysObject->emitSignal(wellbeing::EVENT_SIGNAL).onInterface(wellbeing::MANAGER_INTERFACE).withArguments(variant);
     m_sessObject->emitSignal(wellbeing::EVENT_SIGNAL).onInterface(wellbeing::MANAGER_INTERFACE).withArguments(variant);

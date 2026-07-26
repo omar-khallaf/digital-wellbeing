@@ -130,50 +130,49 @@ Constraints (from AGENTS.md and the design docs):
 - Newtype boundary gate for all raw strings
 - Clock trait for deterministic testing
 
-### Event Processing Pipeline
+### Event Processing — True Event Log
 
-All focus events are processed through a gate-first pipeline — the EnforcerActor
-evaluates policy before any event is persisted. The enforcer runs one evaluation
-cycle per Event signal.
+The event log is an honest append-only record. Every event is written — no
+synthetic Unfocus events, no dropped Focus events.
 
-Focus arrives from the plugin as a PlatformEvent. The EnforcerActor acts as
-gatekeeper:
+**Event arrives from plugin:**
 
-1. It queries the app's daily_usage plus active policies.
-2. It evaluates the app against policies and usage before any DB write. If the
-   verdict is Block, the previous app's open interval is closed with an Unfocus
-   event, the app is added to BlockedApps so the plugin renders an overlay, no
-   Focus is written for the new app, and the blocked app never enters the event
-   log. If the verdict is Notify, the previous interval is closed, a Focus is
-   written for the new app, the app proceeds normally, and a desktop
-   notification is sent. If the policy has a repeat interval, a real-time timer
-   fires at that interval to re-notify the user while the app remains focused. A
-   limit timer is also started for other policies. If the verdict is Ok, the
-   previous interval is closed, a Focus is written for the new app, and a limit
-   timer is started for TimeLimit policies. When that timer fires, the app is
-   re-evaluated and if the limit is exceeded the overlay is shown immediately
-   without waiting for the next focus switch.
+1. `INSERT INTO apps (app_class) VALUES (?) ON CONFLICT DO NOTHING` — upsert.
+2. Plugin sends `Event` signal with tag:
+   - `tag=0` (Focus) if app is NOT in `BlockedApps`.
+   - `tag=2` (Block) if app IS in `BlockedApps`.
+3. Daemon writes the event as-is: `event_type=0` for Focus, `event_type=8` for
+   Blocked. No synthetic events, no gate. A Focus event naturally terminates the
+   previous interval; a Blocked event terminates without accumulating time.
+4. If the event was Focus: query usage + policies → `evaluate()`.
 
-Notify path: when a Notify policy triggers, the app proceeds normally — events
-are written and usage accumulates. The EnforcerActor sends a desktop
-notification via the platform notify method (freedesktop.org D-Bus Notifications
-spec). If the policy has a notification_repeat_interval_minutes, a real-time
-timer fires at that interval to re-notify the user while the app remains
-focused.
+**If Block or TimeLimit exceeded (evaluate result):**
 
-Limit timer re-triggering: when an app passes policy check and focus is granted,
-the EnforcerActor calculates the remaining seconds until its limit is reached. A
-tokio sleep task is spawned for that duration. When it fires, the EnforcerActor
-re-evaluates the app's policy. If the app is still focused and its accumulated
-usage now exceeds the limit, the overlay is shown immediately — without waiting
-for the next focus switch.
+- Update `BlockedApps` D-Bus property → emit `BlockedAppsChanged`.
+- Plugin receives `BlockedAppsChanged`, checks currently focused window — if
+  it's now in `BlockedApps`, plugin **immediately** sends `Event(tag=2=Block)`
+  without waiting for a focus switch.
+- On next focus for this app, plugin sends `Event(tag=2=Block)` directly.
+- The initial Focus→Blocked span IS accumulated (ms).
 
-Key consequences:
+**If Notify:**
 
-- Blocked apps never appear in the event log — only tracked focus is recorded.
-- The Unfocus written during a block closes the previous app's interval (A), not
-  the blocked app's (which was never opened).
-- Timer enforcement catches limit expiry during continuous use of a single app,
-  not just on focus switches.
-- Notify policies do NOT block — the app's focus interval proceeds normally, and
-  notifications are advisory.
+- Send one-shot `platform.notify()`. Interval continues normally.
+
+**If Allow or unrestricted:**
+
+- No further action. Interval continues normally.
+
+**Key consequences:**
+
+- Plugin startup: reads `BlockedApps` property, shows overlay for any blocked
+  apps that are currently focused, sends `Event(tag=2=Block)` if needed.
+- On `BlockedAppsChanged`: plugin checks currently focused window — if now
+  blocked, immediately sends `Event(tag=2=Block)` (no focus switch needed).
+- No synthetic events. Focus is always written, Blocked explicitly terminates.
+- Focus→Blocked span counts as tracked time (ms). Blocked→next-Focus does not —
+  Blocked only terminates, never starts an interval.
+- Notify is one-shot — no repeat timer.
+- No per-app `tokio::sleep` timers: a lightweight per-minute tick re-evaluates
+  the single currently focused app, catching TimeLimit expiry during continuous
+  use.

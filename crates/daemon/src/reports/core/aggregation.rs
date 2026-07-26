@@ -1,26 +1,18 @@
 //! Hourly usage aggregation and startup-interval recovery.
 
 use chrono::{NaiveDate, TimeDelta};
-use diesel::ExpressionMethods;
-use diesel::QueryDsl;
-use diesel::SelectableHelper;
-use diesel::result::QueryResult;
-use diesel_async::RunQueryDsl;
-use wellbeing_core::Uid;
+use wellbeing_core::{EventType, Uid};
 
-use crate::reports::data::models::{EventRow, HourlyUsageRow};
+use crate::reports::data::models::HourlyUsageRow;
 use crate::store::connection::DbConn;
-use crate::store::schema::events;
-use wellbeing_core::event_types::CLOSE_EVENT_TYPES;
-
-use super::get_event_range;
+use crate::store::daos::events::{EventDao, EventRow};
 
 /// Returns exactly 24 rows (hours 0-23), missing hours filled with 0.
 pub async fn get_hourly_usage(
     conn: &mut DbConn,
     user_id: Uid,
     date: NaiveDate,
-) -> QueryResult<Vec<HourlyUsageRow>> {
+) -> anyhow::Result<Vec<HourlyUsageRow>> {
     let start_millis = date
         .and_hms_opt(0, 0, 0)
         .unwrap()
@@ -32,7 +24,7 @@ pub async fn get_hourly_usage(
         .and_utc()
         .timestamp_millis();
 
-    let events = get_event_range(conn, start_millis, end_millis).await?;
+    let events = EventDao::get_event_range(conn, start_millis, end_millis).await?;
 
     let user_events: Vec<&EventRow> = events
         .iter()
@@ -43,10 +35,10 @@ pub async fn get_hourly_usage(
     let mut focus_start: Option<i64> = None;
 
     for event in &user_events {
-        if event.event_type == 0 {
-            // WindowFocused — record the start of a focus interval
+        if event.event_type == i32::from(EventType::Focus) {
+            // Focus — record the start of a focus interval
             focus_start = Some(event.timestamp);
-        } else if CLOSE_EVENT_TYPES.contains(&event.event_type) {
+        } else if EventType::try_from(event.event_type).is_ok_and(|et| et.is_close()) {
             // Close event — process any pending interval
             if let Some(start_ts) = focus_start.take() {
                 add_interval_to_hourly(&mut hourly, start_ts, event.timestamp, start_millis);
@@ -92,10 +84,15 @@ fn add_interval_to_hourly(
 }
 
 /// Check if we need to open an interval at startup (crashed with active focus).
-/// Returns `(app_id, timestamp_millis, is_paused)`.
+/// Returns `(app_class, timestamp_millis, is_paused)`.
 pub async fn open_interval_at_startup(
     conn: &mut DbConn,
-) -> QueryResult<Option<(String, i64, bool)>> {
+) -> anyhow::Result<Option<(String, i64, bool)>> {
+    use crate::store::schema::events;
+    use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
+    use diesel_async::RunQueryDsl;
+
+    // DAO only returns 1 event, but we need 2 for pause detection.
     let last = events::table
         .order(events::timestamp.desc())
         .select(EventRow::as_select())
@@ -105,10 +102,13 @@ pub async fn open_interval_at_startup(
 
     let mut iter = last.into_iter();
     match iter.next() {
-        Some(ev) if ev.event_type == 0 => {
-            let app_id = ev.app_id.unwrap_or_default();
-            let paused = iter.next().map(|e| e.event_type == 2).unwrap_or(false);
-            Ok(Some((app_id, ev.timestamp, paused)))
+        Some(ev) if ev.event_type == i32::from(EventType::Focus) => {
+            let app = ev.app_class.unwrap_or_default();
+            let paused = iter
+                .next()
+                .map(|e| e.event_type == i32::from(EventType::Idle))
+                .unwrap_or(false);
+            Ok(Some((app, ev.timestamp, paused)))
         }
         _ => Ok(None),
     }

@@ -2,14 +2,14 @@
 //! `Bar` and `Slice` live in `crate::chart` (shared with Reports).
 
 use chrono::{DateTime, NaiveDate, Utc};
-use wellbeing_core::DateRange;
+use wellbeing_core::{DateRange, EventType};
 
 use crate::chart::Slice;
 
 #[derive(Debug, Clone)]
 pub struct AppListEntry {
     pub rank: usize,
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub total_millis: i64,
     pub percentage: f64,
@@ -20,7 +20,7 @@ pub struct AppListEntry {
 #[derive(Debug, Clone)]
 pub struct TitleListEntry {
     pub rank: usize,
-    pub app_id: String,
+    pub app_class: String,
     pub title: String,
     pub total_millis: i64,
     pub percentage: f64,
@@ -28,20 +28,20 @@ pub struct TitleListEntry {
 
 #[derive(Debug, Clone)]
 pub struct BlockCardInfo {
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub blocked_since: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TimelineBlock {
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub start: DateTime<Utc>,
     /// End of this block. `None` if currently-open (last focus has no close).
     pub end: Option<DateTime<Utc>>,
-    /// Raw event_type from the events table.
-    pub event_type: u8,
+    /// Event type from the events table.
+    pub event_type: EventType,
     pub is_gap: bool,
 }
 
@@ -79,7 +79,7 @@ pub struct Kpis {
 
 #[derive(Debug, Clone)]
 pub struct TimelineFragment {
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub millis: i64,
     pub is_gap: bool,

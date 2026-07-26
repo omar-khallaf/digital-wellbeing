@@ -21,7 +21,7 @@
 #include "plugin_state.hpp"
 #include "types.hpp"
 
-using wellbeing::AppId;
+using wellbeing::AppClass;
 using wellbeing::g_ctx;
 using wellbeing::logErr;
 using wellbeing::logInfo;
@@ -249,25 +249,25 @@ void registerWindowHooks() {
                     g_ctx->focusedHyprWindow.reset();
                     g_ctx->lockManager->setFocusedApp(std::nullopt);
                 } else {
-                    const auto appIdRaw = w->m_initialClass;
+                    const auto appClassRaw = w->m_initialClass;
                     const auto title = w->m_title;
                     const auto pid = w->getPID();
 
-                    auto appId = AppId::from_raw(appIdRaw);
-                    if (!appId.has_value()) {
+                    auto appClass = AppClass::from_raw(appClassRaw);
+                    if (!appClass.has_value()) {
                         return;
                     }
 
                     g_ctx->focusedHyprWindow = w;
                     g_ctx->focusState = WindowInfo{
-                        .appId = *appId,
+                        .appClass = *appClass,
                         .title = title,
                         .pid = static_cast<uint32_t>(pid),
                         .uid = g_ctx->uid,
                     };
                     // LockManager queries g_ctx->focusState directly as single
                     // source of truth. setFocusedApp is only for initial sync.
-                    g_ctx->lockManager->setFocusedApp(appId);
+                    g_ctx->lockManager->setFocusedApp(appClass);
                     // Overlay state updates are handled reactively via the
                     // BlockedAppsChanged signal subscription in WellbeingManager.
                 }
@@ -289,23 +289,23 @@ void registerWindowHooks() {
             // title event after plugin load is reliably from the focused
             // window — use it to initialize focus state.
             if (!focused && !g_ctx->focusState.has_value()) {
-                const auto appIdRaw = w->m_initialClass;
+                const auto appClassRaw = w->m_initialClass;
                 const auto title = w->m_title;
                 const auto pid = w->getPID();
 
-                auto appId = AppId::from_raw(appIdRaw);
-                if (!appId.has_value()) {
+                auto appClass = AppClass::from_raw(appClassRaw);
+                if (!appClass.has_value()) {
                     return;
                 }
 
                 g_ctx->focusedHyprWindow = w;
                 g_ctx->focusState = WindowInfo{
-                    .appId = *appId,
+                    .appClass = *appClass,
                     .title = title,
                     .pid = static_cast<uint32_t>(pid),
                     .uid = g_ctx->uid,
                 };
-                g_ctx->lockManager->setFocusedApp(appId);
+                g_ctx->lockManager->setFocusedApp(appClass);
                 if (g_ctx->wellbeingManager) {
                     g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
                 }

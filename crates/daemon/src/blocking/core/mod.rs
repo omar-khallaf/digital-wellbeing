@@ -1,10 +1,15 @@
 //! Blocking enforcement engine — orchestration layer.
 //!
 //! [`EnforcerActor`] receives [`PlatformEvent`]s from the plugin, buffers
-//! them for batch persistence, and evaluates policies from the database at
-//! minute-tick boundaries.  The plugin is the sole source of truth for
-//! current window focus state; the daemon does NOT maintain a
-//! `current_focus` map.
+//! them for batch persistence, and evaluates policies from the database.
+//!
+//! - Focus is **always written first**. The event log is true
+//!   append-only: Focus always written, Blocked(event_type=8) terminates.
+//! - Plugin decides event tag: Focus(tag=0) if app not in BlockedApps,
+//!   Block(tag=2) if it is. Daemon writes whatever the plugin sends.
+//! - `evaluate_and_enforce` uses the new `evaluate()` function which is
+//!   priority-ordered, first-match-wins.
+//! - Per-minute tick re-evaluates the single focused app using same `evaluate()`.
 
 mod buffer;
 mod handlers;
@@ -14,41 +19,45 @@ pub(crate) use buffer::EventBuffer;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-use diesel_async::AsyncConnection;
+use chrono::{Datelike, Timelike};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 
 use wellbeing_core::*;
 
+use super::data::BlockingRepo;
 use crate::platform::linux::PluginRegistry;
 use crate::platform::{Platform, PlatformEvent};
-use crate::policy::{PolicyConfig, PolicyVerdict, evaluate, filter_policies_by_schedule};
+use crate::policy::Policy;
+use crate::policy::data::PolicyRepo;
+use crate::policy::evaluate;
 use crate::signal::DaemonSignal;
 use crate::store::DbPool;
-
-use super::data::BlockingRepo;
 
 /// Internal events for the blocking actor.
 pub enum InternalEvent {
     /// Flush the event buffer. The optional oneshot sender is signaled
-    /// after the flush completes, allowing callers (e.g. shutdown) to
-    /// await completion.
+    /// after the flush completes.
     Flush(Option<oneshot::Sender<()>>),
+    /// A policy was mutated for the given user. Re-evaluate the currently
+    /// focused app and update the blocked-apps map accordingly.
+    PolicyMutated { owner_id: Uid },
 }
 
 /// Core enforcement actor, generic over [`Platform`] and [`Clock`].
 pub struct EnforcerActor<P: Platform, C: Clock> {
-    pub(crate) repo: BlockingRepo,
-    platform: Arc<P>,
+    pub(crate) blocking_repo: BlockingRepo,
+    pub(crate) policy_repo: PolicyRepo,
     pub(crate) registry: Arc<tokio::sync::RwLock<PluginRegistry>>,
     pub(crate) blocked_apps:
-        Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppId, BlockedAppEntry>>>>,
+        Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppClass, BlockedAppEntry>>>>,
+    platform: Arc<P>,
     pub(crate) clock: C,
     signal_tx: mpsc::UnboundedSender<DaemonSignal>,
     pub(crate) event_buffer: EventBuffer,
     internal_tx: mpsc::Sender<InternalEvent>,
+    last_midnight_reset: Option<chrono::NaiveDate>,
 }
 
 impl<P: Platform, C: Clock> EnforcerActor<P, C> {
@@ -58,13 +67,14 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         registry: Arc<tokio::sync::RwLock<PluginRegistry>>,
         clock: C,
         signal_tx: mpsc::UnboundedSender<DaemonSignal>,
-        blocked_apps: Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppId, BlockedAppEntry>>>>,
+        blocked_apps: Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppClass, BlockedAppEntry>>>>,
     ) -> (Self, mpsc::Receiver<InternalEvent>) {
         let (internal_tx, internal_rx) = mpsc::channel::<InternalEvent>(32);
 
         (
             Self {
-                repo: BlockingRepo::new(pool),
+                policy_repo: PolicyRepo::new(pool.clone()),
+                blocking_repo: BlockingRepo::new(pool),
                 platform,
                 registry,
                 blocked_apps,
@@ -72,20 +82,21 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 signal_tx,
                 event_buffer: EventBuffer::default(),
                 internal_tx,
+                last_midnight_reset: None,
             },
             internal_rx,
         )
     }
 
-    /// Returns a cloneable sender for sending [`InternalEvent`] signals
-    /// (used by main.rs minute-ticker to dispatch `InternalEvent::Flush`).
     pub fn flush_handle(&self) -> mpsc::Sender<InternalEvent> {
         self.internal_tx.clone()
     }
 
-    /// Main actor loop. Listens for both platform events and internal
-    /// events (flush requests) so that shutdown flushes are processed
-    /// even when no platform events are arriving.
+    pub fn policy_mutation_handle(&self) -> mpsc::Sender<InternalEvent> {
+        self.internal_tx.clone()
+    }
+
+    /// Main actor loop.
     pub async fn run(
         &mut self,
         mut enforcer_rx: mpsc::Receiver<PlatformEvent>,
@@ -115,7 +126,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         }
     }
 
-    /// Drain remaining internal events after the platform channel closes.
     async fn drain_remaining(&mut self, internal_rx: &mut mpsc::Receiver<InternalEvent>) {
         while let Ok(event) = internal_rx.try_recv() {
             self.handle_internal_event(event, "Final flush failed during shutdown")
@@ -131,23 +141,27 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 } else if let Err(e) = self.evaluate_and_enforce(self.clock.now()).await {
                     error!(error = %e, "Policy evaluation failed on minute-tick");
                 }
+                if let Err(e) = self.maybe_midnight_reset().await {
+                    error!(error = %e, "midnight_reset failed");
+                }
                 if let Some(tx) = ack {
                     let _ = tx.send(());
+                }
+            }
+            InternalEvent::PolicyMutated { owner_id } => {
+                if let Err(e) = self
+                    .handle_policy_mutation(owner_id, self.clock.now())
+                    .await
+                {
+                    error!(error = %e, "Policy mutation handler failed");
                 }
             }
         }
     }
 
-    /// Flush buffered events to the database, apply closed-interval deltas
-    /// from the buffer, and refresh open intervals — in a single transaction.
-    ///
-    /// All affected UIDs (from events and registered plugins) receive a
-    /// [`DaemonSignal::DailyUsageChanged`] so the daily-usage counter advances
-    /// even when no focus-switch events arrive.
+    /// Flush buffered events to the database.
     pub async fn flush_buffer(&mut self) -> anyhow::Result<()> {
         let now = self.clock.now();
-
-        // Collect affected uids once — before draining the buffer.
         let event_uids = self.event_buffer.uids();
         let all_uids = {
             let mut set: std::collections::HashSet<Uid> = event_uids.iter().copied().collect();
@@ -156,40 +170,24 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         };
 
         let events = self.event_buffer.drain();
-        let mut conn = self.repo.pool.get().await?;
-
-        conn.transaction(async |conn| {
-            if !events.is_empty() {
-                self.repo
-                    .apply_closed_deltas_from_buffer(conn, &events, &event_uids, now)
-                    .await?;
-                self.repo.flush_events(conn, &events).await?;
-            }
-            BlockingRepo::refresh_open_intervals(conn, &all_uids, now).await?;
-            Ok::<_, anyhow::Error>(())
-        })
-        .await?;
+        self.blocking_repo
+            .flush_with_deltas(&events, &event_uids, &all_uids, now)
+            .await?;
 
         self.emit_daily_usage_changed(&all_uids);
-
         Ok(())
     }
 
-    /// Emit [`DaemonSignal::DailyUsageChanged`] for every UID whose usage
-    /// may have changed during this flush cycle.
     fn emit_daily_usage_changed(&self, uids: &[Uid]) {
-        for uid in uids {
-            let _ = self
-                .signal_tx
-                .send(DaemonSignal::DailyUsageChanged { uid: uid.0 });
+        for &uid in uids {
+            let _ = self.signal_tx.send(DaemonSignal::DailyUsageChanged { uid });
         }
     }
 
-    /// Evaluate policies for all currently focused apps and enforce blocks.
-    ///
-    /// Queries the plugin registry for each registered uid's current focus
-    /// since the plugin is the sole source of truth for window state.
-    async fn evaluate_and_enforce(&mut self, now: DateTime<Utc>) -> anyhow::Result<()> {
+    async fn evaluate_and_enforce(
+        &mut self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
         let uids = self.registry.read().await.registered_uids();
 
         for uid in uids {
@@ -197,79 +195,258 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 let reg = self.registry.read().await;
                 reg.current_focus_for_uid(uid).await
             };
-            let Some(event) = focused else {
-                continue;
-            };
-            let Some(app_id) = event.app_id() else {
+            let Some(event) = focused else { continue };
+            let Some(app_class) = event.app_class() else {
                 continue;
             };
 
-            if let Ok(usage_ms) = self.repo.fetch_usage(app_id, uid, &self.clock).await {
-                let categories = match self.repo.fetch_categories(app_id, uid).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(%app_id, error = %e, "Failed to fetch categories");
-                        Vec::new()
-                    }
-                };
-                let policies = match self
-                    .resolve_filtered_policies(app_id, &categories, uid)
-                    .await
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        tracing::warn!(%app_id, error = %e, "Failed to resolve policies");
-                        Vec::new()
-                    }
-                };
-                let usage_min = usage_ms / 60000;
-                let verdict = evaluate(&policies, usage_min);
-
-                match verdict {
-                    PolicyVerdict::Block {
-                        policy_id, reason, ..
-                    } => {
-                        info!(%app_id, "Limit exceeded — enforcing block");
-                        let entry = BlockedAppEntry {
-                            app_id: app_id.as_ref().to_string(),
-                            policy_id: policy_id.0 as u64,
-                            reason: reason as u32,
-                            blocked_since: now.timestamp_millis() as u64,
-                        };
-                        self.blocked_apps
-                            .write()
-                            .await
-                            .entry(uid)
-                            .or_default()
-                            .insert(app_id.clone(), entry);
+            match self.evaluate_single_app(uid, app_class, now).await? {
+                Some(entry) => {
+                    let reason = entry.reason;
+                    let was_new = self
+                        .blocked_apps
+                        .write()
+                        .await
+                        .entry(uid)
+                        .or_default()
+                        .insert(app_class.clone(), entry)
+                        .is_none();
+                    if was_new {
                         let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
-                            uid: uid.0,
-                            app_id: app_id.clone(),
+                            uid,
+                            app_class: app_class.clone(),
                             blocked: true,
-                            reason: reason as u32,
+                            reason,
                         });
                     }
-                    PolicyVerdict::Notify { .. } => {
-                        let body = format!("{} has exceeded its usage limit.", app_id);
-                        if let Err(e) = self.platform.notify("Usage limit reached", &body).await {
-                            tracing::warn!(%app_id, error = %e, "Failed to send notification");
-                        }
+                }
+                None => {
+                    if self
+                        .blocked_apps
+                        .write()
+                        .await
+                        .entry(uid)
+                        .or_default()
+                        .remove(app_class)
+                        .is_some()
+                    {
+                        let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                            uid,
+                            app_class: app_class.clone(),
+                            blocked: false,
+                            reason: BlockReason::AppBlock,
+                        });
                     }
-                    PolicyVerdict::Ok => {}
                 }
             }
         }
         Ok(())
     }
 
-    /// Fetch policies for an app and filter by active schedule.
-    async fn resolve_filtered_policies(
-        &self,
-        app_id: &AppId,
-        categories: &[CategoryId],
+    /// Handles notification side-effects internally.
+    async fn evaluate_single_app(
+        &mut self,
         uid: Uid,
-    ) -> anyhow::Result<Vec<PolicyConfig>> {
-        let policies = self.repo.fetch_policies(app_id, categories, uid).await?;
-        Ok(filter_policies_by_schedule(policies, self.clock.now()))
+        app_class: &AppClass,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<Option<BlockedAppEntry>> {
+        // Upsert app into registry, get apps.id
+        let app_id = match self.blocking_repo.ensure_app(app_class).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(%app_class, error = %e, "Failed to upsert app");
+                return Ok(None);
+            }
+        };
+
+        let category_names = match self
+            .blocking_repo
+            .resolve_category_names(app_class, uid)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(%app_class, error = %e, "Failed to fetch category names");
+                Vec::new()
+            }
+        };
+
+        // Use actual wall-clock time for schedule resolution (day_mask, minute_of_day)
+        // to avoid mocked-clock discrepancies in minute-granularity checks.
+        let now_local = chrono::Utc::now();
+        let minute_of_day = (now_local.hour() * 60 + now_local.minute()) as i32;
+        let day_mask = 1i32 << now_local.weekday().num_days_from_sunday();
+        let policies: Vec<Policy> = match self
+            .policy_repo
+            .resolve_for_app(app_id, &category_names, uid, day_mask, minute_of_day)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(%app_class, error = %e, "Failed to fetch policies");
+                Vec::new()
+            }
+        };
+
+        if policies.is_empty() {
+            return Ok(None);
+        }
+
+        let today = now.format("%Y-%m-%d").to_string();
+        let usage_ms = match self
+            .blocking_repo
+            .get_today_usage(app_id, uid, &today)
+            .await
+        {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(%app_class, error = %e, "Failed to fetch usage");
+                0
+            }
+        };
+        let usage_min = (usage_ms / 60000) as u64;
+        let result = evaluate(&policies, usage_min, now);
+
+        // Handle Notify effects (non-terminating) — fire-and-forget.
+        for (_notify_id, effect) in &result.notifies {
+            if matches!(effect, crate::policy::Effect::Notify { .. }) {
+                let body = format!("{} has exceeded its usage threshold.", app_class);
+                if let Err(e) = self.platform.notify("Usage limit reached", &body).await {
+                    tracing::warn!(%app_class, error = %e, "Failed to send notification");
+                }
+            }
+        }
+
+        // Handle terminating policy — only Block / TimeLimit produce an entry.
+        if let Some((policy_id, ref effect)) = result.terminating {
+            match effect {
+                crate::policy::Effect::Block => {
+                    info!(%app_class, "Block policy matched — enforcing block");
+                    return Ok(Some(BlockedAppEntry {
+                        app_class: app_class.clone(),
+                        policy_id,
+                        reason: BlockReason::AppBlock,
+                        blocked_since: now.timestamp_millis() as u64,
+                    }));
+                }
+                crate::policy::Effect::TimeLimit { .. } => {
+                    info!(%app_class, "TimeLimit exceeded — enforcing block");
+                    return Ok(Some(BlockedAppEntry {
+                        app_class: app_class.clone(),
+                        policy_id,
+                        reason: BlockReason::AppTimeLimit,
+                        blocked_since: now.timestamp_millis() as u64,
+                    }));
+                }
+                crate::policy::Effect::Allow | crate::policy::Effect::Notify { .. } => {
+                    // Allow = no-op; Notify already handled above.
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn handle_policy_mutation(
+        &mut self,
+        owner_id: Uid,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        let focused = {
+            let reg = self.registry.read().await;
+            reg.current_focus_for_uid(owner_id).await
+        };
+        let Some(event) = focused else { return Ok(()) };
+        let Some(app_class) = event.app_class() else {
+            return Ok(());
+        };
+
+        match self.evaluate_single_app(owner_id, app_class, now).await? {
+            Some(entry) => {
+                let reason = entry.reason;
+                let was_new = self
+                    .blocked_apps
+                    .write()
+                    .await
+                    .entry(owner_id)
+                    .or_default()
+                    .insert(app_class.clone(), entry)
+                    .is_none();
+                if was_new {
+                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                        uid: owner_id,
+                        app_class: app_class.clone(),
+                        blocked: true,
+                        reason,
+                    });
+                }
+            }
+            None => {
+                if self
+                    .blocked_apps
+                    .write()
+                    .await
+                    .entry(owner_id)
+                    .or_default()
+                    .remove(app_class)
+                    .is_some()
+                {
+                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                        uid: owner_id,
+                        app_class: app_class.clone(),
+                        blocked: false,
+                        reason: BlockReason::AppBlock,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check whether the date has rolled over since the last midnight reset.
+    /// If it has, clear daily time-limit blocks and update the tracker.
+    async fn maybe_midnight_reset(&mut self) -> anyhow::Result<()> {
+        let now_utc = chrono::Utc::now();
+        let today = now_utc.date_naive();
+        if let Some(last) = self.last_midnight_reset
+            && last >= today
+        {
+            return Ok(());
+        }
+        // Only perform the reset if we have a prior record (i.e. this is not
+        // the very first check after actor start).
+        if self.last_midnight_reset.is_some() {
+            self.midnight_reset().await?;
+        }
+        self.last_midnight_reset = Some(today);
+        Ok(())
+    }
+
+    /// Remove all time-limit-based blocks (daily resets) and emit
+    /// `BlockedAppsChanged` with `blocked: false` for each removed entry.
+    ///
+    /// Hard blocks (`AppBlock`, `CategoryBlock`) are permanent and survive
+    /// midnight rollover.
+    async fn midnight_reset(&mut self) -> anyhow::Result<()> {
+        let mut blocks = self.blocked_apps.write().await;
+        for (uid, apps) in blocks.iter_mut() {
+            apps.retain(|_app_class, entry| {
+                if matches!(
+                    entry.reason,
+                    BlockReason::AppBlock | BlockReason::CategoryBlock
+                ) {
+                    true
+                } else {
+                    // Time-limit blocks — daily, reset.
+                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                        uid: *uid,
+                        app_class: entry.app_class.clone(),
+                        blocked: false,
+                        reason: entry.reason,
+                    });
+                    false
+                }
+            });
+        }
+        Ok(())
     }
 }

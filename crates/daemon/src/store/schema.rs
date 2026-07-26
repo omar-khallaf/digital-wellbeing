@@ -1,5 +1,7 @@
-//! Diesel table definitions matching the migration SQL.
-//! Generated manually to match the initial migration schema.
+//! Diesel table definitions — manually maintained to match migration SQL.
+//!
+//! WARNING: This file is the single source of truth for compile-time
+//! table access. Keep in sync with migration files.
 
 diesel::table! {
     events (id) {
@@ -7,16 +9,33 @@ diesel::table! {
         event_type -> Integer,
         user_id -> Integer,
         timestamp -> BigInt,
-        app_id -> Nullable<Text>,
+        app_class -> Nullable<Text>,
         title -> Nullable<Text>,
     }
 }
 
 diesel::table! {
-    daily_usage (date, user_id, app_id) {
+    apps (id) {
+        id -> Integer,
+        app_class -> Text,
+    }
+}
+
+diesel::table! {
+    daily_usage_by_app (date, user_id, app_id) {
         date -> Text,
         user_id -> Integer,
-        app_id -> Text,
+        app_id -> Integer,
+        closed_millis -> BigInt,
+        open_millis -> BigInt,
+    }
+}
+
+diesel::table! {
+    daily_usage_by_category (date, user_id, category_id) {
+        date -> Text,
+        user_id -> Integer,
+        category_id -> Integer,
         closed_millis -> BigInt,
         open_millis -> BigInt,
     }
@@ -26,7 +45,7 @@ diesel::table! {
     daily_usage_by_title (date, user_id, app_id, title) {
         date -> Text,
         user_id -> Integer,
-        app_id -> Text,
+        app_id -> Integer,
         title -> Text,
         closed_millis -> BigInt,
         open_millis -> BigInt,
@@ -47,25 +66,32 @@ diesel::table! {
     policies (id) {
         id -> Integer,
         name -> Text,
-        action -> Integer,
+        priority -> Integer,
+        effect -> Integer,
+        target_type -> Integer,
+        app_id -> Nullable<Integer>,
         category_id -> Nullable<Integer>,
-        app_id -> Nullable<Text>,
-        created_by -> Integer,
-        owner_id -> Integer,
+        domain_pattern -> Nullable<Text>,
         time_limit_minutes -> Nullable<Integer>,
-        notification_repeat_interval_minutes -> Nullable<Integer>,
-        schedule_start_hour -> Nullable<Integer>,
-        schedule_end_hour -> Nullable<Integer>,
-        schedule_days -> Text,
-        active -> Bool,
+        user_id -> Integer,
+        created_by -> Integer,
         created_at -> Text,
         updated_at -> Text,
     }
 }
 
 diesel::table! {
+    policy_schedules (policy_id, start_minute, end_minute) {
+        policy_id -> Integer,
+        start_minute -> Integer,
+        end_minute -> Integer,
+        day_mask -> Integer,
+    }
+}
+
+diesel::table! {
     app_categories (app_id, user_id) {
-        app_id -> Text,
+        app_id -> Integer,
         user_id -> Integer,
         category_id -> Nullable<Integer>,
         display_name -> Nullable<Text>,
@@ -74,3 +100,25 @@ diesel::table! {
         updated_at -> Text,
     }
 }
+
+// ── Allow joins between tables ───────────────────────────────────────────────
+
+diesel::joinable!(daily_usage_by_app -> apps (app_id));
+diesel::joinable!(daily_usage_by_title -> apps (app_id));
+diesel::joinable!(daily_usage_by_category -> categories (category_id));
+diesel::joinable!(policy_schedules -> policies (policy_id));
+diesel::joinable!(policies -> apps (app_id));
+diesel::joinable!(policies -> categories (category_id));
+diesel::joinable!(app_categories -> apps (app_id));
+
+diesel::allow_tables_to_appear_in_same_query!(
+    events,
+    apps,
+    daily_usage_by_app,
+    daily_usage_by_category,
+    daily_usage_by_title,
+    categories,
+    policies,
+    policy_schedules,
+    app_categories,
+);

@@ -10,11 +10,16 @@ pub struct Category {
     pub icon: String,
 }
 
+/// App-to-category assignment row.
+///
+/// Fields use validated domain types where the D-Bus signature is preserved
+/// (`AppClass` has the same `s` signature as `String`; `Uid` has the same `u`
+/// signature as `u32`).
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AppCategoryRow {
-    pub app_id: String,
-    pub user_id: u32,
-    pub category_id: i64,
+    pub app_class: AppClass,
+    pub user_id: Uid,
+    pub category_id: CategoryId,
     pub display_name: String,
     pub icon_path: String,
     pub ignore: bool,

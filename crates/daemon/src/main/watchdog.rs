@@ -13,8 +13,9 @@ use tracing::{error, info, warn};
 use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{DAEMON_BUS_NAME, DAEMON_OBJECT_PATH};
 use wellbeing_daemon::{
-    bus_resolution::BusMode, dbus::DaemonInterface, dbus::domain::BlockedAppsMap,
-    platform::PlatformEvent, platform::linux::PluginRegistry, store::DbPool,
+    blocking::InternalEvent, bus_resolution::BusMode, dbus::DaemonInterface,
+    dbus::domain::BlockedAppsMap, platform::PlatformEvent, platform::linux::PluginRegistry,
+    store::DbPool,
 };
 
 #[zbus::proxy(
@@ -39,6 +40,7 @@ pub(crate) fn spawn(
     recovery_pool: DbPool,
     recovery_registry: Arc<RwLock<PluginRegistry>>,
     recovery_event_tx: tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
+    recovery_policy_tx: tokio::sync::mpsc::Sender<InternalEvent>,
     recovery_blocked_apps: BlockedAppsMap,
     serving_state: Arc<RwLock<Option<(zbus::Connection, String)>>>,
     shutdown_token: CancellationToken,
@@ -49,6 +51,7 @@ pub(crate) fn spawn(
             recovery_pool,
             recovery_registry,
             recovery_event_tx,
+            recovery_policy_tx,
             recovery_blocked_apps,
             serving_state,
             shutdown_token,
@@ -62,6 +65,7 @@ async fn run(
     recovery_pool: DbPool,
     recovery_registry: Arc<RwLock<PluginRegistry>>,
     recovery_event_tx: tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
+    recovery_policy_tx: tokio::sync::mpsc::Sender<InternalEvent>,
     recovery_blocked_apps: BlockedAppsMap,
     serving_state: Arc<RwLock<Option<(zbus::Connection, String)>>>,
     shutdown_token: CancellationToken,
@@ -109,6 +113,7 @@ async fn run(
                                         &recovery_pool,
                                         &recovery_registry,
                                         &recovery_event_tx,
+                                        &recovery_policy_tx,
                                         &recovery_blocked_apps,
                                         &shutdown_token,
                                     ).await;
@@ -144,6 +149,7 @@ async fn attempt_recovery(
     recovery_pool: &DbPool,
     recovery_registry: &Arc<RwLock<PluginRegistry>>,
     recovery_event_tx: &tokio::sync::mpsc::UnboundedSender<PlatformEvent>,
+    recovery_policy_tx: &tokio::sync::mpsc::Sender<InternalEvent>,
     recovery_blocked_apps: &BlockedAppsMap,
     shutdown_token: &CancellationToken,
 ) {
@@ -186,12 +192,15 @@ async fn attempt_recovery(
         };
 
         let fresh_interface = DaemonInterface::new(
-            recovery_pool.clone(),
+            wellbeing_daemon::policy::data::PolicyRepo::new(recovery_pool.clone()),
+            wellbeing_daemon::categorization::data::CategorizationRepo::new(recovery_pool.clone()),
+            wellbeing_daemon::reports::data::ReportsRepo::new(recovery_pool.clone()),
             recovery_registry.clone(),
             recovery_event_tx.clone(),
             Box::new(SystemClock),
             recovery_blocked_apps.clone(),
             tokio::runtime::Handle::current(),
+            recovery_policy_tx.clone(),
         );
 
         if let Err(e) = fresh_conn

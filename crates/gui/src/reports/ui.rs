@@ -105,7 +105,7 @@ pub fn render_reports_view(
                 .iter()
                 .map(|e| TitleEntryView {
                     rank: e.rank,
-                    app_id: e.app_id.clone(),
+                    app_class: e.app_class.clone(),
                     title: e.title.clone(),
                     total_millis: e.total_millis,
                     percentage: e.percentage,

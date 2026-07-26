@@ -23,7 +23,7 @@ pub(super) fn block_card(cx: &App, info: &BlockCardInfo) -> AnyElement {
     };
 
     let display = if info.display_name.is_empty() {
-        &info.app_id
+        &info.app_class
     } else {
         &info.display_name
     };

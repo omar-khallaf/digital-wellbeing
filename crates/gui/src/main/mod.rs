@@ -49,29 +49,21 @@ async fn main() {
     let uid = nix::unistd::Uid::current().as_raw();
     info!(mode = ?mode, uid, "GUI starting");
 
-    // ------------------------------------------------------------------
     // 1. BusManager — dual-bus connections with daemon resolution
-    // ------------------------------------------------------------------
     let bus = BusManager::connect().await;
     let daemon_available = Arc::new(RwLock::new(bus.status().await.is_connected()));
     let connection_status = Arc::new(RwLock::new(bus.status().await));
 
-    // ------------------------------------------------------------------
     // 2. Daemon presence broadcast — instant (dis)appearance detection
-    // ------------------------------------------------------------------
     let presence_rx =
         dbus::spawn_daemon_presence_broadcast(&bus.system_connection(), &bus.session_connection());
 
-    // ------------------------------------------------------------------
     // 3. Repositories (timeout-guarded D-Bus access)
-    // ------------------------------------------------------------------
     let dash_repo = DashboardRepo::new(bus.clone());
     let policies_repo = PoliciesRepo::new(bus.clone());
     let reports_repo = ReportsRepo::new(bus);
 
-    // ------------------------------------------------------------------
     // 4. Shared state
-    // ------------------------------------------------------------------
     let selected_range = Arc::new(RwLock::new(DateRange::last_n_days(7)));
     let state = Arc::new(AppState {
         mode,
@@ -81,9 +73,7 @@ async fn main() {
         connection_status: connection_status.clone(),
     });
 
-    // ------------------------------------------------------------------
     // 5. Daemon presence → AppState connection status
-    // ------------------------------------------------------------------
     {
         let daemon_available = daemon_available.clone();
         let connection_status = connection_status.clone();
@@ -107,18 +97,14 @@ async fn main() {
         });
     }
 
-    // ------------------------------------------------------------------
     // 6. Broadcast channels for per-flow manual refresh triggers
-    // ------------------------------------------------------------------
     let (dash_refresh_tx, dash_refresh_rx) = broadcast::channel::<()>(16);
     let (pol_refresh_tx, pol_refresh_rx) = broadcast::channel::<()>(16);
     let (rep_refresh_tx, rep_refresh_rx) = broadcast::channel::<()>(16);
 
-    // ------------------------------------------------------------------
     // 6. Per-flow ViewModel channels + merge task
     //    Each flow pushes its own ViewModel type; a merge task combines
     //    them into AppViewModels bundles for the GPUI entity.
-    // ------------------------------------------------------------------
     let (dash_vm_tx, mut dash_vm_rx) = mpsc::unbounded_channel();
     let (pol_vm_tx, mut pol_vm_rx) = mpsc::unbounded_channel();
     let (rep_vm_tx, mut rep_vm_rx) = mpsc::unbounded_channel();
@@ -141,9 +127,7 @@ async fn main() {
         }
     });
 
-    // ------------------------------------------------------------------
     // 7. Spawn background flows (one per screen)
-    // ------------------------------------------------------------------
     let presence_rx1 = presence_rx.resubscribe();
     let presence_rx2 = presence_rx.resubscribe();
     let presence_rx3 = presence_rx.resubscribe();
@@ -185,9 +169,6 @@ async fn main() {
     let _ = pol_refresh_tx.send(());
     let _ = rep_refresh_tx.send(());
 
-    // ------------------------------------------------------------------
-    // 8. GPUI application
-    // ------------------------------------------------------------------
     Application::new_inaccessible(gpui_platform::current_platform(false)).run(move |app| {
         gpui_component::init(app);
         Theme::sync_system_appearance(None, app);
@@ -214,6 +195,7 @@ async fn main() {
                 let mut a = App::new(state.clone());
                 a.set_policies_repo(policies_repo);
                 a.set_reports_refresh_tx(reports_refresh_tx);
+                a.set_pol_refresh_tx(pol_refresh_tx);
                 a
             });
 

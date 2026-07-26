@@ -98,6 +98,22 @@ impl DashboardRepo {
             .map_err(Into::into)
     }
 
+    pub async fn get_usage_range_by_category(
+        &self,
+        start: &str,
+        end: &str,
+        uid: u32,
+    ) -> Result<Vec<DailyUsageByCategoryEntry>> {
+        let proxy = self.proxy().await?;
+        timeout(
+            DBUS_TIMEOUT,
+            proxy.get_usage_range_by_category(start, end, uid),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout: get_usage_range_by_category"))?
+        .map_err(Into::into)
+    }
+
     /// Fetch all data needed to build a `DashboardViewModel`.
     ///
     /// Each D-Bus call has an independent 10s timeout so one hung call
@@ -119,11 +135,12 @@ impl DashboardRepo {
             .and_utc()
             .timestamp_millis();
 
-        let (usage, blocks, day_events, title, cats, app_cats) = tokio::join!(
+        let (usage, blocks, day_events, title, cat_usage, cats, app_cats) = tokio::join!(
             self.get_usage_range(&start, &end, uid),
             self.get_blocked_apps(),
             self.get_day_events(uid, day_start_ms, day_end_ms),
             self.get_daily_usage_by_title(&start, uid),
+            self.get_usage_range_by_category(&start, &end, uid),
             self.list_categories(),
             self.get_app_categories(),
         );
@@ -145,6 +162,10 @@ impl DashboardRepo {
                 warn!("dashboard: get_daily_usage_by_title failed: {e}");
                 vec![]
             }),
+            category_entries: cat_usage.unwrap_or_else(|e| {
+                warn!("dashboard: get_usage_range_by_category failed: {e}");
+                vec![]
+            }),
             categories: cats.unwrap_or_else(|e| {
                 warn!("dashboard: list_categories failed: {e}");
                 vec![]
@@ -164,6 +185,7 @@ pub struct DashboardData {
     pub blocked: Vec<BlockedAppEntry>,
     pub day_events: Vec<DayEventRow>,
     pub title_entries: Vec<DailyUsageByTitleEntry>,
+    pub category_entries: Vec<DailyUsageByCategoryEntry>,
     pub categories: Vec<Category>,
     pub app_categories: Vec<AppCategoryRow>,
 }

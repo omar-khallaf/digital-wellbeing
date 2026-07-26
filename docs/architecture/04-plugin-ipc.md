@@ -51,9 +51,9 @@ flowchart LR
 
 Signals (plugin -> daemon):
 
-| Signal | Payload                                                                                                                                              | When                                                   |
-| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Event  | (u32, String, String, u32, u32) — (tag, app_id, title, pid, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block; power_tag encodes idle/resume/power | On every compositor focus switch and idle state change |
+| Signal | Payload                                                                                                                                                 | When                                                   |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Event  | (u32, String, String, u32, u32) — (tag, app_class, title, pid, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block; power_tag encodes idle/resume/power | On every compositor focus switch and idle state change |
 
 Property (readable):
 
@@ -110,8 +110,8 @@ stateDiagram-v2
     DaemonBlocks --> EmitSignal: BlockedAppsChanged{blocked: true}
     EmitSignal --> PluginReceives: Plugin subscribes
     PluginReceives --> UpdateOverlay: Update local overlay set
-    UpdateOverlay --> ShowOverlay: If app_id currently focused
-    UpdateOverlay --> ReadyOverlay: If app_id not focused
+    UpdateOverlay --> ShowOverlay: If app_class currently focused
+    UpdateOverlay --> ReadyOverlay: If app_class not focused
 
     [*] --> DaemonUnblocks: App no longer focused / policy re-eval
     DaemonUnblocks --> EmitUnblock: BlockedAppsChanged{blocked: false}
@@ -132,15 +132,15 @@ flowchart LR
 
 ## Per-App Multi-Overlay Model
 
-Blocking enforcement is keyed by app_id, never by window. The daemon is
-window-count agnostic: it writes one entry per app_id to BlockedApps. Whether
+Blocking enforcement is keyed by app_class, never by window. The daemon is
+window-count agnostic: it writes one entry per app_class to BlockedApps. Whether
 the app has one window or fifty, the entry covers all windows.
 
 ```mermaid
 flowchart TD
     subgraph Daemon["Daemon BlockedApps"]
-        A[app_id: firefox]
-        B[app_id: discord]
+        A[app_class: firefox]
+        B[app_class: discord]
     end
 
     subgraph Plugin["Plugin Overlay Set"]
@@ -152,15 +152,15 @@ flowchart TD
     B --> D
 ```
 
-The plugin treats every window of the app_id as a single logical surface. When
-an app_id appears in BlockedApps, the plugin renders a block overlay over every
-window owned by the app and traps both mouse and keyboard input on each blocked
-window. The overlay presents the daemon-specified action buttons
+The plugin treats every window of the app_class as a single logical surface.
+When an app_class appears in BlockedApps, the plugin renders a block overlay
+over every window owned by the app and traps both mouse and keyboard input on
+each blocked window. The overlay presents the daemon-specified action buttons
 (available_actions).
 
 Multiple distinct apps can be blocked at the same time. The plugin tracks an
-unordered set of active overlays keyed by app_id, populated entirely from daemon
-state (not from commands).
+unordered set of active overlays keyed by app_class, populated entirely from
+daemon state (not from commands).
 
 Overlay lifetime: an overlay persists until the daemon removes the app from
 BlockedApps. Focus state does not affect overlay visibility — a blocked app's
@@ -185,28 +185,28 @@ triggers overlay removal.
 
 ## Idle Detection
 
-Idle/Resumed are produced by the compositor plugin, not logind. The plugin
-tracks user activity (keyboard, mouse, touchpad, and video-player playback) and
-exposes it via the unified Event D-Bus signal on org.wellbeing.v1.Manager. The
-daemon subscribes and maps Idle -> Idle (pause), Resumed -> Resumed (unpause)
+Idle/Resume are produced by the compositor plugin, not logind. The plugin tracks
+user activity (keyboard, mouse, touchpad, and video-player playback) and exposes
+it via the unified Event D-Bus signal on org.wellbeing.v1.Manager. The daemon
+subscribes and maps Idle -> Idle (pause), Resume -> Resume (unpause)
 PlatformEvents.
 
 ```mermaid
 flowchart LR
     A[User activity] --> B[Plugin idle tracker]
     B -->|idle threshold exceeded| C[Event(Idle)]
-    B -->|activity resumes| D[Event(Resumed)]
+    B -->|activity resumes| D[Event(Resume)]
     C --> E[Daemon pauses interval]
     D --> F[Daemon resumes interval]
 ```
 
-Tracked time includes idle spans. Idle/Resumed only affect the GUI's idle
+Tracked time includes idle spans. Idle/Resume only affect the GUI's idle
 breakdown display, not daily usage or limit enforcement.
 
 Key points:
 
-- Idle/Resumed carry no app_id; the app they pause is the open interval from the
-  most recent Focus.
+- Idle/Resume carry no app_class; the app they pause is the open interval from
+  the most recent Focus.
 - Idle is the ONLY event that pauses an interval. Suspend/lock/logout/shutdown
   CLOSE it instead (see
   [03-linux-platform.md](./03-linux-platform.md#power--session-state-handling)).
@@ -253,8 +253,17 @@ sequenceDiagram
 
     P->>D: Get BlockedApps (initial sync)
     P->>D: Subscribe to BlockedAppsChanged
+    P->>P: If current focused app in BlockedApps → send Event(tag=2=Block)
     P->>P: Reconcile overlays
 ```
+
+On `BlockedAppsChanged`, the plugin checks its currently focused window:
+
+- If the focused app is now in `BlockedApps` → **immediately** sends
+  `Event(tag=2=Block)` for that app (no focus switch needed). This catches the
+  case where a per-minute tick detects TimeLimit expiry during continuous use.
+- If the focused app was removed from `BlockedApps` → sends `Event(tag=0=Focus)`
+  for that app (re-opens normal tracking).
 
 On disconnect, overlays on the compositor remain as-is (the plugin process
 disappears with its compositor hooks). When the plugin reconnects, it reads

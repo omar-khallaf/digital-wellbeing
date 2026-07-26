@@ -13,7 +13,7 @@ The OS-specific surface area is:
    compositor.
 2. **Block state exposure** — how the daemon publishes the set of currently
    blocked apps for the plugin to consume.
-3. **App metadata** — how to resolve app_id to display name and icon.
+3. **App metadata** — how to resolve app_class to display name and icon.
 4. **Power state** — how to detect suspend/shutdown for flush.
 
 The domain model (tracking, policy, categorization, reports) is pure Rust

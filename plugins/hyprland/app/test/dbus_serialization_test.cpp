@@ -32,7 +32,7 @@ using EventStruct = sdbus::Struct<uint32_t, std::string, std::string, uint32_t, 
 // ═════════════════════════════════════════════════════════════════════════════
 // Unified Event signal struct encoding
 //
-// C++ emits:   sdbus::Variant{sdbus::Struct{tag, app_id, title, pid, power_tag}}
+// C++ emits:   sdbus::Variant{sdbus::Struct{tag, app_class, title, pid, power_tag}}
 // Rust expects: zvariant variant containing struct(u32, string, string, u32, u32)
 // D-Bus wire:   v(ussuu)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -52,68 +52,79 @@ TEST(DbusSerializationTest, EventStructSignatureMatchesRust) {
 }
 
 TEST(DbusSerializationTest, EventStructFocusRoundtrip) {
-    const uint32_t expectedTag = static_cast<uint32_t>(EventTag::Focus);
-    const std::string expectedAppId = "firefox";
+    const auto expectedTag = static_cast<uint32_t>(EventTag::Focus);
+    const std::string expectedAppClass = "firefox";
     const std::string expectedTitle = "Mozilla Firefox";
     const uint32_t expectedPid = 12345;
     const uint32_t expectedPowerTag = 0;
 
     auto variant = sdbus::Variant{sdbus::Struct{
-        expectedTag, expectedAppId, expectedTitle, expectedPid, expectedPowerTag,
+        expectedTag,
+        expectedAppClass,
+        expectedTitle,
+        expectedPid,
+        expectedPowerTag,
     }};
 
     auto extracted = variant.get<EventStruct>();
 
     EXPECT_EQ(std::get<EVENT_FIELD_TAG>(extracted), expectedTag);
-    EXPECT_EQ(std::get<EVENT_FIELD_APP_ID>(extracted), expectedAppId);
-    EXPECT_EQ(std::get<EVENT_FIELD_TITLE>(extracted), expectedTitle);
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_CLASS>(extracted), expectedAppClass);
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_TITLE>(extracted), expectedTitle);
     EXPECT_EQ(std::get<EVENT_FIELD_PID>(extracted), expectedPid);
     EXPECT_EQ(std::get<EVENT_FIELD_POWER_TAG>(extracted), expectedPowerTag);
 }
 
 TEST(DbusSerializationTest, EventStructUnfocusRoundtrip) {
-    const uint32_t expectedTag = static_cast<uint32_t>(EventTag::Unfocus);
+    const auto expectedTag = static_cast<uint32_t>(EventTag::Unfocus);
 
     auto variant = sdbus::Variant{sdbus::Struct{
         expectedTag,
-        std::string{}, std::string{},
-        static_cast<uint32_t>(0), static_cast<uint32_t>(0),
+        std::string{},
+        std::string{},
+        static_cast<uint32_t>(0),
+        static_cast<uint32_t>(0),
     }};
 
     auto extracted = variant.get<EventStruct>();
 
     EXPECT_EQ(std::get<EVENT_FIELD_TAG>(extracted), expectedTag);
-    EXPECT_EQ(std::get<EVENT_FIELD_APP_ID>(extracted), "");
-    EXPECT_EQ(std::get<EVENT_FIELD_TITLE>(extracted), "");
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_CLASS>(extracted), "");
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_TITLE>(extracted), "");
     EXPECT_EQ(std::get<EVENT_FIELD_PID>(extracted), 0U);
     EXPECT_EQ(std::get<EVENT_FIELD_POWER_TAG>(extracted), 0U);
 }
 
 TEST(DbusSerializationTest, EventStructBlockRoundtrip) {
-    const uint32_t expectedTag = static_cast<uint32_t>(EventTag::Block);
-    const std::string expectedAppId = "firefox";
+    const auto expectedTag = static_cast<uint32_t>(EventTag::Block);
+    const std::string expectedAppClass = "firefox";
     const std::string expectedTitle = "Blocked Window";
 
     auto variant = sdbus::Variant{sdbus::Struct{
-        expectedTag, expectedAppId, expectedTitle,
-        static_cast<uint32_t>(0), static_cast<uint32_t>(0),
+        expectedTag,
+        expectedAppClass,
+        expectedTitle,
+        static_cast<uint32_t>(0),
+        static_cast<uint32_t>(0),
     }};
 
     auto extracted = variant.get<EventStruct>();
 
     EXPECT_EQ(std::get<EVENT_FIELD_TAG>(extracted), expectedTag);
-    EXPECT_EQ(std::get<EVENT_FIELD_APP_ID>(extracted), expectedAppId);
-    EXPECT_EQ(std::get<EVENT_FIELD_TITLE>(extracted), expectedTitle);
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_CLASS>(extracted), expectedAppClass);
+    EXPECT_EQ(std::get<EVENT_FIELD_APP_TITLE>(extracted), expectedTitle);
 }
 
 TEST(DbusSerializationTest, EventStructPowerHibernateRoundtrip) {
-    const uint32_t expectedTag = static_cast<uint32_t>(EventTag::Power);
-    const uint32_t expectedPowerTag = static_cast<uint32_t>(PowerTag::Hibernate);
+    const auto expectedTag = static_cast<uint32_t>(EventTag::Power);
+    const auto expectedPowerTag = static_cast<uint32_t>(PowerTag::Hibernate);
 
     auto variant = sdbus::Variant{sdbus::Struct{
         expectedTag,
-        std::string{}, std::string{},
-        static_cast<uint32_t>(0), expectedPowerTag,
+        std::string{},
+        std::string{},
+        static_cast<uint32_t>(0),
+        expectedPowerTag,
     }};
 
     auto extracted = variant.get<EventStruct>();
@@ -124,29 +135,26 @@ TEST(DbusSerializationTest, EventStructPowerHibernateRoundtrip) {
 
 TEST(DbusSerializationTest, EventStructAllTagsHaveSixFields) {
     // Verify every event tag produces a 5-field struct.
-    auto build = [](uint32_t tag) {
+    auto build = [](uint32_t tag) -> sdbus::Variant {
         return sdbus::Variant{sdbus::Struct{
             tag,
-            std::string{}, std::string{},
-            static_cast<uint32_t>(0), static_cast<uint32_t>(0),
+            std::string{},
+            std::string{},
+            static_cast<uint32_t>(0),
+            static_cast<uint32_t>(0),
         }};
     };
 
-    auto checkFields = [](const char *name, sdbus::Variant &v) {
+    auto checkFields = [](const char *name, sdbus::Variant &v) -> void {
         auto extracted = v.get<EventStruct>();
-        EXPECT_EQ(std::get<EVENT_FIELD_TAG>(extracted), static_cast<uint32_t>(EventTag::Focus))
-            << name;
+        EXPECT_EQ(std::get<EVENT_FIELD_TAG>(extracted), static_cast<uint32_t>(EventTag::Focus)) << name;
     };
     // We can't easily check field count with sdbus-c++ peek,
     // but if the get<> succeeds we know the struct has the right shape.
-    for (auto tag : {static_cast<uint32_t>(EventTag::Focus),
-                     static_cast<uint32_t>(EventTag::Unfocus),
-                     static_cast<uint32_t>(EventTag::Block),
-                     static_cast<uint32_t>(EventTag::Idle),
-                     static_cast<uint32_t>(EventTag::Resume),
-                     static_cast<uint32_t>(EventTag::LogOut),
-                     static_cast<uint32_t>(EventTag::Power),
-                     static_cast<uint32_t>(EventTag::Locked)}) {
+    for (auto tag : {static_cast<uint32_t>(EventTag::Focus), static_cast<uint32_t>(EventTag::Unfocus),
+                     static_cast<uint32_t>(EventTag::Block), static_cast<uint32_t>(EventTag::Idle),
+                     static_cast<uint32_t>(EventTag::Resume), static_cast<uint32_t>(EventTag::LogOut),
+                     static_cast<uint32_t>(EventTag::Power), static_cast<uint32_t>(EventTag::Locked)}) {
         auto v = build(tag);
         EXPECT_NO_THROW(v.get<EventStruct>());
     }

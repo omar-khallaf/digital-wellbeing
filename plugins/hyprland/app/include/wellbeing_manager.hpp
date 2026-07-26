@@ -94,7 +94,8 @@ class WellbeingManager {
     /// Emit the unified Event signal with focus-state info.
     /// For Focus/Block, use the WindowInfo overload.  For tag-only events
     /// (Idle, Resume, LogOut, Unfocus), use the tag-only overload.
-    void emitEvent(EventTag tag, const std::string &app_id, const std::string &title, uint32_t pid, uint32_t power_tag);
+    void emitEvent(EventTag tag, const std::string &app_class, const std::string &title, uint32_t pid,
+                   uint32_t power_tag);
 
     void emitFocusEvent(const std::optional<WindowInfo> &info);
 

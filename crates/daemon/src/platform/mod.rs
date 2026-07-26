@@ -6,7 +6,7 @@
 pub mod linux;
 
 use futures::Stream;
-use wellbeing_core::{AppId, Pid, Uid, WindowTitle};
+use wellbeing_core::{AppClass, EventType, Pid, Uid, WindowTitle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerEventKind {
@@ -18,7 +18,7 @@ pub enum PowerEventKind {
 #[derive(Debug, Clone)]
 pub enum PlatformEvent {
     Focus {
-        app_id: AppId,
+        app_class: AppClass,
         title: WindowTitle,
         pid: Pid,
         uid: Uid,
@@ -27,7 +27,7 @@ pub enum PlatformEvent {
         uid: Uid,
     },
     Block {
-        app_id: AppId,
+        app_class: AppClass,
         title: WindowTitle,
         uid: Uid,
     },
@@ -61,30 +61,29 @@ pub trait Platform: Send + Sync + 'static {
 
 impl PlatformEvent {
     /// DB `event_type` discriminator for this variant.
-    pub fn event_type(&self) -> i32 {
-        use wellbeing_core::event_types::*;
+    pub fn event_type(&self) -> EventType {
         match self {
-            PlatformEvent::Focus { .. } => EVENT_WINDOW_FOCUSED,
-            PlatformEvent::Block { .. } => EVENT_WINDOW_BLOCKED,
-            PlatformEvent::Unfocus { .. } => EVENT_UNFOCUSED,
-            PlatformEvent::Idle { .. } => EVENT_IDLE,
-            PlatformEvent::Resume { .. } => EVENT_RESUMED,
-            PlatformEvent::LogOut { .. } => EVENT_LOGGED_OUT,
-            PlatformEvent::Locked { .. } => EVENT_LOCKED,
+            PlatformEvent::Focus { .. } => EventType::Focus,
+            PlatformEvent::Block { .. } => EventType::Block,
+            PlatformEvent::Unfocus { .. } => EventType::Unfocus,
+            PlatformEvent::Idle { .. } => EventType::Idle,
+            PlatformEvent::Resume { .. } => EventType::Resume,
+            PlatformEvent::LogOut { .. } => EventType::LoggedOut,
+            PlatformEvent::Locked { .. } => EventType::Locked,
             PlatformEvent::PowerEvent {
                 kind: PowerEventKind::Suspend | PowerEventKind::Hibernate,
                 ..
-            } => EVENT_SLEPT,
+            } => EventType::Suspend,
             PlatformEvent::PowerEvent {
                 kind: PowerEventKind::Shutdown,
                 ..
-            } => EVENT_SHUT_DOWN,
+            } => EventType::ShutDown,
         }
     }
 
     /// Whether this event closes a currently-open focus interval.
     pub fn is_close_event(&self) -> bool {
-        wellbeing_core::event_types::CLOSE_EVENT_TYPES.contains(&self.event_type())
+        self.event_type().is_close()
     }
 
     /// Uid associated with this event — all variants carry one.
@@ -102,10 +101,10 @@ impl PlatformEvent {
     }
 
     /// App id associated with this event, if any.
-    pub fn app_id(&self) -> Option<&AppId> {
+    pub fn app_class(&self) -> Option<&AppClass> {
         match self {
-            PlatformEvent::Focus { app_id, .. } | PlatformEvent::Block { app_id, .. } => {
-                Some(app_id)
+            PlatformEvent::Focus { app_class, .. } | PlatformEvent::Block { app_class, .. } => {
+                Some(app_class)
             }
             _ => None,
         }

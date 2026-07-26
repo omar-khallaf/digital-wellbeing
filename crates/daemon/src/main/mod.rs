@@ -19,7 +19,10 @@ use wellbeing_core::dbus_constants::{
 };
 use wellbeing_daemon::{
     bus_resolution::{self, BusMode, DaemonMode},
+    categorization::data::CategorizationRepo,
     dbus::DaemonInterface,
+    policy::data::PolicyRepo,
+    reports::data::ReportsRepo,
     signal::DaemonSignal,
 };
 
@@ -109,8 +112,9 @@ async fn main() -> Result<()> {
         blocked_apps.clone(),
     );
 
-    // Clone flush handle BEFORE moving enforcer into the actor task
+    // Clone handles BEFORE moving enforcer into the actor task
     let flush_tx = enforcer.flush_handle();
+    let policy_tx = enforcer.policy_mutation_handle();
 
     wiring::spawn_minute_ticker(flush_tx.clone(), shutdown_token.clone());
 
@@ -138,17 +142,25 @@ async fn main() -> Result<()> {
     let recovery_pool = pool.clone();
     let recovery_registry = registry.clone();
     let recovery_event_tx = platform.event_tx().clone();
+    let recovery_policy_tx = policy_tx.clone();
     let recovery_blocked_apps = blocked_apps.clone();
+
+    let policy_repo = PolicyRepo::new(pool.clone());
+    let categorization_repo = CategorizationRepo::new(pool.clone());
+    let reports_repo = ReportsRepo::new(pool.clone());
 
     // Register object server BEFORE requesting the name to avoid zbus warnings
     // about method calls arriving before interfaces exist.
     let interface = DaemonInterface::new(
-        pool,
+        policy_repo,
+        categorization_repo,
+        reports_repo,
         registry,
         platform.event_tx(),
         Box::new(SystemClock),
         blocked_apps,
         tokio::runtime::Handle::current(),
+        policy_tx,
     );
     conn.object_server()
         .at(DAEMON_OBJECT_PATH, interface)
@@ -171,6 +183,7 @@ async fn main() -> Result<()> {
         recovery_pool,
         recovery_registry,
         recovery_event_tx,
+        recovery_policy_tx,
         recovery_blocked_apps,
         serving_state.clone(),
         shutdown_token.clone(),
@@ -257,18 +270,18 @@ async fn emit_signal(conn: &zbus::Connection, signal: DaemonSignal) {
     match signal {
         DaemonSignal::BlockedAppsChanged {
             uid,
-            app_id,
+            app_class,
             blocked,
             reason,
         } => {
-            let app_id_str = app_id.as_ref().to_string();
+            let app_class_str = app_class.as_ref().to_string();
             if let Err(e) = conn
                 .emit_signal(
                     None::<&str>,
                     DAEMON_OBJECT_PATH,
                     DAEMON_INTERFACE,
                     BLOCKED_APPS_CHANGED_SIGNAL,
-                    &(uid, app_id_str, blocked, reason),
+                    &(uid, app_class_str, blocked, reason),
                 )
                 .await
             {

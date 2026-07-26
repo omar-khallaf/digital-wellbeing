@@ -46,7 +46,7 @@ pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 // Unified event signal — replaces FocusChanged, ActivityChanged, and power_event.
 //
 // The `event` signal carries a D-Bus struct with 5 fields:
-//   (u:tag, s:app_id, s:title, u:pid, u:power_tag)
+//   (u:tag, s:app_class, s:title, u:pid, u:power_tag)
 //
 // Signature: `(ussuu)`
 
@@ -54,7 +54,7 @@ pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 pub const EVENT_STRUCT_SIGNATURE: &str = "(ussuu)";
 
 /// Event tag for Focus — a window received focus. Applies to `uid`.
-/// Relevant fields: app_id, title, pid
+/// Relevant fields: app_class, title, pid
 pub const EVENT_TAG_FOCUS: u32 = 0;
 
 /// Event tag for Unfocus — all windows for `uid` lost focus (desktop shown).
@@ -62,7 +62,7 @@ pub const EVENT_TAG_FOCUS: u32 = 0;
 pub const EVENT_TAG_UNFOCUS: u32 = 1;
 
 /// Event tag for Block — focus changed to a blocked window (overlay shown).
-/// Relevant fields: app_id, title, uid.
+/// Relevant fields: app_class, title, uid.
 pub const EVENT_TAG_BLOCK: u32 = 2;
 
 /// Event tag for Idle — user activity stopped for `uid`.
@@ -101,7 +101,7 @@ pub const EVENT_POWER_SHUTDOWN: u32 = 2;
 /// Index: tag (u32) — PlatformEvent variant discriminator.
 pub const EVENT_FIELD_TAG: usize = 0;
 
-/// Index: app_id (string) — application ID (Focus, Block).
+/// Index: app_class (string) — application ID (Focus, Block).
 pub const EVENT_FIELD_APP_ID: usize = 1;
 
 /// Index: title (string) — window title (Focus, Block).
@@ -145,7 +145,7 @@ pub const FOCUS_TAG_BLOCKED: u32 = 2;
 /// Legacy: Index of the variant-tag field in the FocusChanged struct.
 pub const FOCUS_FIELD_TAG: usize = 0;
 
-/// Legacy: Index of the app_id field in the FocusChanged struct.
+/// Legacy: Index of the app_class field in the FocusChanged struct.
 pub const FOCUS_FIELD_APP_ID: usize = 1;
 
 /// Legacy: Index of the window-title field in the FocusChanged struct.

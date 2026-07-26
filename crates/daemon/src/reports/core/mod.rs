@@ -7,8 +7,6 @@
 
 mod aggregation;
 mod pruning;
-mod queries;
 
 pub use aggregation::*;
 pub use pruning::*;
-pub use queries::*;

@@ -4,4 +4,4 @@ mod flow;
 mod repo;
 
 pub use flow::{FlowState, spawn_dashboard_flow};
-pub use repo::DashboardRepo;
+pub use repo::{DashboardData, DashboardRepo};

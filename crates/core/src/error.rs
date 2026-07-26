@@ -4,7 +4,7 @@ use thiserror::Error;
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     #[error("empty app id")]
-    EmptyAppId,
+    EmptyAppClass,
 
     #[error("invalid uid")]
     InvalidUid,

@@ -1,14 +1,14 @@
-use wellbeing_core::AppId;
+use wellbeing_core::{AppClass, BlockReason, Uid};
 
 /// Signals emitted by actors and forwarded to D-Bus by main.rs.
 #[derive(Debug, Clone)]
 pub enum DaemonSignal {
     BlockedAppsChanged {
-        uid: u32,
-        app_id: AppId,
+        uid: Uid,
+        app_class: AppClass,
         blocked: bool,
-        reason: u32,
+        reason: BlockReason,
     },
     /// Daily usage data changed for a user — consumers should re-query.
-    DailyUsageChanged { uid: u32 },
+    DailyUsageChanged { uid: Uid },
 }

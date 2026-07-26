@@ -29,7 +29,7 @@ pub trait HasBarData {
 /// One slice in a usage breakdown pie chart.
 #[derive(Debug, Clone)]
 pub struct Slice {
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub color: String,
     pub percentage: f64,
@@ -128,7 +128,7 @@ impl<T: HasBarData + Clone + 'static> Element for DailyBarChartElement<T> {
             .padding_outer(0.5); // Outer padding keeps first/last bar centers away from edges
         let band_w = x_scale.band_width();
 
-        // ── Grid lines (horizontal, one per y-axis label) ───────────────
+        // Grid lines (horizontal, one per y-axis label)
         let grid_y: Vec<Pixels> = (2..=24)
             .step_by(2)
             .map(|h| px(y_scale.tick(&(h as f64)).unwrap_or(0.0)))
@@ -139,7 +139,7 @@ impl<T: HasBarData + Clone + 'static> Element for DailyBarChartElement<T> {
             .y(grid_y)
             .paint(&bounds, window);
 
-        // ── Y-axis (left) with hourly labels ────────────────────────────
+        // Y-axis (left) with hourly labels
         let label_offset = 8.0;
         let y_labels: Vec<AxisText> = (2..=24)
             .step_by(2)
@@ -157,7 +157,7 @@ impl<T: HasBarData + Clone + 'static> Element for DailyBarChartElement<T> {
             .y_label(y_labels)
             .paint(&bounds, window, cx);
 
-        // ── X-axis (bottom) with date + duration labels ────────────────
+        // X-axis (bottom) with date + duration labels
         PlotAxis::new()
             .stroke(border)
             .y_axis(false)
@@ -207,7 +207,7 @@ impl<T: HasBarData + Clone + 'static> Element for DailyBarChartElement<T> {
             );
         }
 
-        // ── Bars ────────────────────────────────────────────────────────
+        // Bars
         let y_for_base = y_scale.clone();
         let y_for_value = y_scale.clone();
         let x_for_cross = x_scale.clone();
@@ -295,10 +295,10 @@ pub fn daily_bar_chart<T: HasBarData + Clone + 'static>(cx: &App, bars: &[T]) ->
     }
 }
 
-/// Return the best display label for a slice: display_name if non-empty, else app_id.
+/// Return the best display label for a slice: display_name if non-empty, else app_class.
 fn slice_label(s: &Slice) -> &str {
     if s.display_name.is_empty() {
-        &s.app_id
+        &s.app_class
     } else {
         &s.display_name
     }

@@ -16,7 +16,7 @@ pub struct DailyBar {
 #[derive(Debug, Clone)]
 pub struct ReportAppEntry {
     pub rank: usize,
-    pub app_id: String,
+    pub app_class: String,
     pub display_name: String,
     pub total_millis: i64,
     pub percentage: f64,
@@ -26,7 +26,7 @@ pub struct ReportAppEntry {
 #[derive(Debug, Clone)]
 pub struct ReportTitleEntry {
     pub rank: usize,
-    pub app_id: String,
+    pub app_class: String,
     pub title: String,
     pub total_millis: i64,
     pub percentage: f64,

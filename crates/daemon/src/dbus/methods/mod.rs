@@ -10,18 +10,18 @@ mod policy_handlers;
 mod query_handlers;
 
 use wellbeing_core::{
-    AppCategoryRow, BlockedAppEntry, Category, DailySummary, DailyUsageByAppEntry,
-    DailyUsageByTitleEntry, DailyUsageByTitleSummary, DayEventRow, PluginInstanceId, PolicyData,
-    PolicyInput, Uid,
+    AppCategoryRow, AppClass, BlockedAppEntry, Category, DailySummary, DailyUsageByAppEntry,
+    DailyUsageByCategoryEntry, DailyUsageByTitleEntry, DailyUsageByTitleSummary, DayEventRow,
+    PluginInstanceId, PolicyData, PolicyInput, Uid,
 };
 use zbus::fdo;
 use zbus::interface;
 
+use crate::blocking::InternalEvent;
 use crate::platform::linux::ManagerProxy;
 
 use super::controller::DaemonInterface;
 use super::core::{authenticate, resolve_uid};
-use super::data;
 use super::signals;
 
 #[interface(name = "org.wellbeing.v1.Controller")]
@@ -34,8 +34,10 @@ impl DaemonInterface {
     ) -> zbus::fdo::Result<Vec<PolicyData>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, filter_owner);
-        data::list_policies(&self.pool, caller == 0, uid as i32)
+        self.policy_repo
+            .list(caller == 0, uid as i32)
             .await
+            .map(|policies| policies.into_iter().map(PolicyData::from).collect())
             .map_err(|e| query_handlers::map_err(e, "list policies failed"))
     }
 
@@ -46,14 +48,23 @@ impl DaemonInterface {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<wellbeing_core::PolicyId> {
         let caller = authenticate(conn, header).await?;
-        if caller != 0 && input.owner_id != caller {
+        let caller_uid = Uid(caller);
+        if caller != 0 && input.user_id != caller_uid {
             return Err(fdo::Error::AccessDenied("access denied".into()));
         }
         let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let id = data::create_policy(&self.pool, input, caller, &now)
+        let id = self
+            .policy_repo
+            .create(input, caller, &now)
             .await
             .map_err(|e| query_handlers::map_err(e, "insert failed"))?;
-        let _ = signals::policy_mutated(conn, caller).await;
+        let _ = signals::policy_mutated(conn, caller_uid).await;
+        let _ = self
+            .policy_tx
+            .send(InternalEvent::PolicyMutated {
+                owner_id: Uid(caller),
+            })
+            .await;
         Ok(wellbeing_core::PolicyId(id))
     }
 
@@ -66,15 +77,25 @@ impl DaemonInterface {
     ) -> fdo::Result<()> {
         let caller = authenticate(conn, header).await?;
         let policy_id = id.0 as i32;
-        let owner_id = policy_handlers::verify_policy_owner(&self.pool, policy_id, caller).await?;
+        let owner_id =
+            policy_handlers::verify_policy_owner(&self.policy_repo, policy_id, caller).await?;
         let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let updated = data::update_policy(&self.pool, id, input, &now)
+        let updated = self
+            .policy_repo
+            .update(id, input, &now)
             .await
             .map_err(|e| query_handlers::map_err(e, "update failed"))?;
         if !updated {
             return Err(fdo::Error::Failed("policy not found".into()));
         }
-        let _ = signals::policy_mutated(conn, owner_id as u32).await;
+        let owner_uid = Uid(owner_id as u32);
+        let _ = signals::policy_mutated(conn, owner_uid).await;
+        let _ = self
+            .policy_tx
+            .send(InternalEvent::PolicyMutated {
+                owner_id: owner_uid,
+            })
+            .await;
         Ok(())
     }
 
@@ -86,14 +107,24 @@ impl DaemonInterface {
     ) -> fdo::Result<()> {
         let caller = authenticate(conn, header).await?;
         let policy_id = id.0 as i32;
-        let owner_id = policy_handlers::verify_policy_owner(&self.pool, policy_id, caller).await?;
-        let deleted = data::delete_policy(&self.pool, policy_id)
+        let owner_id =
+            policy_handlers::verify_policy_owner(&self.policy_repo, policy_id, caller).await?;
+        let deleted = self
+            .policy_repo
+            .delete(policy_id)
             .await
             .map_err(|e| query_handlers::map_err(e, "delete failed"))?;
         if !deleted {
             return Err(fdo::Error::Failed("policy not found".into()));
         }
-        let _ = signals::policy_mutated(conn, owner_id as u32).await;
+        let owner_uid = Uid(owner_id as u32);
+        let _ = signals::policy_mutated(conn, owner_uid).await;
+        let _ = self
+            .policy_tx
+            .send(InternalEvent::PolicyMutated {
+                owner_id: owner_uid,
+            })
+            .await;
         Ok(())
     }
 
@@ -133,11 +164,10 @@ impl DaemonInterface {
             reg.register(instance, uid, proxy);
         }
 
-        // Subscribe to plugin signals and spawn the event forwarding loop
-        // as a background task. IMPORTANT: the forwarding loop runs in a
-        // spawned task instead of inline — the previous inline design caused
-        // the D-Bus handler to block forever, timing out the plugin's
-        // RegisterPlugin call with [org.freedesktop.DBus.Error.NoReply].
+        // IMPORTANT: the forwarding loop runs in a spawned task instead of
+        // inline — the previous inline design caused the D-Bus handler to
+        // block forever, timing out the plugin's RegisterPlugin call with
+        // [org.freedesktop.DBus.Error.NoReply].
         let ev_rx = {
             let reg = self.registry.read().await;
             reg.subscribe_signals(&instance_clone, &self.tokio_handle)
@@ -167,8 +197,8 @@ impl DaemonInterface {
         let header = header.ok_or_else(|| fdo::Error::Failed("missing header".into()))?;
         let caller = authenticate(conn, header).await?;
         let blocks = self.blocked_apps.read().await;
-        let result: Vec<BlockedAppEntry> = if caller == 0 {
-            blocks.values().flat_map(|v| v.values().cloned()).collect()
+        let result = if caller == 0 {
+            blocks.values().flat_map(|v| v.values()).cloned().collect()
         } else if let Some(uid_blocks) = blocks.get(&Uid(caller)) {
             uid_blocks.values().cloned().collect()
         } else {
@@ -186,7 +216,8 @@ impl DaemonInterface {
     ) -> fdo::Result<Vec<DailyUsageByAppEntry>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
-        data::get_daily_usage(&self.pool, &date, uid)
+        self.reports_repo
+            .get_daily_usage(&date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
@@ -201,7 +232,8 @@ impl DaemonInterface {
     ) -> fdo::Result<Vec<DailySummary>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
-        data::get_usage_range(&self.pool, &start_date, &end_date, uid)
+        self.reports_repo
+            .get_usage_range(&start_date, &end_date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
@@ -215,7 +247,8 @@ impl DaemonInterface {
     ) -> fdo::Result<Vec<DailyUsageByTitleEntry>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
-        data::get_daily_usage_by_title(&self.pool, &date, uid)
+        self.reports_repo
+            .get_daily_usage_by_title(&date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
@@ -230,7 +263,24 @@ impl DaemonInterface {
     ) -> fdo::Result<Vec<DailyUsageByTitleSummary>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
-        data::get_usage_range_by_title(&self.pool, &start_date, &end_date, uid)
+        self.reports_repo
+            .get_usage_range_by_title(&start_date, &end_date, uid)
+            .await
+            .map_err(|e| query_handlers::map_err(e, "query failed"))
+    }
+
+    async fn get_usage_range_by_category(
+        &self,
+        start_date: String,
+        end_date: String,
+        user_id: u32,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<Vec<DailyUsageByCategoryEntry>> {
+        let caller = authenticate(conn, header).await?;
+        let uid = resolve_uid(caller, user_id);
+        self.reports_repo
+            .get_usage_range_by_category(&start_date, &end_date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
@@ -244,17 +294,21 @@ impl DaemonInterface {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<Vec<DayEventRow>> {
         let caller = authenticate(conn, header).await?;
-        let resolved_uid = resolve_uid(caller, uid);
-        data::get_day_events(&self.pool, resolved_uid as i32, start_millis, end_millis)
+        let resolved_uid = Uid(resolve_uid(caller, uid));
+        self.reports_repo
+            .get_day_events(resolved_uid, start_millis, end_millis)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
 
     async fn list_categories(&self) -> fdo::Result<Vec<Category>> {
-        data::list_categories(&self.pool).await.map_err(|e| {
-            tracing::error!(error = %e, "query failed");
-            fdo::Error::Failed("internal error".into())
-        })
+        self.categorization_repo
+            .list_categories()
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "query failed");
+                fdo::Error::Failed("internal error".into())
+            })
     }
 
     async fn get_app_categories(
@@ -262,22 +316,27 @@ impl DaemonInterface {
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<Vec<AppCategoryRow>> {
-        let caller = authenticate(conn, header).await?;
-        data::get_app_categories(&self.pool, caller)
+        let caller = Uid(authenticate(conn, header).await?);
+        self.categorization_repo
+            .list_app_categories(caller)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
 
     async fn set_app_category(
         &self,
-        app_id: String,
+        app_class: String,
         category_id: wellbeing_core::CategoryId,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<()> {
-        let caller = authenticate(conn, header).await?;
+        let caller = Uid(authenticate(conn, header).await?);
+        // Validate app_class at the boundary — reject empty.
+        let app_class = AppClass::new(&app_class)
+            .map_err(|_| fdo::Error::InvalidArgs("invalid app_class (empty)".into()))?;
         let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
-        data::set_app_category(&self.pool, app_id, category_id, caller, &now)
+        self.categorization_repo
+            .set_app_category(&app_class, category_id, caller, &now)
             .await
             .map_err(|e| query_handlers::map_err(e, "update failed"))?;
         let _ = signals::policy_mutated(conn, caller).await;

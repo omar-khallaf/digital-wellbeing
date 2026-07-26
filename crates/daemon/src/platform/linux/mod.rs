@@ -14,6 +14,7 @@ mod manager;
 
 pub use manager::{ManagerProxy, PluginRegistry};
 
+#[allow(clippy::too_many_arguments)]
 #[proxy(
     interface = "org.freedesktop.Notifications",
     default_service = "org.freedesktop.Notifications",

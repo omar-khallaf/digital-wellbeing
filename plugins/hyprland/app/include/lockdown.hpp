@@ -10,13 +10,15 @@
 #include "types.hpp"
 
 using wellbeing::ActionType;
-using wellbeing::AppId;
+using wellbeing::AppClass;
 using wellbeing::BlockReason;
 
 namespace std {
 template<>
-struct hash<wellbeing::AppId> {
-    auto operator()(const wellbeing::AppId &appId) const -> size_t { return hash<std::string>{}(appId.value()); }
+struct hash<wellbeing::AppClass> {
+    auto operator()(const wellbeing::AppClass &appClass) const -> size_t {
+        return hash<std::string>{}(appClass.value());
+    }
 };
 } // namespace std
 
@@ -31,7 +33,7 @@ struct ButtonRect {
 // and are echoed back verbatim in UserAction signals. Multiple distinct apps
 // can be blocked simultaneously, each with its own ActiveOverlay.
 struct ActiveOverlay {
-    AppId appId;
+    AppClass appClass;
     uint64_t policyId = 0;
     uint64_t blockedSince = 0;
     std::vector<ActionType> actions;
@@ -42,14 +44,14 @@ struct ActiveOverlay {
 
 enum class LockManagerError : std::uint8_t {
     None,
-    AppIdMismatch,
+    AppClassMismatch,
     NoActiveOverlay,
 };
 
 // Returned by the CurrentFocus D-Bus property.
 // See docs/architecture/04-plugin-ipc.md §D-Bus Interface.
 struct WindowInfo {
-    AppId appId;
+    AppClass appClass;
     std::string title;
     uint32_t pid = 0;
     uint32_t uid = 0;
@@ -75,20 +77,20 @@ class LockManager {
 
     /// All fields come from the daemon's BlockedApps entry. Captures window
     /// geometry for button positioning.
-    void showOverlay(const AppId &appId, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
+    void showOverlay(const AppClass &appClass, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
                      const std::vector<ActionType> &actions);
 
-    /// Erases the stored ActiveOverlay. Returns AppIdMismatch if appId is
+    /// Erases the stored ActiveOverlay. Returns AppClassMismatch if appClass is
     /// not currently blocked.
-    auto hideOverlay(const AppId &appId) -> LockManagerError;
+    auto hideOverlay(const AppClass &appClass) -> LockManagerError;
 
     /// Set or clear the currently-focused app. Passing std::nullopt clears
     /// the focused app (e.g. when focus moves to desktop).
     /// Used for initial sync and cleanup only; LockManager queries
     /// g_ctx->focusState as the single source of truth.
-    void setFocusedApp(std::optional<AppId> appId);
+    void setFocusedApp(std::optional<AppClass> appClass);
 
-    [[nodiscard]] auto getFocusedApp() const -> const std::optional<AppId> & { return m_focusedApp; }
+    [[nodiscard]] auto getFocusedApp() const -> const std::optional<AppClass> & { return m_focusedApp; }
 
     /// Post-render: draw dark backdrop + prompt + action buttons over all
     /// blocked windows. Called from the RENDER_POST_WINDOW stage listener.
@@ -106,14 +108,14 @@ class LockManager {
 
     [[nodiscard]] auto isTarget(uint64_t windowHandle) const -> bool;
 
-    [[nodiscard]] auto isOverlayShown(const AppId &appId) const -> bool { return m_overlays.contains(appId); }
+    [[nodiscard]] auto isOverlayShown(const AppClass &appClass) const -> bool { return m_overlays.contains(appClass); }
 
   private:
-    std::unordered_map<AppId, ActiveOverlay> m_overlays;
+    std::unordered_map<AppClass, ActiveOverlay> m_overlays;
 
-    /// AppId of the currently-focused window. Gates keyboard/mouse input
+    /// AppClass of the currently-focused window. Gates keyboard/mouse input
     /// to the focused window's app only. std::nullopt = no focus.
-    std::optional<AppId> m_focusedApp;
+    std::optional<AppClass> m_focusedApp;
 
     static auto withinRect(const ButtonRect &r, double x, double y) -> bool;
 };

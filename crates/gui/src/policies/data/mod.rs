@@ -6,7 +6,7 @@ mod repo;
 pub use flow::spawn_policies_flow;
 pub use repo::PoliciesRepo;
 
-use wellbeing_core::{Category, PolicyData};
+use wellbeing_core::{AppClass, Category, PolicyData};
 
 use super::domain::PoliciesViewModel;
 
@@ -15,11 +15,11 @@ use super::domain::PoliciesViewModel;
 pub fn build_policies_viewmodel(
     policies: &[PolicyData],
     categories: &[Category],
-    app_ids: &[String],
+    app_classs: &[AppClass],
     is_admin: bool,
 ) -> PoliciesViewModel {
     PoliciesViewModel {
-        app_list: app_ids.to_vec(),
+        app_list: app_classs.to_vec(),
         selected_policy: None,
         categories: categories.to_vec(),
         policies: policies.to_vec(),

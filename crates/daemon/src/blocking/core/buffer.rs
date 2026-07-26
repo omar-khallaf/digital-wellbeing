@@ -94,10 +94,10 @@ impl Default for EventBuffer {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use wellbeing_core::{AppId, Uid, WindowTitle};
+    use wellbeing_core::{AppClass, Uid, WindowTitle};
 
-    fn app(s: &str) -> AppId {
-        AppId::new(s).unwrap()
+    fn app(s: &str) -> AppClass {
+        AppClass::new(s).unwrap()
     }
 
     fn dt(secs: i64) -> DateTime<Utc> {
@@ -112,7 +112,7 @@ mod tests {
         // When
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("firefox"),
+                app_class: app("firefox"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
@@ -121,7 +121,7 @@ mod tests {
         );
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("code"),
+                app_class: app("code"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(2),
                 uid: Uid(1000),
@@ -130,7 +130,7 @@ mod tests {
         );
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("terminal"),
+                app_class: app("terminal"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(3),
                 uid: Uid(1000),
@@ -141,9 +141,9 @@ mod tests {
         // Then
         let drained = buf.drain();
         assert_eq!(drained.len(), 3);
-        assert_eq!(drained[0].event.app_id().unwrap().as_ref(), "firefox");
-        assert_eq!(drained[1].event.app_id().unwrap().as_ref(), "code");
-        assert_eq!(drained[2].event.app_id().unwrap().as_ref(), "terminal");
+        assert_eq!(drained[0].event.app_class().unwrap().as_ref(), "firefox");
+        assert_eq!(drained[1].event.app_class().unwrap().as_ref(), "code");
+        assert_eq!(drained[2].event.app_class().unwrap().as_ref(), "terminal");
         assert!(buf.is_empty());
     }
 
@@ -169,7 +169,7 @@ mod tests {
         // When
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("firefox"),
+                app_class: app("firefox"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
@@ -178,7 +178,7 @@ mod tests {
         );
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("code"),
+                app_class: app("code"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(2),
                 uid: Uid(1000),
@@ -202,7 +202,7 @@ mod tests {
         let mut buf = EventBuffer::default();
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("firefox"),
+                app_class: app("firefox"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
@@ -237,7 +237,7 @@ mod tests {
         for i in 0..3 {
             buf.push(
                 PlatformEvent::Focus {
-                    app_id: app("firefox"),
+                    app_class: app("firefox"),
                     title: WindowTitle::new("test"),
                     pid: wellbeing_core::Pid(i as u32),
                     uid: Uid(1000),
@@ -250,7 +250,7 @@ mod tests {
         // When — push beyond capacity
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("overflow"),
+                app_class: app("overflow"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(99),
                 uid: Uid(1000),
@@ -275,7 +275,7 @@ mod tests {
         // When
         buf.push(
             PlatformEvent::Focus {
-                app_id: app("firefox"),
+                app_class: app("firefox"),
                 title: WindowTitle::new("test"),
                 pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),

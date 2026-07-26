@@ -55,97 +55,70 @@ parallel where noted.
 
 ---
 
-## Phase F — Policy Engine Redesign
+## Phase F — Policy Engine Redesign · `Done`
 
-The policy model is redesigned from first principles: priority-ordered,
-first-match-wins evaluation with an explicit `Allow` effect and a `Target::Any`
-wildcard. This replaces the implicit "block what you name" model with a
-general-purpose rule engine.
+Replaces the ad-hoc "block what you name" model with a general-purpose rule
+engine: priority-ordered, first-match-wins evaluation with explicit `Allow`
+effect, `Notify` as non-terminating, and `Target::Any` wildcard. Schedules are
+normalized into `policy_schedules` (day_mask bitmask, cross-midnight). The event
+log is true append-only — Focus always written, Blocked(event_type=8)
+terminates. Evaluation runs on every focus switch (prevents evasion) plus a
+per-minute tick (eliminates per-app timers).
 
-### F1 — Core types (`core/src/domain/policy_types.rs`)
+### F1 — Core types
 
-- [ ] Expand `PolicyKind` to `Effect`:
-      `rust enum Effect { Allow, Block, TimeLimit(u64), Notify(u64) } `
-- [ ] Add `PolicyTarget` enum:
-      `rust enum PolicyTarget { App(AppId), Category(CategoryId), Domain(DomainPattern), Any } `
-- [ ] Add `priority: u64` field (lower = evaluated first).
-- [ ] Add `schedule: Vec<TimeWindow>` (active if ANY window matches; empty =
-      always active).
-- [ ] Remove `active: bool` — schedule expresses activation.
-- [ ] New `DomainPattern` newtype in `core/src/valuetypes.rs`.
-- [ ] Update D-Bus `PolicyData` / `PolicyInput` types.
-- [ ] Update `TimeWindow` to support cross-midnight ranges cleanly.
+- [x] New `Effect` enum (Allow, Block, TimeLimit, Notify) + `PolicyTarget` enum
+      (App, Category, Domain, Any) + `priority` + `Vec<TimeWindow>` schedule.
+- [x] `DomainPattern` newtype in `valuetypes.rs`. `TimeWindow` supports
+      cross-midnight. D-Bus `PolicyData`/`PolicyInput` updated.
 
 ### F2 — Evaluation engine (`daemon/src/policy/core.rs`)
 
-- [ ] Replace current `evaluate()` with priority-sorted first-match:
-      `    sort policies by priority ascending for each policy whose schedule matches now:   if target matches → return policy.effect no match → unrestricted`
-- [ ] `Allow` effect: when matched, return `Allow` (caller treats as
-      unrestricted for that target). `Allow` is meaningful only when a
-      `Block(Any)` exists at lower priority — this is user error, not a bug.
-- [ ] `TimeLimit`: returns `TimeLimit(remaining)` — the app is allowed but
-      tracked; the overlay appears when the budget expires.
-- [ ] `Block` effect: returns `Block` unconditionally.
-- [ ] `Notify` effect: returns `Notify(remaining)` — advisory, no overlay.
-- [ ] Remove old `PolicyVerdict` — the effect IS the verdict.
+- [x] **`evaluate()` — pure domain fn**: priority-ordered, first-match-wins.
+      `Allow`/`Block`/`TimeLimit` = terminating; `Notify` = non-terminating +
+      collected; empty = unrestricted.
+- [x] **Per-focus handler**: on every Focus event, `evaluate_and_enforce` runs
+      immediately (upsert → query → evaluate → enforce verdict). Prevents
+      evasion between minute-ticks.
+- [x] **Per-minute tick**: re-evaluates the single focused app. Catches
+      TimeLimit expiry during continuous use. Eliminates per-app timers.
 
-### F3 — Database schema (`migrations/`)
+### F3 — Database schema
 
-- [ ] New `apps` registry table:
-      `sql CREATE TABLE apps (     id     INTEGER PRIMARY KEY AUTOINCREMENT,     app_id TEXT NOT NULL UNIQUE CHECK(length(app_id) > 0) ); `
-- [ ] New `policies` table with full CHECK constraints: ```sql CREATE TABLE
-      policies ( id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) >
-      0), priority INTEGER NOT NULL DEFAULT 100 CHECK(priority >= 0), effect
-      INTEGER NOT NULL CHECK(effect IN (0,1,2,3)), apps_id INTEGER REFERENCES
-      apps(id), category_id INTEGER REFERENCES categories(id), domain_pattern
-      TEXT, time_limit_minutes INTEGER, schedule_json TEXT NOT NULL DEFAULT
-      '[]', user_id INTEGER NOT NULL, created_by INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL DEFAULT (strftime(...)), updated_at TEXT NOT NULL
-      DEFAULT (strftime(...)),
+- [x] `apps` registry, `policies` (normalized, no schedule_json),
+      `policy_schedules` (day_mask bitmask, cross-midnight),
+      `daily_usage_by_app` (FK to apps), `daily_usage_by_category`.
+- [x] Event type 8 = Blocked. Old columns/schedule_json dropped.
+      `app_categories` uses `app_id` FK; `daily_usage_by_title` keeps raw
+      `app_class` TEXT (title granularity doesn't benefit from the FK).
 
-          CHECK ((apps_id IS NOT NULL AND category_id IS NULL AND domain_pattern IS NULL)
-              OR (apps_id IS NULL AND category_id IS NOT NULL AND domain_pattern IS NULL)
-              OR (apps_id IS NULL AND category_id IS NULL AND domain_pattern IS NOT NULL)
-              OR (apps_id IS NULL AND category_id IS NULL AND domain_pattern IS NULL)),
-          CHECK (effect NOT IN (2,3) OR (time_limit_minutes IS NOT NULL AND time_limit_minutes > 0)),
-          CHECK (effect NOT IN (0,1) OR time_limit_minutes IS NULL),
-          CHECK (json_type(schedule_json) IS 'array')
-      );
-      ```
+### F4 — Evaluation query (push filtering into SQLite)
 
-- [ ] Update `daily_usage`, `daily_usage_by_title`, `app_categories` to use
-      `apps_id INTEGER REFERENCES apps(id)` instead of raw `app_id TEXT`.
-- [ ] Events table keeps raw `app` TEXT (source of truth, not a projection).
-- [ ] Drop old `active`, `notification_repeat_interval_minutes`, individual
-      schedule columns.
+- [x] Hot-path SQL query with target + schedule filtering pushed down.
+- [x] Rust eval loop: terminating/non-terminating split, domain policies
+      excluded from app evaluation, upsert-before-select pattern.
 
-### F4 — D-Bus updates
+### F5 — D-Bus updates
 
-- [ ] New `ListPolicies` returns `Vec<PolicyData>` sorted by priority.
-- [ ] `CreatePolicy` / `UpdatePolicy` accept new fields.
-- [ ] `DeletePolicy` unchanged.
-- [ ] `PolicyMutated` signal still fires on any change.
+- [x] `ListPolicies` (sorted by priority), `CreatePolicy`/`UpdatePolicy` (new
+      fields), `DeletePolicy` unchanged, `PolicyMutated` signal.
 
-### F5 — EnforcerActor alignment
+### F6 — EnforcerActor alignment
 
-- [ ] `resolve_filtered_policies`: remove per-target queries — just load all
-      active policies sorted by priority and let the engine filter by schedule +
-      target.
-- [ ] `evaluate_and_enforce`: use new `evaluate()`; handle `Allow` verdict as
-      no-op (not blocked, not tracked).
-- [ ] `Close` button in overlay → terminate the window via compositor API (not
-      just dismiss overlay).
-- [ ] Locked mode is default — no "dismiss" action in overlay at all. User must
-      edit policies to lift a block. (The overlay shows a "Close Window" button
-      that terminates the process; it does not bypass the block.)
+- [x] Focus always written first (append-only event log). Plugin decides tag=0
+      (Focus) vs tag=2 (Block) based on BlockedApps.
+- [x] `accumulate_daily_usage` upserts into all three tables. Focus→Blocked span
+      counted; Blocked→next-Focus not.
+- [x] `evaluate_and_enforce` uses new `evaluate()`. Block → update BlockedApps
+      D-Bus property. Allow → no-op. Notify → one-shot `platform.notify()`.
+- [x] Per-minute tick re-evaluates focused app. Old `PolicyVerdict`/`PolicyKind`
+      types and per-app timers removed.
 
-### F6 — CRUD data layer
+### F7 — CRUD data layer
 
-- [ ] `policy/data/queries.rs`: rewrite for new schema, sort by priority.
-- [ ] Add `filter_by_schedule` helper that accepts `&[TimeWindow]` and returns
-      `true` if any window matches `now`.
-- [ ] Validation: `Allow` + `TimeLimit` on same priority is permitted but the
-      first match wins (user's responsibility).
+- [x] `policy/data/queries.rs`: rewritten for new schema + sort by priority.
+- [x] `filter_by_schedule` public helper accepts `&[TimeWindow]` → active bool.
+- [x] Allow + TimeLimit on same priority permitted (first-match semantics).
 
 ---
 
@@ -210,9 +183,9 @@ Allow-only is not a separate toggle — it falls out of the policy model
 naturally:
 
 ```
-priority=100: Block(Any)       ← catch-all: block everything
-priority= 10: Allow(Dev)       ← exception: development tools pass
-priority= 20: Allow(Firefox)   ← exception: browser passes
+priority=100: Block(Any)     ← catch-all: block everything
+priority= 10: Allow(Dev)     ← exception: development tools pass
+priority= 20: Allow(Firefox) ← exception: browser passes
 priority= 30: TimeLimit(Firefox, 30)
 ```
 
@@ -245,23 +218,23 @@ user has entered allow-only/deep-work mode).
 
 - [ ] Default domain-to-category mappings are seeded in the initial migration,
       same pattern as `app_categories`:
-      `sql INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id) VALUES     ('reddit.com',     (SELECT id FROM categories WHERE name = 'Social'), 0),     ('twitter.com',    (SELECT id FROM categories WHERE name = 'Social'), 0),     ('youtube.com',    (SELECT id FROM categories WHERE name = 'Entertainment'), 0),     ('github.com',     (SELECT id FROM categories WHERE name = 'Development'), 0),     ('docs.rs',        (SELECT id FROM categories WHERE name = 'Development'), 0); `
+      `sql     INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id) VALUES         ('reddit.com',  (SELECT id FROM categories WHERE name = 'Social'), 0),         ('twitter.com', (SELECT id FROM categories WHERE name = 'Social'), 0),         ('youtube.com', (SELECT id FROM categories WHERE name = 'Entertainment'), 0),         ('github.com',  (SELECT id FROM categories WHERE name = 'Development'), 0),         ('docs.rs',     (SELECT id FROM categories WHERE name = 'Development'), 0);     `
       The database is the single source of truth — no external config files.
 
 ### J2 — Domain-level categorization
 
 - [ ] New table `domain_categories`:
-      `sql CREATE TABLE domain_categories (     domain      TEXT NOT NULL,     category_id INTEGER NOT NULL REFERENCES categories(id),     user_id     INTEGER NOT NULL DEFAULT 0,     PRIMARY KEY (domain, user_id) ); `
+      `sql     CREATE TABLE domain_categories (         domain      TEXT NOT NULL,         category_id INTEGER NOT NULL REFERENCES categories(id),         user_id     INTEGER NOT NULL DEFAULT 0,         PRIMARY KEY (domain, user_id)     );     `
 - [ ] Resolution chain: 1. `domain_categories` user override
       (`user_id = uid`) 2. `domain_categories` system-global (`user_id = 0`) 3.
       AI classification (extends `AiClassifier` to domains) 4. Uncategorized
 
 ### J3 — AI classification extension
 
-- [ ] Extend `AiClassifier` trait to accept domain names in addition to `app_id`
-      and window titles.
+- [ ] Extend `AiClassifier` trait to accept domain names in addition to
+      `app_class` and window titles.
 - [ ] v1 heuristic: keyword matching (domain suffixes against category names).
-- [ ] v2 burn model (Rust-native, no C++ deps), trained on domain + app_id.
+- [ ] v2 burn model (Rust-native, no C++ deps), trained on domain + app_class.
 - [ ] The DNS daemon queries the categorizer to resolve a domain's category
       before passing it to the policy engine.
 

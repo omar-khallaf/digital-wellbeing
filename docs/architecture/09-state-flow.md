@@ -89,11 +89,11 @@ mode.
 
 Three daemon-to-GUI signals carry cache-invalidation metadata:
 
-| Signal             | Payload                      | Trigger                            |
-| ------------------ | ---------------------------- | ---------------------------------- |
-| BlockedAppsChanged | uid, app_id, blocked, reason | Block added/removed                |
-| DailyUsageChanged  | uid                          | Event written -> aggregate updated |
-| PolicyMutated      | uid                          | Policy created/updated/deleted     |
+| Signal             | Payload                         | Trigger                            |
+| ------------------ | ------------------------------- | ---------------------------------- |
+| BlockedAppsChanged | uid, app_class, blocked, reason | Block added/removed                |
+| DailyUsageChanged  | uid                             | Event written -> aggregate updated |
+| PolicyMutated      | uid                             | Policy created/updated/deleted     |
 
 Signals carry minimal metadata — just enough for the GUI to know which cache
 entry to invalidate. On DailyUsageChanged the GUI clears the entire range_cache

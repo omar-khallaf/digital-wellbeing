@@ -1,12 +1,14 @@
 //! Policies domain types — pure data structures, no gpui dependency.
 
-use wellbeing_core::{Category, PolicyData, PolicyInput, PolicyKind};
+use wellbeing_core::{
+    AppClass, Category, DomainPattern, Effect, PolicyData, PolicyInput, TargetType, Uid,
+};
 
 /// Pure-data ViewModel for the Policies screen.
 #[derive(Debug, Clone)]
 pub struct PoliciesViewModel {
     /// Every app id ever seen in the event log (for the dropdown selector).
-    pub app_list: Vec<String>,
+    pub app_list: Vec<AppClass>,
     /// Currently-edited policy target + form data, if any.
     pub selected_policy: Option<(PolicyTarget, PolicyConfigForm)>,
     pub categories: Vec<Category>,
@@ -17,29 +19,34 @@ pub struct PoliciesViewModel {
     pub is_admin: bool,
 }
 
-/// UI-level target for a policy — mirrors `Policy`'s two variants but carries
-/// user-editable form data instead of a finalized domain value.
+/// UI-level target for a policy.
 #[derive(Clone, Debug)]
 pub enum PolicyTarget {
-    /// Target an individual app by its `AppId` string.
-    App(String),
-    /// Target every app in a category by the category's row id.
-    Category(i64),
+    /// Target an individual app by its `AppClass`.
+    App(AppClass),
+    /// Target every app in a category by the category's name.
+    Category(String),
+    /// Target a domain pattern.
+    Domain(DomainPattern),
+    /// Wildcard — matches everything.
+    Any,
 }
 
 /// Editable form fields for a single policy configuration.
 #[derive(Clone, Debug)]
 pub struct PolicyConfigForm {
-    /// Policy kind discriminant string: `"Block"`, `"TimeLimit"`, or `"Notify"`.
+    /// Policy effect string: `"Allow"`, `"Block"`, `"TimeLimit"`, or `"Notify"`.
     pub kind: String,
-    /// Per-day time limit in minutes (only meaningful when kind == TimeLimit).
+    /// Per-day time limit in minutes (only meaningful when kind == TimeLimit/Notify).
     pub time_limit_minutes: i64,
-    /// JSON-encoded schedule rules (see `TimeWindow` / `ScheduleRule`).
+    /// JSON-encoded schedule rules (Vec<TimeWindow>).
     pub schedule_json: String,
-    /// Whether this policy is currently active / enforced.
-    pub active: bool,
-    /// Target app id (window class for Hyprland). Empty = no app target.
-    pub app_id: String,
+    /// Target app id (window class for Hyprland).
+    pub app_class: AppClass,
+    /// Target category name — valid when target_type is Category.
+    pub category_name: String,
+    /// Priority (lower = evaluated first). Default 100.
+    pub priority: i64,
 }
 
 impl Default for PolicyConfigForm {
@@ -47,9 +54,10 @@ impl Default for PolicyConfigForm {
         Self {
             kind: "Block".into(),
             time_limit_minutes: 60,
-            schedule_json: "{}".into(),
-            active: true,
-            app_id: String::new(),
+            schedule_json: "[]".into(),
+            app_class: AppClass::new("_").expect("static sentinel is non-empty"),
+            category_name: String::new(),
+            priority: 100,
         }
     }
 }
@@ -57,30 +65,59 @@ impl Default for PolicyConfigForm {
 pub fn policy_input_from(
     target: PolicyTarget,
     form: &PolicyConfigForm,
-    owner_id: u32,
+    user_id: u32,
 ) -> PolicyInput {
-    let kind = match form.kind.as_str() {
-        "TimeLimit" => PolicyKind::TimeLimit,
-        "Notify" => PolicyKind::Notify,
-        _ => PolicyKind::Block,
+    let effect = match form.kind.as_str() {
+        "Allow" => Effect::Allow,
+        "TimeLimit" => Effect::TimeLimit,
+        "Notify" => Effect::Notify,
+        _ => Effect::Block,
     };
-    let (app_id, category_id) = match target {
-        PolicyTarget::App(_) => (form.app_id.clone(), 0),
-        PolicyTarget::Category(id) => (String::new(), id),
+    let placeholder_app_class =
+        || AppClass::new("_").expect("static sentinel '_' is a valid non-empty AppClass");
+    let placeholder_domain =
+        || DomainPattern::new("_").expect("static sentinel '_' is a valid non-empty DomainPattern");
+    let (target_type, app_class, category_name, domain_pattern) = match target {
+        PolicyTarget::App(_) => (
+            TargetType::App,
+            form.app_class.clone(),
+            String::new(),
+            placeholder_domain(),
+        ),
+        PolicyTarget::Category(_) => (
+            TargetType::Category,
+            placeholder_app_class(),
+            form.category_name.clone(),
+            placeholder_domain(),
+        ),
+        PolicyTarget::Domain(d) => (
+            TargetType::Domain,
+            placeholder_app_class(),
+            String::new(),
+            d,
+        ),
+        PolicyTarget::Any => (
+            TargetType::Any,
+            placeholder_app_class(),
+            String::new(),
+            placeholder_domain(),
+        ),
     };
     PolicyInput {
-        name: if category_id > 0 {
-            format!("policy-cat-{}", category_id)
-        } else {
-            format!("policy-{}", app_id)
+        name: match target_type {
+            TargetType::App => format!("policy-{}", app_class),
+            TargetType::Category => format!("policy-cat-{}", category_name),
+            TargetType::Domain => format!("policy-domain-{}", domain_pattern),
+            TargetType::Any => format!("policy-any-{}", form.kind),
         },
-        action: kind,
-        app_id: app_id.clone(),
-        category_id,
+        effect,
+        target_type,
+        app_class,
+        category_name,
+        domain_pattern,
+        priority: form.priority,
         time_limit_minutes: form.time_limit_minutes,
-        notification_repeat_interval_minutes: 0,
         schedule_json: form.schedule_json.clone(),
-        active: form.active,
-        owner_id,
+        user_id: Uid(user_id),
     }
 }

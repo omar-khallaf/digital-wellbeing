@@ -5,9 +5,11 @@
 use std::collections::HashMap;
 
 use wellbeing_core::{
-    AppCategoryRow, Category, DailySummary, DailyUsageByAppEntry, DailyUsageByTitleEntry,
+    AppCategoryRow, Category, DailyUsageByAppEntry, DailyUsageByCategoryEntry,
+    DailyUsageByTitleEntry,
 };
 
+use super::data::DashboardData;
 use super::domain::{
     AppListEntry, BlockCardInfo, DashboardViewModel, DayTimeline, Kpis, TitleListEntry,
 };
@@ -16,22 +18,20 @@ use crate::chart::Slice;
 /// Transform D-Bus cache data into a `DashboardViewModel`.
 pub fn build_dashboard_viewmodel(
     range: wellbeing_core::DateRange,
-    summaries: &[DailySummary],
-    categories: &[Category],
-    app_categories: &[AppCategoryRow],
+    data: &DashboardData,
     block_cards: Vec<BlockCardInfo>,
     day_timeline: Option<DayTimeline>,
-    title_entries: &[DailyUsageByTitleEntry],
 ) -> DashboardViewModel {
-    let usage: Vec<DailyUsageByAppEntry> = summaries
+    let usage: Vec<DailyUsageByAppEntry> = data
+        .summaries
         .iter()
         .flat_map(|s| s.entries.iter().cloned())
         .collect();
 
-    let pie_app = build_app_slices(&usage, app_categories);
-    let pie_category = build_category_slices(&usage, categories, app_categories);
-    let top_apps = build_top_apps(&usage, app_categories);
-    let top_titles = build_top_titles(title_entries);
+    let pie_app = build_app_slices(&usage, &data.app_categories);
+    let pie_category = build_category_slices(&data.category_entries, &data.categories);
+    let top_apps = build_top_apps(&usage, &data.app_categories);
+    let top_titles = build_top_titles(&data.title_entries);
 
     DashboardViewModel {
         date_range: range,
@@ -52,7 +52,7 @@ fn build_app_slices(
     let mut total: f64 = 0.0;
     for entry in usage {
         let minutes = entry.total_millis as f64;
-        *by_app.entry(entry.app_id.clone()).or_insert(0.0) += minutes;
+        *by_app.entry(entry.app_class.to_string()).or_insert(0.0) += minutes;
         total += minutes;
     }
 
@@ -62,20 +62,20 @@ fn build_app_slices(
 
     let meta: HashMap<&str, &str> = app_categories
         .iter()
-        .map(|ac| (ac.app_id.as_str(), ac.display_name.as_str()))
+        .map(|ac| (ac.app_class.as_str(), ac.display_name.as_str()))
         .collect();
 
     let mut slices: Vec<Slice> = by_app
         .into_iter()
-        .map(|(app_id, app_minutes)| {
+        .map(|(app_class, app_minutes)| {
             let display_name = meta
-                .get(app_id.as_str())
+                .get(app_class.as_str())
                 .copied()
-                .unwrap_or(&app_id)
+                .unwrap_or(&app_class)
                 .to_string();
             Slice {
                 percentage: (app_minutes / total) * 100.0,
-                app_id,
+                app_class,
                 display_name,
                 color: String::new(),
             }
@@ -91,29 +91,27 @@ fn build_app_slices(
 }
 
 fn build_category_slices(
-    usage: &[DailyUsageByAppEntry],
+    category_entries: &[DailyUsageByCategoryEntry],
     categories: &[Category],
-    app_categories: &[AppCategoryRow],
 ) -> Vec<Slice> {
-    let app_to_cat: HashMap<&str, i64> = app_categories
+    let cat_color: HashMap<&str, &str> = categories
         .iter()
-        .map(|ac| (ac.app_id.as_str(), ac.category_id))
+        .map(|c| (c.name.as_str(), c.color.as_str()))
         .collect();
-
-    let cat_map: HashMap<i64, &Category> = categories.iter().map(|c| (c.id.0, c)).collect();
 
     let mut by_cat: HashMap<String, (f64, String)> = HashMap::new();
     let mut total: f64 = 0.0;
-    for entry in usage {
-        let minutes = entry.total_millis as f64;
-        let cat_id = app_to_cat.get(entry.app_id.as_str()).copied().unwrap_or(0);
-        let cat_name = cat_map
-            .get(&cat_id)
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "Uncategorized".into());
-        let entry = by_cat.entry(cat_name).or_insert((0.0, String::new()));
-        entry.0 += minutes;
-        total += minutes;
+    for entry in category_entries {
+        let millis = entry.total_millis as f64;
+        let color = cat_color
+            .get(entry.category_name.as_str())
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        let slot = by_cat
+            .entry(entry.category_name.clone())
+            .or_insert((0.0, color));
+        slot.0 += millis;
+        total += millis;
     }
 
     if total <= 0.0 {
@@ -122,9 +120,9 @@ fn build_category_slices(
 
     let mut slices: Vec<Slice> = by_cat
         .into_iter()
-        .map(|(name, (cat_minutes, color))| Slice {
-            percentage: (cat_minutes / total) * 100.0,
-            app_id: name.clone(),
+        .map(|(name, (cat_millis, color))| Slice {
+            percentage: (cat_millis / total) * 100.0,
+            app_class: name.clone(),
             display_name: name,
             color,
         })
@@ -145,19 +143,19 @@ fn build_top_apps(
     let app_meta: HashMap<&str, (&str, Option<String>)> = app_categories
         .iter()
         .map(|ac| {
-            let color = if ac.category_id > 0 {
-                Some(format!("cat_{}", ac.category_id))
+            let color = if ac.category_id.0 > 0 {
+                Some(format!("cat_{}", ac.category_id.0))
             } else {
                 None
             };
-            (ac.app_id.as_str(), (ac.display_name.as_str(), color))
+            (ac.app_class.as_str(), (ac.display_name.as_str(), color))
         })
         .collect();
 
     let mut by_app: HashMap<String, i64> = HashMap::new();
     let mut grand_total: f64 = 0.0;
     for entry in usage {
-        *by_app.entry(entry.app_id.clone()).or_insert(0) += entry.total_millis;
+        *by_app.entry(entry.app_class.to_string()).or_insert(0) += entry.total_millis;
         grand_total += entry.total_millis as f64;
     }
 
@@ -167,16 +165,16 @@ fn build_top_apps(
 
     let mut entries: Vec<AppListEntry> = by_app
         .into_iter()
-        .map(|(app_id, total_millis)| {
+        .map(|(app_class, total_millis)| {
             let (display_name, category_color) = app_meta
-                .get(app_id.as_str())
+                .get(app_class.as_str())
                 .map(|(name, color)| (name.to_string(), color.clone()))
-                .unwrap_or_else(|| (app_id.clone(), None));
+                .unwrap_or_else(|| (app_class.clone(), None));
             AppListEntry {
                 rank: 0,
                 total_millis,
                 percentage: (total_millis as f64 / grand_total) * 100.0,
-                app_id,
+                app_class,
                 display_name,
                 category_color,
                 is_blocked: false,
@@ -197,7 +195,7 @@ fn build_top_titles(entries: &[DailyUsageByTitleEntry]) -> Vec<TitleListEntry> {
     let mut by_title: HashMap<(String, String), i64> = HashMap::new();
     let mut grand_total: f64 = 0.0;
     for entry in entries {
-        let key = (entry.app_id.clone(), entry.title.clone());
+        let key = (entry.app_class.to_string(), entry.title.clone());
         *by_title.entry(key).or_insert(0) += entry.total_millis;
         grand_total += entry.total_millis as f64;
     }
@@ -208,9 +206,9 @@ fn build_top_titles(entries: &[DailyUsageByTitleEntry]) -> Vec<TitleListEntry> {
 
     let mut result: Vec<TitleListEntry> = by_title
         .into_iter()
-        .map(|((app_id, title), total_millis)| TitleListEntry {
+        .map(|((app_class, title), total_millis)| TitleListEntry {
             rank: 0,
-            app_id,
+            app_class,
             title,
             total_millis,
             percentage: (total_millis as f64 / grand_total) * 100.0,

@@ -86,7 +86,7 @@ pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElem
                         .and_then(theme::parse_hex)
                         .unwrap_or_else(|| {
                             if e.display_name.is_empty() {
-                                theme::color_from_str(&e.app_id)
+                                theme::color_from_str(&e.app_class)
                             } else {
                                 theme::color_from_str(&e.display_name)
                             }
@@ -127,7 +127,7 @@ pub fn render_dashboard_view(cx: &App, vm: &DashboardViewModel) -> impl IntoElem
                 .iter()
                 .map(|e| TitleEntryView {
                     rank: e.rank,
-                    app_id: e.app_id.clone(),
+                    app_class: e.app_class.clone(),
                     title: e.title.clone(),
                     total_millis: e.total_millis,
                     percentage: e.percentage,

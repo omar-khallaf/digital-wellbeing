@@ -8,7 +8,7 @@ Platform trait it implements is in [02-platform.md](./02-platform.md).
 ## App Metadata Resolution
 
 App metadata (display name, icon) is resolved in the daemon's categorization
-module, not in the Platform trait. `PlatformEvent` carries only `app_id`,
+module, not in the Platform trait. `PlatformEvent` carries only `app_class`,
 `title`, `pid`, and `uid`. The categorizer resolution chain is:
 
 1. `app_categories` DB (seeded defaults + user edits)

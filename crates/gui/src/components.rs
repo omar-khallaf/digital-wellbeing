@@ -217,7 +217,7 @@ pub fn app_list_panel(cx: &App, entries: &[AppEntryView]) -> AnyElement {
 #[derive(Debug, Clone)]
 pub struct TitleEntryView {
     pub rank: usize,
-    pub app_id: String,
+    pub app_class: String,
     pub title: String,
     pub total_millis: i64,
     pub percentage: f64,
@@ -228,7 +228,7 @@ pub struct TitleEntryView {
 /// Layout per row:
 /// ```text
 /// [#rank] [Title      ] [duration  ]
-///         [app_id     ] [percentage]
+///         [app_class     ] [percentage]
 /// ```
 ///
 /// Callers may pass a `limit` to cap the number of visible entries
@@ -269,7 +269,7 @@ pub fn title_list_panel(cx: &App, entries: &[TitleEntryView]) -> AnyElement {
                             div()
                                 .text_xs()
                                 .text_color(theme::text_muted(cx))
-                                .child(entry.app_id.clone()),
+                                .child(entry.app_class.clone()),
                         ),
                 )
                 .child(
@@ -297,7 +297,6 @@ pub fn title_list_panel(cx: &App, entries: &[TitleEntryView]) -> AnyElement {
     v_flex().gap_1().children(rows).into_any_element()
 }
 
-/// Format milliseconds into a human-readable duration string.
 pub fn format_duration(total_millis: i64) -> String {
     let total_minutes = (total_millis + 60000 - 1) / 60000;
     if total_minutes < 60 {

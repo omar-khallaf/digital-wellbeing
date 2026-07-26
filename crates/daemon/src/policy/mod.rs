@@ -1,13 +1,12 @@
 //! Policy evaluation and configuration.
 //!
-//! Contains [`PolicyConfig`], [`PolicyVerdict`], and [`evaluate`] for
-//! gate-first enforcement decisions. Data access is delegated to
-//! `data/` via [`PolicyRepo`].
+//! Contains [`evaluate`] for priority-ordered first-match-wins policy
+//! evaluation. Data access is delegated to `store/repos/` via
+//! [`crate::store::daos::policies::PolicyRepo`].
 
 mod core;
 pub mod data;
 mod domain;
 
 pub use core::*;
-pub(crate) use data::*;
 pub use domain::*;

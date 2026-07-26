@@ -12,7 +12,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use tempfile::TempDir;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use wellbeing_core::{AppId, BlockedAppEntry, Uid, VirtualClock};
+use wellbeing_core::{AppClass, BlockedAppEntry, Uid, VirtualClock};
 
 use crate::blocking::EnforcerActor;
 use crate::platform::linux::PluginRegistry;
@@ -50,9 +50,10 @@ pub async fn setup() -> (
     let (signal_tx, signal_rx) = mpsc::unbounded_channel();
     let platform = Arc::new(MockPlatform);
     let clock = VirtualClock::new(dt(1_000_000));
-    let blocked_apps = Arc::new(RwLock::new(
-        HashMap::<Uid, HashMap<AppId, BlockedAppEntry>>::new(),
-    ));
+    let blocked_apps = Arc::new(RwLock::new(HashMap::<
+        Uid,
+        HashMap<AppClass, BlockedAppEntry>,
+    >::new()));
 
     let registry = Arc::new(RwLock::new(PluginRegistry::new()));
     let (actor, _) = EnforcerActor::new(

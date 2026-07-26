@@ -7,6 +7,8 @@ use gpui::prelude::*;
 use gpui::*;
 use gpui_component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
 
+use wellbeing_core::AppClass;
+
 use super::domain::{AppState, AppViewModels, Tab};
 use crate::dashboard;
 use crate::policies;
@@ -27,7 +29,8 @@ pub struct App {
     pub(crate) last_synced_policy_edit_id: Option<wellbeing_core::PolicyId>,
     /// InputState entities for the policy editor fields.
     pub(crate) time_limit_input: Option<Entity<InputState>>,
-    pub(crate) app_id_input: Option<Entity<InputState>>,
+    pub(crate) app_class_input: Option<Entity<InputState>>,
+    pub(crate) priority_input: Option<Entity<InputState>>,
     /// Custom date range picker state.
     pub(crate) show_custom_range: bool,
     pub(crate) custom_start_input: Option<Entity<InputState>>,
@@ -39,6 +42,8 @@ pub struct App {
     pub(crate) policies_repo: Option<crate::policies::data::PoliciesRepo>,
     /// Broadcast sender to trigger the reports background flow refresh.
     pub(crate) reports_refresh_tx: Option<tokio::sync::broadcast::Sender<()>>,
+    /// Broadcast sender to trigger the policies background flow refresh.
+    pub(crate) pol_refresh_tx: Option<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl App {
@@ -53,13 +58,15 @@ impl App {
             policy_edit_id: None,
             last_synced_policy_edit_id: None,
             time_limit_input: None,
-            app_id_input: None,
+            app_class_input: None,
+            priority_input: None,
             show_custom_range: false,
             custom_start_input: None,
             custom_end_input: None,
             policy_task: None,
             policies_repo: None,
             reports_refresh_tx: None,
+            pol_refresh_tx: None,
         }
     }
 
@@ -75,9 +82,6 @@ impl App {
     /// Store the ViewModel receiver task so it stays alive for the entity's
     /// lifetime. Dropping the task would cancel the receiver.
     pub fn set_viewmodel_task(&mut self, task: gpui::Task<()>) {
-        // When an existing task is stored, it goes into `policy_task` since
-        // GPUI entity fields cannot be dynamically added. We keep a dedicated
-        // field for the ViewModel receiver task.
         self.policy_task = Some(task);
     }
 
@@ -87,6 +91,10 @@ impl App {
 
     pub fn set_reports_refresh_tx(&mut self, tx: tokio::sync::broadcast::Sender<()>) {
         self.reports_refresh_tx = Some(tx);
+    }
+
+    pub fn set_pol_refresh_tx(&mut self, tx: tokio::sync::broadcast::Sender<()>) {
+        self.pol_refresh_tx = Some(tx);
     }
 
     pub fn apply_viewmodels(&mut self, vms: AppViewModels) {
@@ -147,7 +155,8 @@ impl App {
     ) {
         let Some((_, form)) = &self.policy_edit else {
             self.time_limit_input = None;
-            self.app_id_input = None;
+            self.app_class_input = None;
+            self.priority_input = None;
             return;
         };
         let form = form.clone();
@@ -203,7 +212,7 @@ impl App {
             });
         }
 
-        if self.app_id_input.is_none() {
+        if self.app_class_input.is_none() {
             let entity =
                 cx.new(|cx| InputState::new(window, cx).placeholder("e.g. firefox, kitty, Code"));
             let _ = cx.subscribe(
@@ -215,17 +224,64 @@ impl App {
                     if let InputEvent::Change = event {
                         let val = state.read(cx).value().to_string();
                         if let Some((_, ref mut form)) = this.policy_edit {
-                            form.app_id = val;
+                            form.app_class =
+                                AppClass::new(&val).unwrap_or_else(|_| form.app_class.clone());
                         }
                     }
                 },
             );
-            self.app_id_input = Some(entity);
+            self.app_class_input = Some(entity);
         }
-        if needs_sync && let Some(ref entity) = self.app_id_input {
+        if needs_sync && let Some(ref entity) = self.app_class_input {
             entity.update(cx, |state, cx| {
-                if state.value() != form.app_id.as_str() {
-                    state.set_value(form.app_id.clone(), window, cx);
+                if state.value() != form.app_class.as_str() {
+                    state.set_value(form.app_class.to_string(), window, cx);
+                }
+            });
+        }
+
+        if self.priority_input.is_none() {
+            let entity: Entity<InputState> =
+                cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
+            let _ = cx.subscribe_in(
+                &entity,
+                window,
+                |this: &mut App,
+                 state: &Entity<InputState>,
+                 event: &NumberInputEvent,
+                 window: &mut Window,
+                 cx: &mut Context<App>| {
+                    match event {
+                        NumberInputEvent::Step(StepAction::Increment) => {
+                            let cur = state.read(cx).value().parse::<i64>().unwrap_or(100);
+                            let new_val = cur + 1;
+                            state.update(cx, |input, cx| {
+                                input.set_value(new_val.to_string(), window, cx);
+                            });
+                            if let Some((_, ref mut form)) = this.policy_edit {
+                                form.priority = new_val;
+                            }
+                        }
+                        NumberInputEvent::Step(StepAction::Decrement) => {
+                            let cur = state.read(cx).value().parse::<i64>().unwrap_or(100);
+                            let new_val = (cur - 1).max(1);
+                            state.update(cx, |input, cx| {
+                                input.set_value(new_val.to_string(), window, cx);
+                            });
+                            if let Some((_, ref mut form)) = this.policy_edit {
+                                form.priority = new_val;
+                            }
+                        }
+                    }
+                },
+            );
+            self.priority_input = Some(entity);
+        }
+        if needs_sync && let Some(ref entity) = self.priority_input {
+            entity.update(cx, |state, cx| {
+                let desired = form.priority.to_string();
+                if state.value() != desired.as_str() {
+                    state.set_value(desired, window, cx);
                 }
             });
         }

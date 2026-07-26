@@ -7,10 +7,10 @@ exist to verify business rules and domain logic, not structural trivia.
 
 ### Bad — testing the compiler's job
 
-A test that asserts AppId rejects empty input is redundant. The NonEmptyString
-newtype already guarantees this at compile time for any code path. Testing it is
-wasteful because any test that compiles must already pass — there is no path
-where AppId accepts empty input.
+A test that asserts AppClass rejects empty input is redundant. The
+NonEmptyString newtype already guarantees this at compile time for any code
+path. Testing it is wasteful because any test that compiles must already pass —
+there is no path where AppClass accepts empty input.
 
 ### Good — testing the business rule
 
@@ -50,7 +50,7 @@ interact naturally. Only mock at system boundaries:
 
 | Mock-worthy                              | Not worth mocking             |
 | ---------------------------------------- | ----------------------------- |
-| Platform (via MockPlatform)              | AppId, Duration, Policy       |
+| Platform (via MockPlatform)              | AppClass, Duration, Policy    |
 | SQLite connection (in-memory via diesel) | PolicyVerdict, WindowTitle    |
 | System clock (for time-dependent tests)  | SessionSummary, TrackingState |
 | Compositor socket (internal Linux tests) | Classification rules          |
@@ -77,7 +77,7 @@ pipeline from event to store.
 
 ## What NOT to Test
 
-- Structural invariants guaranteed by the type system (AppId rejects empty)
+- Structural invariants guaranteed by the type system (AppClass rejects empty)
 - Simple field accessors / getters
 - Third-party behavior (SQLite, gpui, tokio channels)
 - Code that is "too simple to break" — classification overrides that are a
@@ -88,23 +88,23 @@ delete it.
 
 ## Property-Based Testing for the Policy Engine
 
-The evaluate() function is a pure function mapping (app_id, policies,
+The evaluate() function is a pure function mapping (app_class, policies,
 elapsed_usage, now) to PolicyVerdict — an ideal candidate for property-based
 testing with proptest or bolero.
 
 ### Invariants to verify
 
-Proptest generates random app_id strings matching the AppId validation pattern,
-random policy vectors of size 0 to 5, elapsed values from 0 to 86400 seconds
-(0–24h), and random datetimes. It asserts that if no policy has a limit, the
-verdict must not be Block. It asserts that when multiple policies would block,
-they collapse to a single Block with the most restrictive reason. It asserts
-that when elapsed exceeds the policy's time_limit_minutes, the verdict must be
-Block (not Ok).
+Proptest generates random app_class strings matching the AppClass validation
+pattern, random policy vectors of size 0 to 5, elapsed values from 0 to 86400
+seconds (0–24h), and random datetimes. It asserts that if no policy has a limit,
+the verdict must not be Block. It asserts that when multiple policies would
+block, they collapse to a single Block with the most restrictive reason. It
+asserts that when elapsed exceeds the policy's time_limit_minutes, the verdict
+must be Block (not Ok).
 
 ### Strategies
 
-The app_id strategy generates strings matching the pattern for valid AppId
+The app_class strategy generates strings matching the pattern for valid AppClass
 values — starting with a letter, followed by alphanumeric, dot, underscore, or
 hyphen characters, 1 to 32 characters long. The any_policy strategy combines any
 block policy, any time limit policy, and any notify policy.
@@ -178,8 +178,8 @@ time.
 ### Scenario: SIGTERM during event write
 
 A test verifies that when SIGTERM is delivered while an event has been written
-but LoggedOut has not yet been sent, a LoggedOut event is inserted before the
-process exits.
+but LogOut has not yet been sent, a LogOut event is inserted before the process
+exits.
 
 ### Test infrastructure
 
@@ -206,7 +206,7 @@ from an actor — lock-free, zero-wait, safe in any async context.
 Policy evaluation is a pure domain function — no clock, no DB pool, no struct.
 It accepts now as an explicit parameter:
 
-evaluate(app_id, policies, elapsed_usage, now) -> PolicyVerdict
+evaluate(app_class, policies, elapsed_usage, now) -> PolicyVerdict
 
 The EnforcerActor (which does have DB access) calls the data layer first to load
 matching policies, then passes them to evaluate().
@@ -214,8 +214,8 @@ matching policies, then passes them to evaluate().
 ### Usage in Tests
 
 Construct a PolicyConfig::TimeLimit for a category (with category_id) and one
-for an app (with app_id). Pass both to evaluate() with elapsed usage below the
-app limit but above the category limit — the category policy triggers first.
+for an app (with app_class). Pass both to evaluate() with elapsed usage below
+the app limit but above the category limit — the category policy triggers first.
 
 ### Contract
 

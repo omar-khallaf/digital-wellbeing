@@ -94,10 +94,14 @@ impl PoliciesRepo {
         proxy.delete_policy(id).await.map_err(Into::into)
     }
 
-    pub async fn set_app_category(&self, app_id: &str, category_id: CategoryId) -> Result<()> {
+    pub async fn set_app_category(
+        &self,
+        app_class: &AppClass,
+        category_id: CategoryId,
+    ) -> Result<()> {
         let proxy = self.proxy().await?;
         proxy
-            .set_app_category(app_id, category_id)
+            .set_app_category(app_class.as_ref(), category_id)
             .await
             .map_err(Into::into)
     }

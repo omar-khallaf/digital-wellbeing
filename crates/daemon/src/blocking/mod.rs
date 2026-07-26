@@ -4,11 +4,11 @@
 //!
 //! ## Gate-First Discipline
 //!
-//! On `WindowFocused`, the actor resolves categories & policies, calls
+//! On `Focus`, the actor resolves categories & policies, calls
 //! [`evaluate`], and acts on the verdict **before** writing any event:
 //!
-//! - **Block** → record in active_blocks, DON'T write `WindowFocused` for the app.
-//!   The previous app's interval IS closed (`Unfocused` written).
+//! - **Block** → record in active_blocks, DON'T write `Focus` for the app.
+//!   The previous app's interval IS closed (`Unfocus` written).
 //! - **Notify** → write events normally, send notification, start repeat timer.
 //! - **Ok** → write events normally, start limit timer.
 //!
@@ -21,7 +21,7 @@
 
 mod core;
 pub mod data;
-mod domain;
+pub(crate) mod domain;
 
 #[cfg(test)]
 mod test_support;

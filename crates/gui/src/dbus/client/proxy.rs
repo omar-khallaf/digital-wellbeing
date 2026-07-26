@@ -42,6 +42,13 @@ pub trait Daemon {
         user_id: u32,
     ) -> zbus::Result<Vec<DailyUsageByTitleSummary>>;
 
+    async fn get_usage_range_by_category(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        user_id: u32,
+    ) -> zbus::Result<Vec<DailyUsageByCategoryEntry>>;
+
     async fn get_day_events(
         &self,
         uid: u32,
@@ -51,18 +58,25 @@ pub trait Daemon {
 
     async fn list_categories(&self) -> zbus::Result<Vec<Category>>;
     async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
-    async fn set_app_category(&self, app_id: &str, category_id: CategoryId) -> zbus::Result<()>;
-
-    #[zbus(property)]
-    fn blocked_apps(&self) -> zbus::Result<Vec<BlockedAppEntry>>;
+    async fn set_app_category(&self, app_class: &str, category_id: CategoryId) -> zbus::Result<()>;
 
     /// Signals (non-async — zbus generates receivers)
     #[zbus(signal, name = "BlockedAppsChanged")]
-    fn on_blocked_apps_changed(&self) -> zbus::Result<(u32, String, bool, u32)>;
+    fn on_blocked_apps_changed(&self) -> zbus::Result<(Uid, AppClass, bool, BlockReason)>;
 
     #[zbus(signal)]
-    fn daily_usage_changed(&self) -> zbus::Result<u32>;
+    fn daily_usage_changed(&self) -> zbus::Result<Uid>;
 
     #[zbus(signal)]
     fn policy_mutated(&self) -> zbus::Result<u32>;
+}
+
+/// Property accessor for `BlockedApps`.
+///
+/// `BlockedAppEntry` now derives `Value`, so `Vec<BlockedAppEntry>` satisfies
+/// `TryFrom<OwnedValue>` required by the property getter.
+impl DaemonProxy<'_> {
+    pub async fn blocked_apps(&self) -> zbus::Result<Vec<BlockedAppEntry>> {
+        self.inner().get_property("BlockedApps").await
+    }
 }

@@ -7,8 +7,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::{interval, sleep};
+use tokio::time::sleep;
 use tracing::{info, warn};
+
+use wellbeing_core::AppClass;
 
 use crate::dbus::DaemonPresenceEvent;
 use crate::policies::build_policies_viewmodel;
@@ -38,8 +40,6 @@ pub fn spawn_policies_flow(
         let mut daemon_available = true;
 
         info!("policies flow started");
-
-        let mut fallback_ticker = interval(Duration::from_secs(300));
 
         loop {
             if !proxy_subscribed && daemon_available {
@@ -86,9 +86,6 @@ pub fn spawn_policies_flow(
                 Ok(_) = refresh_rx.recv() => {
                     daemon_available
                 }
-                _ = fallback_ticker.tick() => {
-                    daemon_available
-                }
             };
 
             if !triggered {
@@ -98,12 +95,15 @@ pub fn spawn_policies_flow(
 
             match repo.fetch_all(uid).await {
                 Ok(data) => {
-                    let app_ids: Vec<String> =
-                        data.app_list.iter().map(|ac| ac.app_id.clone()).collect();
+                    let app_classs: Vec<AppClass> = data
+                        .app_list
+                        .iter()
+                        .map(|ac| ac.app_class.clone())
+                        .collect();
                     let vm = build_policies_viewmodel(
                         &data.policies,
                         &data.categories,
-                        &app_ids,
+                        &app_classs,
                         is_admin,
                     );
                     let _ = vm_tx.send(Some(vm));
