@@ -82,22 +82,38 @@ event log, and typing a new app ID followed by Enter creates a new target.
 ### Policy Configuration Forms
 
 Policy data is constructed from database rows into domain types before the UI
-sees it. The Policy enum distinguishes App and Category targets. Each target
-carries an id, name, and a PolicyConfig that specifies kind, optional
-time_limit_minutes, and schedule.
+sees it. Each policy carries an `Effect`, a `Target`, a `priority` (unsigned
+integer, lower = evaluated first), and a `schedule` (list of time windows).
 
-Block kind is unconditional; it blocks whenever the policy is active and has no
-time limit. TimeLimit kind blocks when elapsed minutes reach or exceed
-time_limit_minutes. Notify kind never blocks; it only alerts when the limit is
-reached.
+**Effect selector:**
 
-TimeWindow wraps schedule rules, which can be either daily (start and end times
-each day) or weekly (a set of weekdays plus start and end times). Empty or null
-schedule rules mean the policy is active all the time.
+- `Allow` — target is permitted (passes through any catch-all `Block(Any)`).
+- `Block` — target is blocked unconditionally when the policy is active.
+- `TimeLimit(n)` — target is allowed for `n` minutes per day, then blocked.
+- `Notify(n)` — target is allowed; desktop notification fires at `n` minutes.
 
-The editor renders labeled controls for kind, target, time limit, schedule
-rules, and active flag. Time_limit_minutes is shown only when kind is TimeLimit
-or Notify.
+**Target selector:**
+
+- `App` — select or type an `app_id`.
+- `Category` — pick from the category list.
+- `Domain` — type a domain pattern (e.g. `reddit.com`, `*.social.com`).
+- `Any` — matches everything. Used as a catch-all with `Block` effect to
+  implement allow-only (deep work) mode.
+
+**Priority:** A numeric field (default 100). Policies are displayed and
+evaluated in priority order. The user reorders policies by adjusting priority
+values. The editor shows the policy list as a sorted table so the evaluation
+order is always visible.
+
+**Schedule:** Each policy can have multiple `TimeWindow` entries. A policy is
+active if the current time falls within ANY window. Empty schedule = always
+active. Each window specifies start/end hour and an optional set of days.
+
+The editor renders: effect dropdown, target selector, priority spinner, time
+limit field (only for TimeLimit/Notify), schedule editor (add/remove windows),
+and a delete button. The `active` flag is removed — schedule expresses
+activation. The policy list is sorted by priority to make evaluation order
+obvious.
 
 Categories are managed through a separate editor that lets users create, rename,
 assign colors, and assign icons. The editor operates on the categories table

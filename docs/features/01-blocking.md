@@ -9,8 +9,13 @@ The system never automatically closes or terminates applications. Instead:
    is written, so the blocked app never enters the event log.
 2. If the previous app has an open focus interval, an Unfocus event closes it
    (this is interval management, not block enforcement).
-3. The overlay presents options to the user.
-4. The user's choice determines the next action.
+3. The overlay displays a Close Window button. The user cannot dismiss the
+   overlay — locked mode is the default. The only action is terminating the
+   blocked window.
+4. The user clicks Close Window → the plugin terminates the window via the
+   compositor API. The block remains in effect: if the user re-launches the app,
+   the overlay re-appears immediately. The block is lifted only by editing the
+   policy.
 
 Enforcement is overlay-only. The blocked app continues running but the overlay
 traps all input, making it impossible to interact with the window. This keeps
@@ -29,7 +34,8 @@ exposes remaining (time until limit is reached).
 
 Note: PolicyKind::Block (direct block, no time tracking) has no
 time_limit_minutes; it blocks unconditionally when active. For that kind the
-overlay shows only Close, and no tracked state is constructed.
+overlay shows only Close Window, and no tracked state is constructed. The
+overlay cannot be dismissed — lifting a block requires editing the policy.
 
 ### TrackedApp — Unified Domain Model
 
@@ -54,10 +60,10 @@ remaining() -> (limit - used).max(0) and is_exceeded() -> used >= limit.
 
 ### Overlay Action Availability by State
 
-| TrackedApp       | Overlay buttons | Behaviour                           |
-| ---------------- | --------------- | ----------------------------------- |
-| TimeLimited(...) | Close only      | Close dismisses the overlay         |
-| TimeTracked(...) | N/A             | Notify policies never show overlays |
+| TrackedApp       | Overlay buttons | Behaviour                                                |
+| ---------------- | --------------- | -------------------------------------------------------- |
+| TimeLimited(...) | Close Window    | Terminates the window via compositor API; block persists |
+| TimeTracked(...) | N/A             | Notify policies never show overlays                      |
 
 ## Blocking Flow
 
@@ -102,8 +108,9 @@ If PolicyVerdict::Block: a. Check in-memory focus state — if previous app A ha
 open interval: INSERT Unfocus (closes A's interval) (EnforcerActor
 `accumulate_daily_usage` closes A via in-memory focus state) b. Update
 BlockedApps state with reason, policy_id, and available_actions: Block ->
-[Close]; TimeLimit -> [Close] c. Emit BlockedAppsChanged signal on D-Bus d. Do
-NOT write Focus for B (B never enters event log — no interval to close)
+[CloseWindow]; TimeLimit -> [CloseWindow] c. Emit BlockedAppsChanged signal on
+D-Bus d. Do NOT write Focus for B (B never enters event log — no interval to
+close)
 
 If PolicyVerdict::Notify: a. INSERT Unfocus (closes previous A's interval) b.
 INSERT Focus for B (opens B's interval) (trigger accumulates A, opens B) c.
@@ -161,7 +168,11 @@ start new timer
 User switches to different app: EnforcerActor cancels previous app's timer
 (JoinHandle::abort()), removes from HashMap New app gets its own timer
 
-Block resolves (user closes overlay): Cancel limit timer for the app.
+Block resolves (user modifies policy): Cancel limit timer for the app. The
+overlay does NOT have a dismiss action — the user must edit or delete the
+blocking policy to lift the block. If the user closes the window via the
+overlay's Close Window button, the block remains active: re-launching the app
+triggers the overlay again.
 
 ### Implementation — EnforcerActor
 
@@ -258,7 +269,8 @@ The EnforcerActor handles the block path after evaluate() returns Block:
    focus state (passed from EnforcerActor). Insert Unfocus to close the previous
    interval. `accumulate_daily_usage` runs in the same transaction.
 2. Cancel any limit timer for this app (stale from prior session).
-3. Overlay shows Close button for all block types.
+3. Overlay shows Close Window button. The block cannot be dismissed — the
+   overlay remains after the window is closed.
 4. Show overlay — fire-and-forget D-Bus call. No Focus is written for the
    blocked app. The event log contains only the Unfocus (previous interval
    closure).
@@ -267,9 +279,11 @@ No in-memory block state:
 
 The overlay is owned by the plugin; the daemon keeps no active overlay map.
 Block state is shared declaratively through the BlockedApps D-Bus property. The
-plugin reads state from BlockedApps and renders overlays accordingly. Close is
-handled locally in the plugin via LockManager::hideOverlay() -- no signal is
-sent to the daemon.
+plugin reads state from BlockedApps and renders overlays accordingly. Close
+Window is handled by the plugin via the compositor API — it terminates the
+blocked window (e.g., `hyprctl dispatch closewindow` on Hyprland). The block
+remains in the daemon's BlockedApps — if the user re-launches the app, the
+overlay re-appears. No signal is sent to the daemon.
 
 Rust daemon side (zbus): The WindowInfo struct and the #[proxy] trait Manager
 (the zbus proxy for org.wellbeing.v1.Manager — current_focus property) are
@@ -297,9 +311,10 @@ The canonical implementation is in plugins/hyprland/app/src/main.cpp.
 
 No additional DB writes are needed. The previous app's interval was already
 closed by the Unfocus written in enforce_block (step 1), and the blocked app
-never had a Focus written. The close button is handled locally in the plugin via
-LockManager::hideOverlay(), and the app keeps running with no tracked interval —
-it generates no tracked time.
+never had a Focus written. The Close Window button terminates the app via the
+compositor API (e.g., `hyprctl dispatch closewindow` on Hyprland). The block
+persists in the daemon's BlockedApps state — re-launching the app causes the
+overlay to re-appear immediately.
 
 ## Overlay Design
 
@@ -413,8 +428,9 @@ BlockedApps on startup and subscribes to BlockedAppsChanged for live updates.
 Overlay rendering is triggered by the plugin's local overlay set, not by daemon
 commands.
 
-Close button handling is entirely local to the plugin: the plugin calls
-LockManager::hideOverlay() to dismiss the overlay without any D-Bus signal.
+Close Window is handled by the plugin via the compositor API — it terminates the
+blocked window. The block persists in the daemon's BlockedApps state. No D-Bus
+signal is sent.
 
 ### Overlay Lifecycle
 
@@ -444,37 +460,35 @@ Unfocus (A's closure).
    User sees: app covered by overlay UI User cannot interact with the blocked
    app
 
-6. User clicks Close: Plugin calls LockManager::hideOverlay() locally. No D-Bus
-   signal is sent — the overlay is dismissed locally in the plugin. The app
-   continues running with no tracked interval.
+6. User clicks Close Window: Plugin terminates the window via the compositor
+   API. No D-Bus signal is sent. The block remains in the daemon's BlockedApps —
+   if the user re-launches the app, the overlay re-appears on the next frame.
 
 ### Plugin Disconnect Handling
 
-The plugin is the sole control surface for block resolution. If the plugin's bus
-name disappears while a block is active, the overlay is gone and the block is
-effectively lifted — the app keeps running with no input trapping.
+If the plugin's bus name disappears while a block is active, the overlay is gone
+and enforcement is temporarily lost — the app runs without input trapping.
 
 1. The app keeps running (the overlay was the only enforcement mechanism). The
-   limit was reached, but without the plugin there is no overlay to stop the
-   user.
+   block remains in the daemon's BlockedApps state — it is not cleared.
 2. The dashboard is read-only regarding block state — it can display that a
-   block was active, but cannot grant time or close the app. Only the overlay
-   (when the plugin reconnects) can resolve the block.
+   block was active, but cannot grant time or close the app. BlockedApp state
+   persists in the daemon.
 3. If the plugin reconnects and the app is still focused, the overlay re-appears
    and normal flow resumes. The plugin re-reads BlockedApps from the daemon and
-   re-establishes overlays for all blocked apps. Block resolution is handled
-   locally by the plugin.
+   re-establishes overlays for all blocked apps.
 4. The daemon subscribes to NameOwnerChanged on the daemon's bus for
    org.wellbeing.v1.Manager.
 
 Called when the plugin's bus name disappears while a block is active. The
 blocked app never had a Focus event persisted — no interval to clean up. The
-block is lifted until the plugin returns.
+block remains in BlockedApps so it re-activates when the plugin returns.
 
 Called when the plugin's bus name (re-)appears. Re-evaluate and, if the app is
 still blocked, update BlockedApps — the plugin re-reads the property and
 re-establishes overlays. No blocked_apps map to consult — re-derive from the
-current policy verdict.
+current policy verdict. Blocks are lifted only by policy edits, not by plugin
+disconnect/reconnect cycles.
 
 ### Startup Recovery — Plugin State Reconciliation
 

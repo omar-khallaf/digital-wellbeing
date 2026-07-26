@@ -47,7 +47,7 @@ threshold of 0.6.
 Implementation paths:
 
 - v1: simple heuristic — keyword matching on app_id against category names
-- v2: ONNX local model — ort crate with a small distilled BERT model
+- v2: local model via burn (Rust-native, no C++ deps)
 
 The AiClassifier trait is not a Platform method — it lives in the
 categorization/ feature module alongside the Categorizer actor. This keeps
@@ -152,6 +152,69 @@ domain.
 Tracking data is always stored per-app — categories are computed at query time
 via the app_categories table.
 
+## Domain Categorization (DNS Blocking)
+
+Domain-level categorization powers the DNS blocking feature. When the daemon
+receives a DNS query, it resolves the domain's category before checking policies
+— enabling policies that target entire categories of websites (e.g.,
+`Block(Social)` blocks `reddit.com`, `twitter.com`, etc. at DNS level).
+
+### domain_categories Table
+
+A separate table from `app_categories` — domains are not apps:
+
+```sql
+CREATE TABLE domain_categories (
+    domain      TEXT NOT NULL,
+    category_id INTEGER NOT NULL REFERENCES categories(id),
+    user_id     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (domain, user_id)
+);
+```
+
+Resolution chain (same pattern as app_categories):
+
+1. User override (`user_id = uid`)
+2. System-global default (`user_id = 0`)
+3. AI classification (domain-based heuristic or model)
+4. Uncategorized
+
+### Preset Blocklists
+
+Default domain-to-category mappings are seeded in the database migration,
+following the same `INSERT OR IGNORE` pattern as `app_categories`. The database
+is the single source of truth — no external config files.
+
+```sql
+INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id)
+VALUES
+    ('reddit.com',    (SELECT id FROM categories WHERE name = 'Social'), 0),
+    ('twitter.com',   (SELECT id FROM categories WHERE name = 'Social'), 0),
+    ('instagram.com', (SELECT id FROM categories WHERE name = 'Social'), 0),
+    ('youtube.com',   (SELECT id FROM categories WHERE name = 'Entertainment'), 0),
+    ('netflix.com',   (SELECT id FROM categories WHERE name = 'Entertainment'), 0),
+    ('github.com',    (SELECT id FROM categories WHERE name = 'Development'), 0),
+    ('docs.rs',       (SELECT id FROM categories WHERE name = 'Development'), 0);
+```
+
+New defaults are added via future migrations. User edits are preserved because
+the seed uses `INSERT OR IGNORE`.
+
+### AI Classification for Domains
+
+The `AiClassifier` trait is extended to accept domain names in addition to
+`app_id` and window title:
+
+- v1: heuristic keyword matching — domain suffixes and keywords mapped to
+  built-in category names.
+- v2: burn model with the same distilled BERT architecture, trained on domain
+  patterns.
+
+The DNS daemon queries the categorizer for each incoming domain before passing
+it to the policy engine.
+
+---
+
 ## Browser Tab Detection
 
 Browser windows are a single app_id containing multiple "logical apps" (tabs).
@@ -176,11 +239,14 @@ The captured group is the page title. URL detection is more invasive
 
 ## Future: Machine Learning Classification
 
-If manual categorization becomes a pain point, a local ML model (e.g., ort /
-ONNX Runtime) could classify apps based on:
+If manual categorization becomes a pain point, a local ML model via burn
+(Rust-native, no C++ dependencies) could classify apps and domains based on:
 
 - app_id and window title patterns
+- Domain name patterns (suffix, keyword, TLD)
 - Usage time patterns (gaming = evening, work = morning)
 
 The AiClassifier trait is designed for this — the v1 heuristic impl can be
-swapped for an ONNX-based impl behind the same trait boundary.
+swapped for a burn-based impl behind the same trait boundary. The trait is
+extended to accept `Option<&str>` for domain names alongside the existing
+`AppId` and window title parameters.

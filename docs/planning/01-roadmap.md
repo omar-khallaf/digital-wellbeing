@@ -1,272 +1,322 @@
-# Roadmap (Detailed)
+# Roadmap
 
-A versioned build plan derived from the design docs in `docs/`. Module paths,
-D-Bus interfaces, and source docs are cited so any task can be picked up without
-re-deriving scope.
+A versioned build plan. Phases build the system bottom-up and can proceed in
+parallel where noted.
 
-**Status** (shown once per section, not per line): `Done` · `In progress` ·
-`Ready` (designed, implementable) · `Open` (design question outstanding — see
-`architecture/12-open-questions.md`).
-
-**Engineering gates (every task):** valuetype boundary gate for raw
-`String`/`i32`/`bool` (`core/valuetypes.rs`); `thiserror` domain errors, no
-formatted strings (`core/error.rs`); `Clock` trait for time-dependent logic
-(`core/clock.rs`); zero-alloc hot path + `#[inline]`; `unsafe` only with
-`// SAFETY:` + review; test behavior not structure, assert both domain events
-and DB state, mock only at boundaries (`quality/02-testing.md`).
-
----
-
-## Phases — infrastructure first
-
-The phases build the system bottom-up. Versions (below) are the product
-milestones that the phases deliver.
-
-### Phase A — Foundation · `Done`
+## Phase A — Foundation · `Done`
 
 - [x] Workspace `Cargo.toml` with `core` / `daemon` / `gui` members.
 - [x] `crates/core/*`: valuetypes, `Error`, `Clock`
       (+`SystemClock`/`VirtualClock`), D-Bus-flat domain types.
 - [x] Initial schema with `user_id` / `created_by` / `owner_id` columns (RBAC
-      scoping — `architecture/07-rbac.md`).
+      scoping).
+- [x] `crates/core/src/domain/policy_types.rs`: `PolicyKind` enum
+      (`Block`/`TimeLimit`/`Notify`), `TimeWindow`, D-Bus types.
 
-### Phase B — Daemon core · `Done`
+## Phase B — Daemon core · `Done`
 
 - [x] `daemon/src/store/*`: `DbPool`, `StoreBuilder`, initial schema setup, WAL
-      mode (`persistence/01-database.md`).
+      mode.
 - [x] `daemon/src/platform/*`: `Platform` trait + `LinuxPlatform` +
-      `ManagerClient` (system D-Bus, `NameOwnerChanged` discovery —
-      `architecture/02-platform.md`, `architecture/04-plugin-ipc.md`).
+      `ManagerClient` (system D-Bus, `NameOwnerChanged` discovery).
 - [x] `daemon/src/dbus/mod.rs`: `org.wellbeing.v1.Controller` server + RBAC +
-      `DaemonPublicKey` + `RegisterPlugin` (`architecture/06-daemon-dbus.md`,
-      `architecture/05-daemon-auth.md`).
+      `DaemonPublicKey` + `RegisterPlugin`.
 
-### Phase C — Daemon actors · `Done`
+## Phase C — Daemon actors · `Done`
 
-- [x] `blocking/domain/`: `FocusState` domain type (used by `EnforcerActor`),
-      daily-usage accumulation via `accumulate_daily_usage`.
+- [x] `blocking/domain/`: `FocusState` domain type, daily-usage accumulation.
 - [x] `policy/*`: `PolicyConfig` enum (`Block`/`TimeLimit`/`Notify`),
       `evaluate()`, `app_state()`, `TimeWindow`.
 - [x] `categorization/*`: `Categorizer` + `AiClassifier` (v1 heuristic),
       `app_categories` chain.
 - [x] `blocking/*`: `EnforcerActor` gate-first pipeline, `BlockingState`,
-      `OverlayConfig`, block extension, plugin disconnect/reconnect
-      (`features/01-blocking.md`).
+      `OverlayConfig`, plugin disconnect/reconnect.
 - [x] `reports/*`: aggregate queries for history/export.
 - [x] `main.rs`: wire `EnforcerActor` + event fan-out + D-Bus server +
       `logind::take_shutdown_inhibit` + SIGTERM/SIGINT handler.
 
-### Phase D — GUI · `Ready`
+## Phase D — GUI MVP · `Done`
 
-- [ ] `core/src/valuetypes.rs`: `DateRange` newtype with `start <= end`
-      validation
-- [ ] `dbus/mod.rs`: `DaemonClient` zbus proxy + `SignalCoalescer`, error
-      mapping, subscribe to daemon signals, `range_cache` keyed by
-      `"range:{start}:{end}:{uid}"` (`architecture/06-daemon-dbus.md`,
-      `architecture/09-state-flow.md`).
-- [ ] `cache/mod.rs`: `ClientCache<K,V>` explicit-invalidation, cache clear on
-      daemon signals — clear on `DailyUsageChanged`
-      (`architecture/09-state-flow.md`).
-- [ ] `main.rs`: `gpui::run` + background tokio thread + D-Bus activation
-      fallback. `refresh_all_data` calls `GetUsageRange(selected_range, uid)`
-      instead of `GetDailyUsage`.
-- [ ] `app.rs`: app shell (TitleBar, TabBar, tray, Admin/User mode via
-      `getuid()`). `AppState` carries `selected_range: DateRange` +
-      `range_cache: Vec<DailySummary>`.
-- [ ] `dashboard/`: `DashboardViewModel` built from `&[DailySummary]`,
-      `TimeRangeSelector` wired to header (`features/03-ui-design.md`).
-- [ ] `policies/`: `PoliciesViewModel`, `AppSelector`, `PolicyEditor`,
-      `CategoryEditor` (RBAC-aware).
-- [ ] `reports/`: `ReportsViewModel` built from `&[DailySummary]`,
-      `TimeRangeSelector` wired to header, export stub
-      (`features/03-ui-design.md`).
+- [x] `dbus/mod.rs`: `DaemonClient` zbus proxy + `SignalCoalescer`.
+- [x] `cache/mod.rs`: `ClientCache<K,V>` stale-while-revalidate.
+- [x] `main.rs`: `gpui::run` + background tokio thread + D-Bus activation
+      fallback.
+- [x] `app.rs`: app shell (TitleBar, TabBar, tray, Admin/User mode).
+- [x] `dashboard/`: `DashboardViewModel`, `TimeRangeSelector`, usage charts.
+- [x] `policies/`: `PoliciesViewModel`, `AppSelector`, `PolicyEditor`,
+      `CategoryEditor`.
+- [x] `reports/`: `ReportsViewModel`, `TimeRangeSelector`, export CSV/JSON.
 
-### Phase E — Plugin migration · `Ready`
+## Phase E — Plugin + Deployment · `Done`
 
-- [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentFocus`;
-      `RegisterPlugin()` reverse discovery; unified `Event` signal (EventTag);
-      read `BlockedApps` property on startup and on `BlockedAppsChanged` signal
-      (`features/01-blocking.md`).
-- [ ] `deploy/*.conf`: D-Bus system policy files for both interfaces
-      (`architecture/10-deployment.md`).
-
-### Phase F — Deployment · `Ready`
-
-- [ ] `deploy/systemd/digital-wellbeing-daemon.service`: systemd unit
-      (`Type=dbus`, root, hardening, `StateDirectory`).
-- [ ] `deploy/*.service`: D-Bus activation + `Makefile`/`justfile` install
-      targets.
+- [x] `plugins/hyprland/*`: `Event` signal, `CurrentFocus`, overlay rendering.
+- [x] `deploy/*.conf`: D-Bus system policy files.
+- [x] `deploy/systemd/digital-wellbeing-daemon.service`: systemd unit.
 
 ---
 
-## v1 — Core Digital Wellbeing (current target)
+## Phase F — Policy Engine Redesign
 
-Single compositor (Hyprland), full tracking → policy → block → dashboard loop.
+The policy model is redesigned from first principles: priority-ordered,
+first-match-wins evaluation with an explicit `Allow` effect and a `Target::Any`
+wildcard. This replaces the implicit "block what you name" model with a
+general-purpose rule engine.
 
-### Tracking · `Ready`
+### F1 — Core types (`core/src/domain/policy_types.rs`)
 
-1. **Hyprland `Event` signal** — C++ `wellbeing-lockdown.so`, sdbus-cpp,
-   `RENDER_PASS_POST_WINDOW` hook → `WindowInfo{app_id,title,pid,uid}`
-   (`features/01-blocking.md`, `architecture/04-plugin-ipc.md`).
-2. **Event-driven usage** — `EnforcerActor` writes one append-only `events` row
-   per `Focus`/`Unfocus`; `accumulate_daily_usage` updates `daily_usage` in the
-   same transaction (`persistence/01-database.md`).
-3. **Idle/Resume + power/session closes** — unified `Event` signal (EventTag) →
-   `Idle`/`Resumed`; logind → real
-   `PowerEvent{Suspend}`/`PowerEvent{Shutdown}`/`Locked`/`LoggedOut`;
-   SIGTERM/SIGINT → `LoggedOut` (`architecture/03-linux-platform.md`).
+- [ ] Expand `PolicyKind` to `Effect`:
+      `rust enum Effect { Allow, Block, TimeLimit(u64), Notify(u64) } `
+- [ ] Add `PolicyTarget` enum:
+      `rust enum PolicyTarget { App(AppId), Category(CategoryId), Domain(DomainPattern), Any } `
+- [ ] Add `priority: u64` field (lower = evaluated first).
+- [ ] Add `schedule: Vec<TimeWindow>` (active if ANY window matches; empty =
+      always active).
+- [ ] Remove `active: bool` — schedule expresses activation.
+- [ ] New `DomainPattern` newtype in `core/src/valuetypes.rs`.
+- [ ] Update D-Bus `PolicyData` / `PolicyInput` types.
+- [ ] Update `TimeWindow` to support cross-midnight ranges cleanly.
 
-### Enforcement · `Ready`
+### F2 — Evaluation engine (`daemon/src/policy/core.rs`)
 
-1. **One-shot per-app timer (no polling)** — `EnforcerActor` spawns
-   `tokio::sleep(remaining)` on focus; re-evaluates on expiry; cancels on switch
-   (`features/01-blocking.md`).
-2. **Policy engine** — pure `evaluate(app_id, &[Policy], elapsed, now)` with AND
-   semantics; `Block`/`TimeLimit`/`Notify`; `TimeWindow`
-   (`features/01-blocking.md`, `features/02-categorization.md`).
-3. **Overlay-only blocking** — gate-first evaluate before DB write; blocked app
-   never logged; block state is declarative via BlockedApps
-   (`features/01-blocking.md`).
-4. **Block overlay (plugin)** — OpenGL backdrop + `Extra`/`Close` buttons; traps
-   input; Close button handled locally in plugin via
-   `LockManager::hideOverlay()` (`features/01-blocking.md`).
+- [ ] Replace current `evaluate()` with priority-sorted first-match:
+      `    sort policies by priority ascending for each policy whose schedule matches now:   if target matches → return policy.effect no match → unrestricted`
+- [ ] `Allow` effect: when matched, return `Allow` (caller treats as
+      unrestricted for that target). `Allow` is meaningful only when a
+      `Block(Any)` exists at lower priority — this is user error, not a bug.
+- [ ] `TimeLimit`: returns `TimeLimit(remaining)` — the app is allowed but
+      tracked; the overlay appears when the budget expires.
+- [ ] `Block` effect: returns `Block` unconditionally.
+- [ ] `Notify` effect: returns `Notify(remaining)` — advisory, no overlay.
+- [ ] Remove old `PolicyVerdict` — the effect IS the verdict.
 
-### UI · `Ready`
+### F3 — Database schema (`migrations/`)
 
-1. **Settings panel** — `Policies` tab: `AppSelector`, `PolicyEditor`,
-   `CategoryEditor`, RBAC read-only badges (`features/03-ui-design.md`).
-2. **Dashboard** — `Dashboard` tab: `TimeRangeSelector`, `BarChart`,
-   `PieChart`×2, `AppList` top-10, `BlockCard` (`features/03-ui-design.md`).
+- [ ] New `apps` registry table:
+      `sql CREATE TABLE apps (     id     INTEGER PRIMARY KEY AUTOINCREMENT,     app_id TEXT NOT NULL UNIQUE CHECK(length(app_id) > 0) ); `
+- [ ] New `policies` table with full CHECK constraints: ```sql CREATE TABLE
+      policies ( id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) >
+      0), priority INTEGER NOT NULL DEFAULT 100 CHECK(priority >= 0), effect
+      INTEGER NOT NULL CHECK(effect IN (0,1,2,3)), apps_id INTEGER REFERENCES
+      apps(id), category_id INTEGER REFERENCES categories(id), domain_pattern
+      TEXT, time_limit_minutes INTEGER, schedule_json TEXT NOT NULL DEFAULT
+      '[]', user_id INTEGER NOT NULL, created_by INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (strftime(...)), updated_at TEXT NOT NULL
+      DEFAULT (strftime(...)),
 
-### Persistence & state · `Ready`
+          CHECK ((apps_id IS NOT NULL AND category_id IS NULL AND domain_pattern IS NULL)
+              OR (apps_id IS NULL AND category_id IS NOT NULL AND domain_pattern IS NULL)
+              OR (apps_id IS NULL AND category_id IS NULL AND domain_pattern IS NOT NULL)
+              OR (apps_id IS NULL AND category_id IS NULL AND domain_pattern IS NULL)),
+          CHECK (effect NOT IN (2,3) OR (time_limit_minutes IS NOT NULL AND time_limit_minutes > 0)),
+          CHECK (effect NOT IN (0,1) OR time_limit_minutes IS NULL),
+          CHECK (json_type(schedule_json) IS 'array')
+      );
+      ```
 
-1. **SQLite (WAL)** — `events` (generated cols + CHECK JSON), `daily_usage`,
-   `policies` (exclusive-arc + kind CHECKs), `categories`, `app_categories`;
-   initial schema (`persistence/01-database.md`).
-2. **Signals** — D-Bus signals `BlockedAppsChanged` / `DailyUsageChanged` /
-   `PolicyMutated` (`architecture/09-state-flow.md`).
-3. **Seeded `app_categories`** — built-in categories + `INSERT OR IGNORE`
-   defaults replace `.desktop`/config parsing (`features/02-categorization.md`).
+- [ ] Update `daily_usage`, `daily_usage_by_title`, `app_categories` to use
+      `apps_id INTEGER REFERENCES apps(id)` instead of raw `app_id TEXT`.
+- [ ] Events table keeps raw `app` TEXT (source of truth, not a projection).
+- [ ] Drop old `active`, `notification_repeat_interval_minutes`, individual
+      schedule columns.
 
-### Categorization (v1) · `Ready`
+### F4 — D-Bus updates
 
-1. **AI v1 heuristic** — `AiClassifier` trait, resolution chain
-   `app_categories → AI → Uncategorized`, HashMap cache (60s)
-   (`features/02-categorization.md`).
-2. **User category edits** — `SetAppCategory` + settings row; `ignore` excludes
-   from tracking.
+- [ ] New `ListPolicies` returns `Vec<PolicyData>` sorted by priority.
+- [ ] `CreatePolicy` / `UpdatePolicy` accept new fields.
+- [ ] `DeletePolicy` unchanged.
+- [ ] `PolicyMutated` signal still fires on any change.
 
-### Real-time UI plumbing · `Ready`
+### F5 — EnforcerActor alignment
 
-1. **Signal-driven cache invalidation** — `DailyUsageChanged` / `PolicyMutated`
-   / `BlockedAppsChanged`; `ClientCache` keyed by `"range:{start}:{end}:{uid}"`,
-   clear on signal (`architecture/09-state-flow.md`).
-2. **ChangeDateRange command** — user selects new range → `GetUsageRange` →
-   `range_cache` update → ViewModel rebuild (`features/03-ui-design.md`).
+- [ ] `resolve_filtered_policies`: remove per-target queries — just load all
+      active policies sorted by priority and let the engine filter by schedule +
+      target.
+- [ ] `evaluate_and_enforce`: use new `evaluate()`; handle `Allow` verdict as
+      no-op (not blocked, not tracked).
+- [ ] `Close` button in overlay → terminate the window via compositor API (not
+      just dismiss overlay).
+- [ ] Locked mode is default — no "dismiss" action in overlay at all. User must
+      edit policies to lift a block. (The overlay shows a "Close Window" button
+      that terminates the process; it does not bypass the block.)
 
-### v1 hardening · `Open`
+### F6 — CRUD data layer
 
-- [ ] **Crash recovery with active overlay** — re-issue `Overlay(show)` with
-      re-read BlockedApps property on daemon restart (`12-open-questions.md#3`,
-      `features/01-blocking.md`).
-- [ ] **GUI startup when daemon down** — D-Bus activation vs error dialog
-      (`12-open-questions.md#2`).
-- [ ] **gpui version pin** — commit hash, not branch; advance via dependabot
-      after verification (`12-open-questions.md#4`).
-- [ ] **Signal subscription in gpui loop** — mpsc poll vs `cx.spawn()` timer
-      (`12-open-questions.md#5`).
-
----
-
-## v2 — Additional Compositors · `Ready`
-
-Each compositor is a new plugin under `plugins/<name>/` speaking the **same**
-`org.wellbeing.v1.Manager` contract. **No daemon/tracker/policy/UI changes** —
-discovery (`RegisterPlugin` + `NameOwnerChanged`) and uid-routed overlays
-already exist (`architecture/03-linux-platform.md`).
-
-1. **KWin** — `wellbeing-effect` (`KWin::Effect` + D-Bus).
-2. **Wayfire** — `wellbeing-plugin` (Wayfire API + D-Bus).
-3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies `BlockedApps`
-   property).
-4. **Shared extension template** — `LockManager`/render-hook/input-trap adapter
-   over the D-Bus contract.
-
-Per compositor deliverable: plugin binary + README + D-Bus policy entry + CI
-build.
+- [ ] `policy/data/queries.rs`: rewrite for new schema, sort by priority.
+- [ ] Add `filter_by_schedule` helper that accepts `&[TimeWindow]` and returns
+      `true` if any window matches `now`.
+- [ ] Validation: `Allow` + `TimeLimit` on same priority is permitted but the
+      first match wins (user's responsibility).
 
 ---
 
-## v3 — Statistics & History · `Ready`
+## Phase G — DNS-Level Domain Blocking
 
-1. **TimeRangeSelector** — `DateRange` newtype, preset buttons (7d/30d/90d),
-   `DatePicker` range mode for custom selection. Shared across Dashboard and
-   Reports (`features/03-ui-design.md`).
-2. **Reports panel** — daily/weekly/monthly via `GetUsageRange` +
-   TimeRangeSelector (`features/03-ui-design.md`,
-   `architecture/06-daemon-dbus.md`).
-3. **Usage trends** — hours-per-category over time.
-4. **24h timeline strip** — custom gpui element (no built-in timeline); respects
-   `EVENTS_RETENTION_DAYS` (`features/03-ui-design.md`,
-   `persistence/01-database.md`).
-5. **Export CSV/JSON** — `reports/` core + `ExportDialog`.
-6. **Drill-down** — per-app within category via `NavigationEvent`
-   (`features/03-ui-design.md`).
+Block distracting websites at the DNS layer. The daemon runs a built-in DNS
+forwarder on UDP :53, uses eBPF to correlate DNS queries with the originating
+user's UID, and returns NXDOMAIN for blocked domains.
 
----
+### G1 — eBPF UID correlation
 
-## v4 — Advanced Classification · `Ready`
+- [ ] eBPF program attached to `udp_sendmsg` tracepoint. On each UDP send to
+      destination port 53: - Call `bpf_get_current_uid_gid()` → get UID. - Read
+      `sk_buff->source_port` → get ephemeral source port. - Write
+      `map[source_port] = uid`.
+- [ ] BPF map type: `BPF_MAP_TYPE_HASH`, key `u16` (source port), value `u32`
+      (UID), max entries 65536.
+- [ ] Load via `libbpf` or `aya` crate. Pinned to the daemon's lifecycle —
+      loaded on daemon startup, unloaded on exit.
 
-1. **Browser tab URL detection** — accessibility API (keyword title heuristics
-   stay as fallback) (`features/02-categorization.md`).
-2. **Domain categorization** — social / news / work by domain.
-3. **Custom categories in UI** — `categories` insert + `CategoryEditor`; seeds
-   preserved via `INSERT OR IGNORE`.
-4. **Local ML (ONNX)** — swap `AiClassifier` heuristic for `ort` + distilled
-   BERT behind the same trait (`features/02-categorization.md`).
+### G2 — DNS daemon
 
----
+- [ ] UDP listener on `0.0.0.0:53` (tokio `UdpSocket`). - User configures
+      `/etc/resolv.conf` → `nameserver 127.0.0.1`. - Daemon does NOT modify
+      system configuration.
+- [ ] On incoming query: 1. Parse DNS query header + question section (minimal
+      parser — only extract QNAME and QTYPE). 2. Read source port from UDP
+      header. 3. Lookup `uid = eBPF_map[source_port]`. 4. Query policy engine:
+      is `domain` blocked for this `uid`? 5. Blocked → return `NXDOMAIN` (form
+      `Status=3` response with the same TXID). 6. Allowed → forward to upstream
+      DNS (`systemd-resolved` / stub), relay response back.
+- [ ] DNS response cache (optional, v1: passthrough).
+- [ ] Support UDP and TCP fallback (DNS over TCP for large responses).
 
-## v5 — TUI (Deferred) · `Open`
+### G3 — Policy integration
 
-1. **ratatui terminal UI** for headless/SSH — separate binary under a `tui`
-   feature gate; reuses `DaemonClient` + `ClientCache`, same `ViewModel`→render
-   split. Deferred: second UI framework, a11y/input/terminal-detect surface.
+- [ ] `PolicyTarget::Domain(DomainPattern)` evaluated in first-match loop.
+- [ ] `DomainPattern` supports: - Exact: `"reddit.com"` matches `reddit.com`. -
+      Subdomain wildcard: `"*.reddit.com"` matches `old.reddit.com`. - Suffix:
+      `".reddit.com"` matches everything under `reddit.com`. - Regex:
+      `"/regex/"` for custom patterns (advanced).
+- [ ] Policy applies to DNS resolution: if matched `Effect::Block`, the daemon
+      returns NXDOMAIN. If `Effect::Allow`, the query is forwarded. If
+      `Effect::TimeLimit`, the query is forwarded but the dashboard records the
+      domain access (future: aggregate domain usage per day).
 
----
+### G4 — Capabilities & deployment
 
-## v6 — Integration API (D-Bus only) · `Ready`
-
-External apps query daemon state over the existing system D-Bus interface; no
-separate transport is added.
-
-1. **Read-only query API** — current usage / policies / history exposed via the
-   `org.wellbeing.v1.Controller` method set (mirrors `GetDailyUsage` /
-   `GetUsageRange` / `ListPolicies`); no writes.
-2. **Command API** — `toggle block`, `grant extension` as new D-Bus methods on
-   `org.wellbeing.v1.Controller` (same RBAC + `SO_PEERCRED` uid check as
-   existing methods; reuses `EnforcerActor` path).
-
-Constraint: D-Bus is the single integration surface — external apps own their
-own sync/CRDT/event-sourcing layer; the daemon never exposes a second transport
-(`architecture/07-rbac.md`).
-
----
-
-## Non-Goals
-
-Never part of this project: task/project management · calendar integration ·
-study notes/flashcards · cross-device sync · cloud backup · social features
-(leaderboards, sharing, competitive focus).
+- [ ] Daemon needs `CAP_NET_BIND_SERVICE` or root for port 53 (user's choice).
+- [ ] `CAP_BPF` + `CAP_PERFMON` for eBPF.
+- [ ] Document: DNS approach does not block DoH/DoT (apps with hardcoded DNS
+      like Firefox's DoH). Users must disable DoH at the application level.
+- [ ] eBPF program is optional — the daemon degrades gracefully: if eBPF fails
+      to load, DNS queries from all UIDs are treated as the daemon's own user.
+      (Single-user setups are unaffected.)
 
 ---
 
-## Suggested order of attack
+## Phase H — Allow-Only (Deep Work) Mode
 
-1. **Phase E** plugin system-bus + `CurrentFocus` + signed overlays (security-
-   critical; pair with `architecture/05-daemon-auth.md` tests).
-2. **Phase D** GUI (dashboard → policies → reports stub).
-3. **Phase F** packaging + D-Bus policy + systemd.
-4. Resolve v1 **Open** items before tagging v1.
-5. v2+ compositor-by-compositor, then v3 analytics, v4 classification, v6 API;
-   v5 only on demand.
+Allow-only is not a separate toggle — it falls out of the policy model
+naturally:
+
+```
+priority=100: Block(Any)       ← catch-all: block everything
+priority= 10: Allow(Dev)       ← exception: development tools pass
+priority= 20: Allow(Firefox)   ← exception: browser passes
+priority= 30: TimeLimit(Firefox, 30)
+```
+
+- [ ] GUI: a prominent "Deep Work" toggle that creates/deletes the `Block(Any)`
+      policy. When active, the interface switches from "what to block" to "what
+      to allow."
+- [ ] Allow-only is just `Block(Any)` at low priority + `Allow(...)` targets at
+      high priority. No special UI state machine.
+
+---
+
+## Phase I — DND Integration
+
+Do Not Disturb activates automatically when `Block(Any)` is active (i.e., the
+user has entered allow-only/deep-work mode).
+
+- [ ] `Platform::set_dnd(bool)` — Linux impl sends
+      `org.freedesktop.Notifications.Inhibit` D-Bus call.
+- [ ] MockPlatform: no-op.
+- [ ] EnforcerActor: when `Block(Any)` policy is present and active, call
+      `platform.set_dnd(true)`. When no `Block(Any)` policy exists, call
+      `platform.set_dnd(false)`.
+- [ ] On daemon startup, reconcile DND state against active policies.
+
+---
+
+## Phase J — Preset Blocklists & Domain Categorization
+
+### J1 — Curated domain dataset
+
+- [ ] Default domain-to-category mappings are seeded in the initial migration,
+      same pattern as `app_categories`:
+      `sql INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id) VALUES     ('reddit.com',     (SELECT id FROM categories WHERE name = 'Social'), 0),     ('twitter.com',    (SELECT id FROM categories WHERE name = 'Social'), 0),     ('youtube.com',    (SELECT id FROM categories WHERE name = 'Entertainment'), 0),     ('github.com',     (SELECT id FROM categories WHERE name = 'Development'), 0),     ('docs.rs',        (SELECT id FROM categories WHERE name = 'Development'), 0); `
+      The database is the single source of truth — no external config files.
+
+### J2 — Domain-level categorization
+
+- [ ] New table `domain_categories`:
+      `sql CREATE TABLE domain_categories (     domain      TEXT NOT NULL,     category_id INTEGER NOT NULL REFERENCES categories(id),     user_id     INTEGER NOT NULL DEFAULT 0,     PRIMARY KEY (domain, user_id) ); `
+- [ ] Resolution chain: 1. `domain_categories` user override
+      (`user_id = uid`) 2. `domain_categories` system-global (`user_id = 0`) 3.
+      AI classification (extends `AiClassifier` to domains) 4. Uncategorized
+
+### J3 — AI classification extension
+
+- [ ] Extend `AiClassifier` trait to accept domain names in addition to `app_id`
+      and window titles.
+- [ ] v1 heuristic: keyword matching (domain suffixes against category names).
+- [ ] v2 burn model (Rust-native, no C++ deps), trained on domain + app_id.
+- [ ] The DNS daemon queries the categorizer to resolve a domain's category
+      before passing it to the policy engine.
+
+### J4 — Policy integration
+
+- [ ] `PolicyTarget::Domain` evaluation matches against the domain being
+      resolved.
+- [ ] DNS flow: `domain → category(ies) → matching policies → effect`.
+- [ ] A domain can match via direct `PolicyTarget::Domain("reddit.com")` or via
+      `PolicyTarget::Category(Social)` if the domain is categorized as Social.
+
+---
+
+## Phase K — Enhanced Reports
+
+Builds on the existing reports pipeline (`GetUsageRange` → `DailySummary` →
+charts).
+
+- [ ] **Trend lines**: hours-per-category over 7/30/90 days (line chart overlay
+      on bar chart).
+- [ ] **Blocked attempt tracking**: counter in EnforcerActor records how many
+      times each app was blocked per day. New API: `GetBlockedAttempts(range)`.
+      Dashboard shows blocked-attempt bars alongside usage bars.
+- [ ] **Drill-down**: click a category pie slice → filter to per-app breakdown
+      within that category. (Already designed in F3-UI, not yet implemented.)
+- [ ] **Domain usage**: if DNS daemon is active, record how many DNS queries
+      were made per domain per day. Show "most-queried domains" alongside
+      "most-used apps."
+- [ ] **Export enhancements**: CSV/JSON exists; add optional PDF summary.
+
+---
+
+## Non-Goals (Never Part of This Project)
+
+The following features from comparable tools are explicitly excluded:
+
+| Feature                        | Rationale                                                  |
+| ------------------------------ | ---------------------------------------------------------- |
+| Cross-device / cloud sync      | Device-local only. No cloud, no account.                   |
+| Mobile (iOS/Android)           | Linux desktop only.                                        |
+| Focus sounds / ambient audio   | Out of scope. Use a dedicated app.                         |
+| Session breaks / pause         | Locked mode is default — no bypass.                        |
+| URL-level detection            | DNS-level domain blocking provides sufficient granularity. |
+| MITM HTTPS proxy               | DNS+eBPF is simpler and less invasive.                     |
+| Browser extensions             | Same functionality via DNS-level blocking.                 |
+| Social features / leaderboards | Privacy-respecting by design.                              |
+| Task / project management      | Digital wellbeing tool, not a planner.                     |
+
+---
+
+## Suggested Order of Attack
+
+1. **Phase F** — Policy engine redesign (foundation for everything else).
+2. **Phase G** — DNS daemon + eBPF (domain blocking).
+3. **Phase H** — Allow-only mode (falls out of F, small GUI addition).
+4. **Phase I** — DND integration (depends on H's `Block(Any)` detection).
+5. **Phase J** — Preset blocklists + domain categorization (depends on G).
+6. **Phase K** — Enhanced reports (independent, can start after F).

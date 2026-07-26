@@ -51,28 +51,34 @@ migration because SQLite DDL is transactional for most DDL statements.
 ### `events` — Append-Only Event Log
 
 Nine event types cover every focus switch and state change. Every focus switch
-or state change writes exactly one row.
+or state change writes exactly one row. The events table is the **single source
+of truth** — it holds raw, denormalized `app` and `title` strings (not FKs).
 
-The schema uses direct typed columns rather than a JSON payload. Each event row
-carries: an integer `event_type` discriminant (0-8), the `user_id`, a
-`timestamp` as epoch milliseconds (i64), optional `app_id` (nullable text), and
-optional `title` (nullable text, up to 1024 chars). Interval computation happens
-in Rust via `apply_closed_deltas_from_buffer` called in the same transaction as
-the event INSERT, so business logic stays in application code instead of SQL
-triggers.
+| Column     | Type    | Notes                                                                          |
+| ---------- | ------- | ------------------------------------------------------------------------------ |
+| id         | INTEGER | AUTOINCREMENT primary key                                                      |
+| event_type | INTEGER | 0=WindowFocused, 1=Unfocused, 2=Idle, …                                        |
+| user_id    | INTEGER | UID of the user this event belongs to                                          |
+| timestamp  | BIGINT  | Epoch milliseconds (UTC) — indexed for queries                                 |
+| app        | TEXT?   | Raw app identifier string (e.g. "firefox"). Non-null for WindowFocused/Blocked |
+| title      | TEXT?   | Raw window title. Non-null for WindowFocused/Blocked. NULL for power events.   |
 
-| Column     | Type    | Notes                                                 |
-| ---------- | ------- | ----------------------------------------------------- |
-| id         | INTEGER | AUTOINCREMENT primary key                             |
-| event_type | INTEGER | 0=WindowFocused, 1=Unfocused, 2=Idle, …               |
-| user_id    | INTEGER | UID of the user this event belongs to                 |
-| timestamp  | BIGINT  | Epoch milliseconds (UTC) — indexed for queries        |
-| app_id     | TEXT?   | Non-null for WindowFocused/Idle/Resumed/Blocked       |
-| title      | TEXT?   | Window title, present on WindowFocused/Blocked events |
+Event-type invariants are enforced via CHECK constraints:
 
-The `id` column uses AUTOINCREMENT because it serves as an ordering token for
-the reactive watch channel; consumers track last seen event id to avoid
-re-processing known events.
+| Code | Event         | app  | title | Description                    |
+| ---- | ------------- | ---- | ----- | ------------------------------ |
+| 0    | WindowFocused | ✓    | ✓     | An app window gained focus     |
+| 1    | Unfocused     | NULL | NULL  | No window is focused (desktop) |
+| 2    | Idle          | —    | —     | User became idle               |
+| 3    | Resumed       | —    | —     | User resumed from idle         |
+| 4    | Slept         | NULL | NULL  | System entered sleep           |
+| 5    | ShutDown      | NULL | NULL  | System shut down               |
+| 6    | Locked        | NULL | NULL  | Session locked                 |
+| 7    | LoggedOut     | NULL | NULL  | User logged out                |
+| 8    | WindowBlocked | ✓    | ✓     | Window was blocked by policy   |
+
+The event type constants are shared across the daemon and GUI via
+`wellbeing_core::event_types`.
 
 Interval computation happens at write time. Tracked time for an app equals the
 wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
@@ -80,59 +86,101 @@ wall-clock span from `WindowFocused` to the next close event (`Unfocused`,
 time; the GUI can derive idle breakdown from the raw `Idle`/`Resumed` event
 sequence if needed.
 
-| Code | Event         | Description                    |
-| ---- | ------------- | ------------------------------ |
-| 0    | WindowFocused | An app window gained focus     |
-| 1    | Unfocused     | No window is focused (desktop) |
-| 2    | Idle          | User became idle               |
-| 3    | Resumed       | User resumed from idle         |
-| 4    | Slept         | System entered sleep           |
-| 5    | ShutDown      | System shut down               |
-| 6    | Locked        | Session locked                 |
-| 7    | LoggedOut     | User logged out                |
-| 8    | WindowBlocked | Window was blocked by policy   |
+### `apps` — Global App Registry
 
-The event type constants are shared across the daemon and GUI via
-`wellbeing_core::event_types`.
+A normalized projection of known app identifiers. Populated on-demand via upsert
+when a policy targets a non-existing app or when aggregating daily usage from
+events. Global across all users — "firefox" is the same app regardless of who
+launches it.
+
+| Column | Type    | Notes                                   |
+| ------ | ------- | --------------------------------------- |
+| id     | INTEGER | AUTOINCREMENT primary key               |
+| app_id | TEXT    | App identifier (e.g. "firefox"), UNIQUE |
+
+No display name column — the raw `app_id` string is the canonical label.
+Per-user display overrides can be set via `app_categories.icon_path`.
+
+Upsert pattern:
+
+```sql
+INSERT INTO apps (app_id) VALUES ('firefox') ON CONFLICT(app_id) DO NOTHING;
+```
 
 ### `daily_usage` — Materialized Daily Usage Per App
 
-This materialized view holds per-app daily usage totals maintained by
-application-level transactions that wrap each event INSERT in an explicit
-BEGIN/COMMIT pair. The same transaction calls `accumulate_daily_usage` to update
-the materialized view, so the event write and the usage update are atomic.
+This materialized view holds per-app daily usage totals, referencing the `apps`
+table via FK (`apps_id`). Maintained by application-level transactions that wrap
+each event INSERT in an explicit BEGIN/COMMIT pair. The same transaction calls
+`accumulate_daily_usage` to update the materialized view, so the event write and
+the usage update are atomic.
+
+| Column        | Type    | Notes                                       |
+| ------------- | ------- | ------------------------------------------- |
+| date          | TEXT    | Calendar date (%Y-%m-%d)                    |
+| user_id       | INTEGER | UID                                         |
+| apps_id       | INTEGER | FK to `apps.id`                             |
+| closed_millis | INTEGER | Tracked wall-clock time in closed intervals |
+| open_millis   | INTEGER | Tracked wall-clock time in open interval    |
 
 Focus state is maintained in-memory by the `EnforcerActor` as a `HashMap` per
 user, never persisted in the database.
 
-`accumulate_daily_usage` computes elapsed minutes from the focus state
-(wall-clock time including idle), derives the date from the focus start time,
-and upserts into `daily_usage` within the same transaction as the event INSERT.
-Block state is managed declaratively through the daemon's BlockedApps D-Bus
-property, not through the events table or daily_usage.
+`accumulate_daily_usage` computes elapsed milliseconds from the focus state,
+derives the date from the focus start time, and upserts into `daily_usage`
+within the same transaction as the event INSERT. Block state is managed
+declaratively through the daemon's BlockedApps D-Bus property, not through the
+events table or daily_usage.
 
-Application-level transactions provide the same atomicity that SQL triggers
-would while keeping business logic in Rust.
+### `daily_usage_by_title` — Per-App, Per-Title Usage Breakdown
 
-### `policies` — Blocking, Time Limit & Notify Rules
+Same structure as `daily_usage` but broken down by window title for finer
+granularity.
 
-This table stores every active policy. Each policy targets either a category or
-a specific app, never both; an exclusive arc CHECK prevents orphan targeting.
-The kind column uses an integer that maps one-to-one with the PolicyKind Rust
-enum.
+| Column        | Type    | Notes                                       |
+| ------------- | ------- | ------------------------------------------- |
+| date          | TEXT    | Calendar date (%Y-%m-%d)                    |
+| user_id       | INTEGER | UID                                         |
+| apps_id       | INTEGER | FK to `apps.id`                             |
+| title         | TEXT    | Window title (up to 1024 chars)             |
+| closed_millis | INTEGER | Tracked wall-clock time in closed intervals |
+| open_millis   | INTEGER | Tracked wall-clock time in open interval    |
 
-Block kind has no time limit; TimeLimit and Notify kinds require a positive
-time_limit_minutes. The notification_repeat_interval_minutes column controls
-re-notification cadence for Notify policies; NULL means notify once, a positive
-value means repeat at that interval in minutes.
+### `policies` — Priority-Ordered Rule Chain
 
-Schedule columns define when the policy is active. Both schedule_start_hour and
-schedule_end_hour are either both present or both NULL; when present they are
-integers from 0 to 23. schedule_days is a JSON array of weekday numbers where 0
-is Sunday through 6 is Saturday, and an empty array means all days.
+This table stores every policy as a priority-ordered rule. Evaluation is
+first-match: sort by `priority` ascending, return the first policy whose target
+matches and whose schedule is active. No match means unrestricted.
 
-RBAC is enforced at the row level through owner_id, which scopes policies to a
-user, and created_by, which records authorship.
+| Column             | Type    | Notes                                                    |
+| ------------------ | ------- | -------------------------------------------------------- |
+| id                 | INTEGER | Primary key                                              |
+| name               | TEXT    | Human-readable label, non-empty                          |
+| priority           | INTEGER | Lower = evaluated first. Default 100.                    |
+| effect             | INTEGER | 0=Allow, 1=Block, 2=TimeLimit, 3=Notify                  |
+| apps_id            | INTEGER | FK to `apps.id` — non-null for App target                |
+| category_id        | INTEGER | FK to `categories.id` — non-null for Category target     |
+| domain_pattern     | TEXT    | Domain pattern — non-null for Domain target              |
+| time_limit_minutes | INTEGER | Required for TimeLimit/Notify, forbidden for Allow/Block |
+| schedule_json      | TEXT    | JSON array of TimeWindow; `[]` = always active           |
+| user_id            | INTEGER | The user this policy applies to                          |
+| created_by         | INTEGER | The caller UID that created this policy (0 = root)       |
+
+**Target discrimination:** Exactly one of `apps_id`, `category_id`, or
+`domain_pattern` is non-null. When all three are null the target is `Any`
+(matches everything).
+
+**Integrity CHECKs:**
+
+| #   | CHECK                                                                                      | Catches                              |
+| --- | ------------------------------------------------------------------------------------------ | ------------------------------------ |
+| 1   | Exclusive arc: `(apps_id, category_id, domain_pattern)` exactly one non-null (or all null) | Policy on both an app and a category |
+| 2   | `effect NOT IN (2,3) OR (time_limit_minutes > 0)`                                          | TimeLimit with no limit              |
+| 3   | `effect NOT IN (0,1) OR time_limit_minutes IS NULL`                                        | Block with a time limit              |
+| 4   | `json_type(schedule_json) IS 'array'`                                                      | Corrupted schedule data              |
+
+These CHECKs mirror the domain type invariants exactly — a row read from this
+table can construct a valid `Policy` struct with zero additional validation.
 
 ### `categories` — User-Defined Groupings
 
@@ -143,13 +191,20 @@ run.
 ### `app_categories` — App-to-Category Mappings
 
 This table is the single source of truth for app categorization. Every row is
-authoritative, whether seeded as a default or edited by the user. The user_id
-column distinguishes system-global defaults (user_id=0) seeded at migration time
-from per-user overrides (user_id=N). Resolution checks the user-specific row
-first; if no row exists it falls back to the global default.
+authoritative, whether seeded as a default or edited by the user. References
+`apps.id` via `apps_id` FK.
 
-Category_id may be null; when it is the categorizer falls through to AI
-classification and ultimately Uncategorized rather than using a NULL FK.
+| Column      | Type    | Notes                                             |
+| ----------- | ------- | ------------------------------------------------- |
+| apps_id     | INTEGER | FK to `apps.id`                                   |
+| user_id     | INTEGER | 0 = system-global default, N = per-user override  |
+| category_id | INTEGER | FK to `categories.id`; NULL = fall through to AI  |
+| icon_path   | TEXT    | Optional per-user icon override                   |
+| ignore      | INTEGER | When 1, app is excluded from tracking and reports |
+| updated_at  | TEXT    | Last modification timestamp                       |
+
+Resolution chain: user-specific row → system-global default (user_id=0) → AI
+classification → Uncategorized.
 
 ---
 
