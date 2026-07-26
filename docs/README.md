@@ -20,7 +20,7 @@ noted.
   planning docs are siblings that focus on a single concern each; they link back
   into `architecture/` for shared context (traits, D-Bus contracts, RBAC).
 - The daemon is **headless**: no `ui/` directories live in daemon feature trees.
-  GUI lives in the `gui/` crate (`gui/src/screens/<feature>/`).
+  GUI lives in the `gui/` crate (`gui/src/dashboard/|policies/|reports/`).
 - `blocking/` has no GUI screen — it is overlay-only enforcement, and the
   overlay is rendered by the compositor plugin, not gpui.
 

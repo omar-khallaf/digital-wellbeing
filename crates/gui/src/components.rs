@@ -12,9 +12,10 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::{button::Button, button::ButtonVariants, h_flex, v_flex};
 use wellbeing_core::DateRange;
 
+use crate::chart::empty_state;
+use crate::theme;
 use crate::theme::*;
 
-/// Subtle elevation shadow applied to cards/panels.
 fn card_shadow() -> Vec<BoxShadow> {
     vec![BoxShadow {
         color: hsla(0.0, 0.0, 0.0, 0.25),
@@ -114,6 +115,188 @@ pub fn section_title(cx: &App, title: &str) -> AnyElement {
         .into_any_element()
 }
 
+/// Optional badge rendered after the display name (e.g. "BLOCKED").
+#[derive(Debug, Clone)]
+pub struct AppBadge {
+    pub text: String,
+    pub color: Hsla,
+}
+
+/// Shared data for a single app entry row — used by both the dashboard
+/// "top apps" panel and the reports "all apps" panel.
+///
+/// Callers leave `dot_color` / `badge` as `None` when those extras
+/// are not needed (reports uses neither; dashboard uses both).
+#[derive(Debug, Clone)]
+pub struct AppEntryView {
+    pub rank: usize,
+    pub display_name: String,
+    pub total_millis: i64,
+    pub percentage: f64,
+    pub dot_color: Option<Hsla>,
+    pub badge: Option<AppBadge>,
+}
+
+/// Renders a scrollable list of app entries.
+///
+/// Layout per row (mirrors `title_list_panel`):
+/// ```text
+/// [#rank] [●] [display_name] [BADGE] [duration  ]
+///                                     [percentage]
+/// ```
+///
+/// The colored dot and badge are only rendered when their respective
+/// `Option` fields are `Some`.
+pub fn app_list_panel(cx: &App, entries: &[AppEntryView]) -> AnyElement {
+    if entries.is_empty() {
+        return empty_state(cx, "No usage data yet.").into_any_element();
+    }
+
+    let rows: Vec<AnyElement> = entries
+        .iter()
+        .map(|entry| {
+            h_flex()
+                .px(sp::MD)
+                .py(sp::SM)
+                .rounded(rad::md())
+                .hover(|s| s.bg(theme::border(cx)))
+                .gap_4()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted(cx))
+                        .w(px(28.0))
+                        .child(format!("#{}", entry.rank)),
+                )
+                .when_some(entry.dot_color, |el, color| {
+                    el.child(div().size(px(10.0)).rounded(rad::full()).bg(color))
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .flex_1()
+                        .text_color(theme::text_primary(cx))
+                        .child(entry.display_name.clone()),
+                )
+                .when_some(entry.badge.as_ref(), |el, badge| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(badge.color)
+                            .child(badge.text.clone()),
+                    )
+                })
+                .child(
+                    v_flex()
+                        .items_end()
+                        .gap_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::text_primary(cx))
+                                .child(format_duration(entry.total_millis)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_label(cx))
+                                .child(format!("{:.1}%", entry.percentage)),
+                        ),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    v_flex().gap_1().children(rows).into_any_element()
+}
+
+/// Shared data for a single title entry row — used by both the dashboard
+/// "top titles" panel and the reports "all titles" panel.
+#[derive(Debug, Clone)]
+pub struct TitleEntryView {
+    pub rank: usize,
+    pub app_id: String,
+    pub title: String,
+    pub total_millis: i64,
+    pub percentage: f64,
+}
+
+/// Renders a scrollable list of title entries.
+///
+/// Layout per row:
+/// ```text
+/// [#rank] [Title      ] [duration  ]
+///         [app_id     ] [percentage]
+/// ```
+///
+/// Callers may pass a `limit` to cap the number of visible entries
+/// (the dashboard shows only the top few; reports shows all).
+pub fn title_list_panel(cx: &App, entries: &[TitleEntryView]) -> AnyElement {
+    if entries.is_empty() {
+        return empty_state(cx, "No title usage data yet.").into_any_element();
+    }
+
+    let rows: Vec<AnyElement> = entries
+        .iter()
+        .map(|entry| {
+            h_flex()
+                .px(sp::MD)
+                .py(sp::SM)
+                .rounded(rad::md())
+                .hover(|s| s.bg(theme::border(cx)))
+                .gap_4()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_muted(cx))
+                        .w(px(28.0))
+                        .child(format!("#{}", entry.rank)),
+                )
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .gap_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme::text_primary(cx))
+                                .child(entry.title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_muted(cx))
+                                .child(entry.app_id.clone()),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .items_end()
+                        .gap_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::text_primary(cx))
+                                .child(format_duration(entry.total_millis)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme::text_label(cx))
+                                .child(format!("{:.1}%", entry.percentage)),
+                        ),
+                )
+                .into_any_element()
+        })
+        .collect();
+
+    v_flex().gap_1().children(rows).into_any_element()
+}
+
 /// Format milliseconds into a human-readable duration string.
 pub fn format_duration(total_millis: i64) -> String {
     let total_minutes = (total_millis + 60000 - 1) / 60000;
@@ -152,7 +335,6 @@ pub fn time_range_selector(
     let on_toggle_custom = std::sync::Arc::new(on_toggle_custom);
 
     let preset_specs: &[(&str, &str, u32)] = &[
-        ("1d", "Today", 1),
         ("7d", "7d", 7),
         ("14d", "14d", 14),
         ("30d", "30d", 30),

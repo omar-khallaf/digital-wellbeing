@@ -108,6 +108,16 @@ pub fn chart_text(cx: &App) -> Hsla {
     with_alpha(fg, 0.70)
 }
 
+/// Medium-emphasis label text — foreground at 65% opacity.
+///
+/// Sits between `text_primary` (100%) and `text_muted` (45%) for metadata
+/// like percentages, session labels, and record counts where `text_secondary`
+/// (theme `muted`) is too faint but full `text_primary` is too loud.
+pub fn text_label(cx: &App) -> Hsla {
+    let fg = Theme::global(cx).foreground;
+    with_alpha(fg, 0.65)
+}
+
 /// Primary indicator color — optimized for small foreground elements
 /// (dots, badges) on [`surface()`] in both light and dark themes.
 pub fn primary(cx: &App) -> Hsla {

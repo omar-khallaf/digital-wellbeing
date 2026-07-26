@@ -18,10 +18,10 @@ table and compares it with the compositor plugin's current focus state obtained
 from the CurrentFocus property. From that comparison it determines whether the
 previous session ended while a window was focused, whether focus changed while
 the daemon was down, and whether any overlay was active at the time of the
-crash. If an overlay was active for an app that is still focused, the daemon
-refreshes the signed token on the already-rendered overlay so any later user
-action carries a valid signature. Policy is re-derived by id from the daemon's
-own database rather than re-adopting old in-memory block state.
+crash. If an overlay was active for an app that is still focused, the plugin
+re-renders the overlay on reconnect by reading the current BlockedApps state.
+Policy is re-derived by id from the daemon's own database rather than
+re-adopting old in-memory block state.
 
 ## 3. gpui Version Compatibility
 
@@ -33,17 +33,14 @@ available.
 
 ## 4. Window-Handle Set Tracking for Multi-App Blocking
 
-Pending. The per-app overlay model requires the plugin to maintain a set of
-window handles for each blocked app instead of a single handle. The handles are
-populated from compositor state. The set is currently empty and no compositor
-API call fills it. Outstanding decisions include which compositor API enumerates
-windows per app, how window-close events are observed so handles can be removed
-from the set, and whether handle geometry is required for overlay positioning or
-whether the overlay can simply cover the full output.
+Resolved. The per-app overlay model is implemented in the compositor plugin.
+When an app_id appears in BlockedApps, the plugin renders a block overlay over
+every window owned by the app and traps both mouse and keyboard input on each
+blocked window. The overlay is managed by the compositor plugin, not the daemon.
 
 ## 5. Signal Subscription in the gpui Main Loop
 
-Pending. The GUI uses a background tokio thread for D-Bus connections and signal
-subscriptions, with updates forwarded to gpui via a channel. The gpui main loop
-must consume that channel each render frame. This integration pattern needs to
-be verified against the actual gpui API.
+Resolved. The GUI uses a background tokio thread for D-Bus connections and
+signal subscriptions, with updates forwarded to gpui via an mpsc channel. The
+gpui main loop consumes that channel each render frame via a stored Task handle.
+This integration pattern is implemented and verified.

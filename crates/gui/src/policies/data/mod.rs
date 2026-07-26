@@ -1,11 +1,17 @@
-//! Policies ViewModel builder — pure function, no gpui.
+//! Policies data layer — ViewModel builder, repository, and background flow.
+
+mod flow;
+mod repo;
+
+pub use flow::spawn_policies_flow;
+pub use repo::PoliciesRepo;
 
 use wellbeing_core::{Category, PolicyData};
 
 use super::domain::PoliciesViewModel;
 
-/// Build a `PoliciesViewModel` from the raw data sources the D-Bus client /
-/// cache provides.
+/// Build a `PoliciesViewModel` from the raw data sources the repository
+/// provides.
 pub fn build_policies_viewmodel(
     policies: &[PolicyData],
     categories: &[Category],

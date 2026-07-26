@@ -1,6 +1,7 @@
 #pragma once
 
 #include <coroutine>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -84,7 +85,7 @@ namespace wellbeing {
 
 class WellbeingManager {
   public:
-    enum class DaemonBus { None, System, Session };
+    enum class DaemonBus : std::uint8_t { None, System, Session };
 
     WellbeingManager(std::shared_ptr<LockManager> lockManager, std::shared_ptr<sdbus::IConnection> sysConnection,
                      std::shared_ptr<sdbus::IConnection> sessConnection);
@@ -95,7 +96,6 @@ class WellbeingManager {
     /// (Idle, Resume, LogOut, Unfocus), use the tag-only overload.
     void emitEvent(EventTag tag, const std::string &app_id, const std::string &title, uint32_t pid, uint32_t power_tag);
 
-    /// Convenience: emit an event from the current focus state.
     void emitFocusEvent(const std::optional<WindowInfo> &info);
 
     /// Convenience: emit a tag-only event (Idle, Resume, LogOut, Unfocus, Locked).
@@ -125,7 +125,6 @@ class WellbeingManager {
     void setupBlockedAppsWatch();
     sdbus::Slot m_blockedAppsSlot;
 
-    // ── System signal watchers (logind, screensaver) ──────────────
     void setupSystemWatchers();
     void handlePrepareForSleep(bool sleeping);
     void handlePrepareForShutdown(bool shuttingDown);

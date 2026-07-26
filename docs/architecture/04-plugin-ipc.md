@@ -25,17 +25,41 @@ method for the daemon to call — the daemon never commands the plugin. The plug
 is a pure producer of window-domain facts (focus, activity, user clicks) and a
 consumer of daemon block state.
 
+```mermaid
+flowchart LR
+    subgraph Plugin["org.wellbeing.v1.Manager"]
+        direction LR
+        S1[Event signal]
+        S2[BlockedAppsChanged signal]
+        P1[CurrentFocus property]
+    end
+
+    subgraph Daemon["org.wellbeing.v1.Controller"]
+        direction LR
+        M1[RegisterPlugin method]
+        P2[BlockedApps property]
+        S3[BlockedAppsChanged signal]
+    end
+
+    Plugin -->|produces| S1
+    Plugin -->|subscribes to| S3
+    Plugin -->|exposes| P1
+    Daemon -->|calls| M1
+    Daemon -->|exposes| P2
+    Daemon -->|emits| S3
+```
+
 Signals (plugin -> daemon):
 
-| Signal | Payload                                                                                                                                                      | When                                                   |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
-| Event  | (u32, u32, String, String, u32, u32) — (tag, variant, app_id, title, pid, uid); tag=0=Desktop, tag=1=Focus, tag=2=Block; variant sub-tag encodes idle/resume | On every compositor focus switch and idle state change |
+| Signal | Payload                                                                                                                                              | When                                                   |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Event  | (u32, String, String, u32, u32) — (tag, app_id, title, pid, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block; power_tag encodes idle/resume/power | On every compositor focus switch and idle state change |
 
 Property (readable):
 
 | Property     | Type | Returns                                                                           |
 | ------------ | ---- | --------------------------------------------------------------------------------- |
-| CurrentFocus | v    | Same tag encoding as Event signal — Desktop (tag=0), Focus (tag=1), Block (tag=2) |
+| CurrentFocus | v    | Same tag encoding as Event signal — Focus (tag=0), Unfocus (tag=1), Block (tag=2) |
 
 Close button handling is entirely local to the plugin. The plugin calls
 `LockManager::hideOverlay()` to dismiss the overlay without sending any signal
@@ -44,53 +68,92 @@ to the daemon.
 ### CurrentFocus property
 
 D-Bus signals are fire-and-forget — they do not persist their last value, so a
-GUI that subscribes after the fact misses the current state. CurrentFocus is a
-readable D-Bus property that returns the same tag encoding as the Event signal,
-giving clients a queryable, always-current source of truth on startup. The
-signal remains useful as a lightweight change notification.
+client that subscribes after the fact misses the current state. CurrentFocus is
+a readable D-Bus property that returns the same tag encoding as the Event
+signal, giving clients a queryable, always-current source of truth on startup.
+The signal remains useful as a lightweight change notification.
 
 The daemon also uses CurrentFocus after termination events (suspend, lock,
 logout) to resync focus tracking. On resume (if screen unlocked), screen unlock,
 or login, the daemon queries each registered plugin's CurrentFocus property and
 buffers the appropriate event — Focus, Block, or Unfocus (when the property
-returns Desktop). This restores tracking without waiting for a compositor focus
-switch. The property-query path gates on login + unlock state; signal delivery
-already implies both.
+returns Unfocus). This restores tracking without waiting for a compositor focus
+switch.
+
+```mermaid
+sequenceDiagram
+    participant P as Plugin
+    participant D as Daemon
+
+    Note over P: Startup / Resume / Unlock
+    D->>P: Get CurrentFocus
+    P-->>D: Focus/Block/Unfocus
+    D->>D: Buffer appropriate PlatformEvent
+```
 
 ## Declarative Block State — org.wellbeing.v1.Controller
 
 The daemon exposes the current set of blocked apps on its own interface. The
 plugin discovers this state by two complementary mechanisms:
 
-1. ActiveBlocks property — readable at any time. Returns all currently blocked
+1. BlockedApps property — readable at any time. Returns all currently blocked
    apps with their block details (policy_id, reason, blocked_since,
    available_actions). The plugin reads this on startup, on reconnect, and
    periodically for reconciliation.
-2. BlockStateChanged signal — emitted whenever a block is added or removed for
+2. BlockedAppsChanged signal — emitted whenever a block is added or removed for
    an app. The plugin subscribes to this signal for low-latency state updates
    without polling.
 
+```mermaid
+stateDiagram-v2
+    [*] --> DaemonBlocks: Policy evaluation
+    DaemonBlocks --> EmitSignal: BlockedAppsChanged{blocked: true}
+    EmitSignal --> PluginReceives: Plugin subscribes
+    PluginReceives --> UpdateOverlay: Update local overlay set
+    UpdateOverlay --> ShowOverlay: If app_id currently focused
+    UpdateOverlay --> ReadyOverlay: If app_id not focused
+
+    [*] --> DaemonUnblocks: App no longer focused / policy re-eval
+    DaemonUnblocks --> EmitUnblock: BlockedAppsChanged{blocked: false}
+    EmitUnblock --> RemoveOverlay: Plugin removes overlay
+```
+
 Discovery flow:
 
-Daemon blocks an app: EnforcerActor writes to ActiveBlocks state -> Daemon
-updates ActiveBlocks property -> Daemon emits BlockStateChanged {app_id,
-blocked: true} -> Plugin receives signal -> updates local overlay set -> If
-app_id is currently focused -> overlay visible -> If app_id is not focused ->
-overlay ready, shown on next focus
-
-Daemon unblocks an app: EnforcerActor removes from ActiveBlocks state -> Daemon
-updates ActiveBlocks property -> Daemon emits BlockStateChanged {app_id,
-blocked: false} -> Plugin receives signal -> removes overlay from all windows of
-that app_id
+```mermaid
+flowchart LR
+    A[EnforcerActor] -->|1. policy evaluation| B[BlockedApps state]
+    B -->|2. BlockedAppsChanged signal| C[Compositor plugin]
+    C -->|3. read property| B
+    C -->|4. render overlay| D[Blocked window]
+    E[User focus change] -->|5. Event signal| A
+    F[User clicks Close] -->|6. hideOverlay() locally| C
+```
 
 ## Per-App Multi-Overlay Model
 
 Blocking enforcement is keyed by app_id, never by window. The daemon is
-window-count agnostic: it writes one entry per app_id to ActiveBlocks. Whether
+window-count agnostic: it writes one entry per app_id to BlockedApps. Whether
 the app has one window or fifty, the entry covers all windows.
 
+```mermaid
+flowchart TD
+    subgraph Daemon["Daemon BlockedApps"]
+        A[app_id: firefox]
+        B[app_id: discord]
+    end
+
+    subgraph Plugin["Plugin Overlay Set"]
+        C[Overlay: all firefox windows]
+        D[Overlay: all discord windows]
+    end
+
+    A --> C
+    B --> D
+```
+
 The plugin treats every window of the app_id as a single logical surface. When
-an app_id appears in ActiveBlocks, the plugin renders a block overlay over every
+an app_id appears in BlockedApps, the plugin renders a block overlay over every
 window owned by the app and traps both mouse and keyboard input on each blocked
 window. The overlay presents the daemon-specified action buttons
 (available_actions).
@@ -100,24 +163,24 @@ unordered set of active overlays keyed by app_id, populated entirely from daemon
 state (not from commands).
 
 Overlay lifetime: an overlay persists until the daemon removes the app from
-ActiveBlocks. Focus state does not affect overlay visibility — a blocked app's
+BlockedApps. Focus state does not affect overlay visibility — a blocked app's
 overlay remains displayed even when another window is focused. This prevents
 race conditions where a focus change causes the overlay to flicker or disappear.
 
 ### Focus handling
 
-The plugin's focus-change handler reconciles overlay state against the daemon's
-ActiveBlocks:
-
-- User focuses app X: check if X is in local overlay set (which mirrors
-  ActiveBlocks). If yes, the overlay is already rendered — nothing to do. If no,
-  ensure no stale overlay for X.
-- User focuses app Y (not blocked): no action needed. Overlays for other blocked
-  apps remain visible.
-- User focuses desktop (no window): all existing overlays remain visible.
+```mermaid
+flowchart TD
+    A[User focuses window] --> B{Is app in BlockedApps?}
+    B -->|Yes| C[Overlay already rendered]
+    B -->|No| D[No overlay needed]
+    C --> E[Ensure no stale overlay]
+    D --> F[Overlays for other blocked apps persist]
+    E --> F
+```
 
 The plugin never hides an overlay because focus moved away. Only a daemon
-BlockStateChanged {blocked: false} or a user action that resolves the block
+BlockedAppsChanged {blocked: false} or a user action that resolves the block
 triggers overlay removal.
 
 ## Idle Detection
@@ -127,6 +190,15 @@ tracks user activity (keyboard, mouse, touchpad, and video-player playback) and
 exposes it via the unified Event D-Bus signal on org.wellbeing.v1.Manager. The
 daemon subscribes and maps Idle -> Idle (pause), Resumed -> Resumed (unpause)
 PlatformEvents.
+
+```mermaid
+flowchart LR
+    A[User activity] --> B[Plugin idle tracker]
+    B -->|idle threshold exceeded| C[Event(Idle)]
+    B -->|activity resumes| D[Event(Resumed)]
+    C --> E[Daemon pauses interval]
+    D --> F[Daemon resumes interval]
+```
 
 Tracked time includes idle spans. Idle/Resumed only affect the GUI's idle
 breakdown display, not daily usage or limit enforcement.
@@ -162,61 +234,79 @@ plugin holds an anonymous connection).
 The daemon learns the caller's real identity from SO_PEERCRED
 (kernel-authenticated uid).
 
-Registration flow:
+```mermaid
+sequenceDiagram
+    participant P as Plugin
+    participant D as Daemon
 
-Daemon starts |-- Expose Controller.RegisterPlugin() |-- Expose ActiveBlocks
-property |-- Expose BlockStateChanged signal
+    Note over P: Startup
+    P->>P: Connect system bus (anonymous)
+    P->>P: Connect session bus (anonymous)
+    P->>P: Register Manager interface on both
+    P->>P: resolveActiveDaemonBus()
+    P->>D: RegisterPlugin()
 
-Plugin starts: |-- Create permanent connection to system bus (anonymous) |--
-Create permanent connection to session bus (anonymous) |-- Register Manager
-interface on both connections |-- Run resolveActiveDaemonBus() -> select system
-or session |-- Call RegisterPlugin on the selected connection
+    D->>D: Read header.sender() (unique bus name)
+    D->>D: Read SO_PEERCRED uid
+    D->>D: Create proxy to plugin
+    D->>P: Subscribe to Event stream
 
-Daemon receives RegisterPlugin: |-- Reads caller's unique bus name from
-header.sender() |-- Reads SO_PEERCRED uid from connection credentials |--
-Creates proxy to plugin via its unique bus name |-- Subscribes to Event stream
-|-- Plugin reads ActiveBlocks property (initial state sync) |-- Plugin
-subscribes to BlockStateChanged signal (live updates) |-- Plugin reconciles
-overlays: shows for any app in ActiveBlocks
-
-Plugin disconnects (one connection drops): |-- If the dropped connection was the
-active one: | |-- Daemon drops signal subscriptions for that unique bus name |
-|-- Policy enforcement for that uid pauses | |-- Plugin re-resolves via the
-other connection (if daemon still reachable) |-- If the dropped connection was
-the inactive one: |-- No effect — active connection continues uninterrupted
-
-Daemon restarts on different bus: |-- Plugin NameOwnerChanged fires on the stale
-connection |-- resolveActiveDaemonBus() finds daemon on the other bus |--
-Creates fresh daemon proxy, calls RegisterPlugin, syncs state
+    P->>D: Get BlockedApps (initial sync)
+    P->>D: Subscribe to BlockedAppsChanged
+    P->>P: Reconcile overlays
+```
 
 On disconnect, overlays on the compositor remain as-is (the plugin process
 disappears with its compositor hooks). When the plugin reconnects, it reads
-ActiveBlocks afresh and re-establishes all overlays.
+BlockedApps afresh and re-establishes all overlays.
 
 ## Multi-Instance Plugin Support
 
-Each plugin instance reads the same ActiveBlocks property from the daemon. There
+Each plugin instance reads the same BlockedApps property from the daemon. There
 is no per-instance command routing. The daemon tracks each connected plugin by
 its unique bus name, subscribes to its signals, and routes events into the
 platform event stream. When a plugin disconnects, its subscriptions are dropped
 and enforcement for that uid pauses until a new registration arrives.
 
+```mermaid
+flowchart TD
+    subgraph Daemon["Daemon"]
+        A[PluginRegistry]
+        B[Event stream]
+    end
+
+    subgraph Plugin1["Plugin instance 1"]
+        C[Unique bus name :1.xxx]
+    end
+
+    subgraph Plugin2["Plugin instance 2"]
+        D[Unique bus name :1.yyy]
+    end
+
+    C -->|RegisterPlugin| A
+    D -->|RegisterPlugin| A
+    A -->|subscribe| C
+    A -->|subscribe| D
+    C -->|Event signals| B
+    D -->|Event signals| B
+```
+
 Each plugin instance is responsible for showing overlays only for apps owned by
 its user (the uid determined at registration via SO_PEERCRED). The daemon
-includes the target uid in each ActiveBlocks entry, and the plugin filters
+includes the target uid in each BlockedApps entry, and the plugin filters
 accordingly.
 
 ## Data Flow Summary
 
-Daemon (EnforcerActor) | |-- Decides to block app X (policy evaluation) |-- Adds
-X to ActiveBlocks (shared state) |-- Emits BlockStateChanged {app_id: X,
-blocked: true} | v Plugin (via signal subscription + property read) | |--
-Receives BlockStateChanged -> updates local overlay set |-- Reads ActiveBlocks
-for full block details (reason, actions, etc.) |-- Renders overlay on all
-windows of app X | |-- Focus changes to app X -> overlay already present |--
-Focus changes to app Y -> overlay for X persists | |-- User clicks Close button
--> Plugin calls LockManager::hideOverlay() locally -> Daemon state unchanged
-(block resolves when app no longer focused, or on next policy re-evaluation)
+```mermaid
+flowchart LR
+    A[EnforcerActor] -->|1. policy evaluation| B[BlockedApps state]
+    B -->|2. BlockedAppsChanged signal| C[Compositor plugin]
+    C -->|3. read property| B
+    C -->|4. render overlay| D[Blocked window]
+    E[User focus change] -->|5. Event signal| A
+    F[User clicks Close] -->|6. hideOverlay() locally| C
+```
 
 ## Degraded Operation
 
@@ -224,19 +314,41 @@ If the daemon is not reachable at startup, the plugin still holds both D-Bus
 connections and installs all compositor hooks immediately. NameOwnerChanged
 watchers on both busses provide event-driven notification — no polling. When the
 daemon appears on either bus, the plugin detects it, creates the daemon proxy,
-and reads ActiveBlocks.
+and reads BlockedApps.
 
-If the plugin disconnects (crashes), ActiveBlocks still exists on the daemon —
+If the plugin disconnects (crashes), BlockedApps still exists on the daemon —
 the daemon's state machine operates independently of plugin connectivity. When
 the plugin restarts, it connects to both busses, resolves the daemon, reads
-ActiveBlocks, and shows overlays for all currently blocked apps. No block state
+BlockedApps, and shows overlays for all currently blocked apps. No block state
 is lost during a plugin restart.
 
 If the daemon restarts on the same bus, the plugin's NameOwnerChanged watcher
-fires, it re-registers and re-reads ActiveBlocks.
+fires, it re-registers and re-reads BlockedApps.
 
 If the daemon restarts on a different bus (e.g., system daemon crashed and
 session daemon started), the plugin's NameOwnerChanged watcher on the stale bus
 fires, resolveActiveDaemonBus() detects the daemon on the other bus, and the
 plugin creates a fresh daemon proxy on that connection. Recovery is transparent
 — no polling, no plugin restart needed.
+
+```mermaid
+flowchart TD
+    A[Daemon not reachable at startup] --> B[Plugin holds both connections]
+    B --> C[Install compositor hooks]
+    C --> D[NameOwnerChanged fires]
+    D --> E[Plugin detects daemon]
+    E --> F[Create daemon proxy]
+    F --> G[Read BlockedApps]
+
+    H[Plugin disconnects] --> I[Overlays remain]
+    I --> J[Daemon state unchanged]
+    J --> K[Plugin restarts]
+    K --> L[Reconnect + read BlockedApps]
+
+    M[Daemon restarts same bus] --> N[NameOwnerChanged fires]
+    N --> O[Re-register + re-read]
+
+    P[Daemon restarts different bus] --> Q[NameOwnerChanged on stale bus]
+    Q --> R[resolveActiveDaemonBus finds daemon]
+    R --> S[Fresh proxy on new connection]
+```

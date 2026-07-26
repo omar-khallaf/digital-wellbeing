@@ -71,26 +71,27 @@ The EnforcerActor runs one evaluation cycle per Event signal. It:
 This gives per-user enforcement without per-user actor instances: the single
 EnforcerActor scopes all queries by uid.
 
-## Data Model Changes
+## Data Model
 
 ### events table
 
-An ALTER TABLE adds a user_id column to track which user generated each event.
-Stored generated columns timestamp and app_id are unchanged. The user_id allows
-per-user event queries. A covering index on (user_id, id) supports the reactive
-pattern — "events for user X since last seen event id Y" — with index-only
-scans.
+The `events` table includes a `user_id` column to track which user generated
+each event. Stored generated columns `timestamp` and `app_id` are part of the
+initial schema. The `user_id` allows per-user event queries. A covering index on
+`(user_id, id)` supports the reactive pattern — "events for user X since last
+seen event id Y" — with index-only scans.
 
 ### daily_usage table
 
-The daily_usage table adds a user_id column. The primary key changes from (date,
-app_id) to (date, user_id, app_id) to support per-user scoping.
+The `daily_usage` table includes a `user_id` column. The primary key is
+`(date, user_id, app_id)` to support per-user scoping.
 
 ### policies table
 
-ALTER TABLE adds created_by and owner_id columns. owner_id is the uid the policy
-applies to (RBAC scoping). created_by is the uid that created the policy (RBAC
-ownership). An index on owner_id supports the per-user policy query.
+The `policies` table includes `created_by` and `owner_id` columns. `owner_id` is
+the uid the policy applies to (RBAC scoping). `created_by` is the uid that
+created the policy (RBAC ownership). An index on `owner_id` supports the
+per-user policy query.
 
 ### app_categories table
 

@@ -8,7 +8,6 @@ use gpui_component::{h_flex, v_flex};
 
 use crate::app::App as GuiApp;
 use crate::components::card;
-use crate::dbus::DaemonClient;
 use crate::theme;
 
 use crate::policies::domain::{PoliciesViewModel, PolicyTarget, policy_input_from};
@@ -22,7 +21,6 @@ impl GuiApp {
         cx: &mut Context<Self>,
         vm: &PoliciesViewModel,
         entity: Entity<Self>,
-        client: DaemonClient,
     ) -> AnyElement {
         let (target, target_label, form) = match &self.policy_edit {
             Some((t, f)) => {
@@ -174,7 +172,6 @@ impl GuiApp {
                             .primary()
                             .on_click({
                                 let entity = entity.clone();
-                                let client = client.clone();
                                 move |_, _window, app| {
                                     let (tl, ai) = {
                                         let me = entity.read(app);
@@ -196,27 +193,25 @@ impl GuiApp {
                                             (tl, ai)
                                         }
                                     };
-                                    let client = client.clone();
+                                    let repo = entity.read(app).policies_repo.clone();
+                                    let Some(repo) = repo else {
+                                        return;
+                                    };
                                     entity.update(app, |this, cx2| {
                                         if let Some((_, ref mut form)) = this.policy_edit {
                                             form.time_limit_minutes = tl;
                                             form.app_id = ai;
                                         }
                                         if let Some((target, form)) = this.policy_edit.clone() {
-                                            let uid =
-                                                this.state.try_lock().map(|s| s.uid).unwrap_or(0);
+                                            let uid = this.state.uid;
                                             let input = policy_input_from(target, &form, uid);
                                             let edit_id = this.policy_edit_id;
-                                            let client = client.clone();
                                             let task = cx2.spawn(async move |this2, cx3| {
                                                 let res = match edit_id {
-                                                    Some(id) => {
-                                                        client.update_policy(id, input).await
+                                                    Some(id) => repo.update_policy(id, input).await,
+                                                    None => {
+                                                        repo.create_policy(input).await.map(|_| ())
                                                     }
-                                                    None => client
-                                                        .create_policy(input)
-                                                        .await
-                                                        .map(|_| ()),
                                                 };
                                                 if res.is_ok() {
                                                     let _ = this2.update(cx3, |this3, cx4| {
@@ -240,14 +235,15 @@ impl GuiApp {
                             .when(self.policy_edit_id.is_none(), |b| b.disabled(true))
                             .on_click({
                                 let entity = entity.clone();
-                                let client = client.clone();
                                 move |_, _window, app| {
-                                    let client = client.clone();
+                                    let repo = entity.read(app).policies_repo.clone();
+                                    let Some(repo) = repo else {
+                                        return;
+                                    };
                                     entity.update(app, |this, cx2| {
                                         if let Some(id) = this.policy_edit_id {
-                                            let client = client.clone();
                                             let task = cx2.spawn(async move |this2, cx3| {
-                                                let _ = client.delete_policy(id).await;
+                                                let _ = repo.delete_policy(id).await;
                                                 let _ = this2.update(cx3, |this3, cx4| {
                                                     this3.policy_edit = None;
                                                     this3.policy_edit_id = None;

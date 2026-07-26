@@ -26,16 +26,17 @@ forbidden — it would allocate and compile per call.
 - The app classification HashMap is pre-sized to the expected number of tracked
   apps (common: 50 to 200 unique app_ids).
 
-### LRU Cache Strategy
+### Cache Strategy
 
-| Cache                       | Key   | Max Size | TTL              |
-| --------------------------- | ----- | -------- | ---------------- |
-| AI classification           | AppId | 200      | 60 seconds       |
-| App metadata (display name) | AppId | 500      | Session lifetime |
-| Category membership         | AppId | 200      | 5 minutes        |
+| Cache             | Structure     | TTL        |
+| ----------------- | ------------- | ---------- |
+| AI classification | HashMap + TTL | 60 seconds |
 
-Use the lru crate or a simple HashMap plus VecDeque eviction. Do not pull in a
-heavy caching library.
+The classification cache is a `HashMap<AppId, (CategoryId, Instant)>` inside the
+Categorizer. Cache entries are evicted when the wall-clock check indicates TTL
+expiry. The categorizer exposes a public `invalidate(app_id)` method used on
+`PolicyMutated` signal receipt. No size limit is needed — the number of unique
+app_ids per user is bounded (typically 50–200).
 
 ### No Clone in Hot Path
 

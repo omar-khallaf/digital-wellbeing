@@ -12,7 +12,7 @@ use zbus::proxy;
     default_service = "org.wellbeing.v1.Controller",
     default_path = "/org/wellbeing/Controller"
 )]
-pub(crate) trait Daemon {
+pub trait Daemon {
     async fn list_policies(&self, filter_owner: u32) -> zbus::Result<Vec<PolicyData>>;
     async fn create_policy(&self, input: PolicyInput) -> zbus::Result<PolicyId>;
     async fn update_policy(&self, id: PolicyId, input: PolicyInput) -> zbus::Result<()>;

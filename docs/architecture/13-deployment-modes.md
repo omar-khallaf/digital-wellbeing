@@ -161,7 +161,7 @@ the plugin:
 2. Re-runs the 4-step resolution against both held connections.
 3. If the daemon reappeared on the other bus (e.g., system daemon crashed and
    session daemon started), creates a fresh daemon proxy on that bus.
-4. Calls RegisterPlugin, reads ActiveBlocks, subscribes to signals.
+4. Calls RegisterPlugin, reads BlockedApps, subscribes to signals.
 
 No background polling thread is needed — the dual-bus NameOwnerChanged watchers
 provide event-driven recovery. The daemon can restart on a different bus without
@@ -193,7 +193,7 @@ PLUGIN_INIT:
 3. Connect to BOTH busses permanently
 4. Construct WellbeingManager with both connections a. Register Manager
    interface on both connections b. Run resolveActiveDaemonBus() c. If daemon
-   found, create daemon proxy, RegisterPlugin, read ActiveBlocks d. Subscribe to
+   found, create daemon proxy, RegisterPlugin, read BlockedApps d. Subscribe to
    NameOwnerChanged on both connections e. Enter event loop on both connections
 5. Register compositor hooks
 
@@ -222,7 +222,7 @@ the session-mode additions:
 ## Security Notes
 
 - No request signing needed. The plugin reads block state from the daemon's own
-  D-Bus name (org.wellbeing.v1.Controller.ActiveBlocks), which is protected by
+  D-Bus name (org.wellbeing.v1.Controller.BlockedApps), which is protected by
   the D-Bus daemon. The plugin never accepts commands, so there is no command
   method to spoof. See [05-daemon-auth.md](./05-daemon-auth.md).
 - Session bus is per-user. On the session bus only the owning user can claim
@@ -237,7 +237,7 @@ the session-mode additions:
   only communicates with the daemon through one (the active bus). The second
   connection is purely for NameOwnerChanged signal reception. No duplicate
   enforcement or conflicting state can arise — only the active daemon proxy
-  reads ActiveBlocks or sends signals. If both a system daemon and a session
+  reads BlockedApps or sends signals. If both a system daemon and a session
   daemon were running simultaneously, the 4-step algorithm selects the system
   daemon (step 1), exactly as the old single-bus design would have done.
 

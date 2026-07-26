@@ -1,32 +1,8 @@
-// =============================================================================
-// wellbeing-lockdown — Hyprland compositor plugin
-//
-// Connects to BOTH system and session D-Bus busses simultaneously (no
-// probing, no background retry thread). The daemon bus is resolved via
-// resolveActiveDaemonBus() (4-step: NameHasOwner system → NameHasOwner
-// session → StartServiceByName system → StartServiceByName session).
-// NameOwnerChanged watches on both busses detect daemon (re)appearance
-// and trigger auto-recovery across busses.
-//
-// Provides:
-//   - Event signal  (unified, replaces FocusChanged + ActivityChanged)
-//
-// Uses declarative block state: reads the daemon's BlockedApps property
-// for initial sync and subscribes to BlockedAppsChanged signal for reactive
-// overlay updates — never receives commands, never polls on focus changes.
-//
-// Single source of truth for focus: g_ctx->focusState is the only focus
-// state (serialized over D-Bus as Event). LockManager queries it
-// via getFocusedApp() instead of receiving duplicate setFocusedApp calls.
-//
-// See docs/architecture/04-plugin-ipc.md and 05-daemon-auth.md.
-// =============================================================================
-
 #include <memory>
 #include <stdexcept>
 #include <string>
 
-#include <unistd.h> // getuid
+#include <unistd.h>
 
 // Hyprland plugin API (headers fetched by the superbuild into staging/include)
 #include <hyprland/Compositor.hpp>
@@ -58,7 +34,6 @@ extern "C" APICALL EXPORT std::string PLUGIN_API_VERSION() { return HYPRLAND_API
 extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     PHANDLE = handle;
 
-    // ── Version hash check (prevents crashes from mismatched headers) ──
     {
         const std::string hash = __hyprland_api_get_hash();
         const std::string client_hash = __hyprland_api_get_client_hash();
@@ -98,7 +73,6 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         return PLUGIN_DESCRIPTION_INFO{"", "", "", ""};
     }
 
-    // ── Create IdleTracker (after WellbeingManager is ready) ──────────────
     // The transition callback reads g_ctx at call time (always valid because
     // hooks fire only after g_ctx is installed below, and the callback is
     // destroyed before PluginState during PLUGIN_EXIT).
@@ -120,8 +94,7 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         };
         state->idleTracker = std::make_unique<IdleTracker>(
             std::move(onTransition),
-            wellbeing::focusedWindowHasIdleInhibitor, // inhibitCheck — Wayland idle-inhibit
-            std::chrono::milliseconds(30'000)         // 30s threshold
+            wellbeing::focusedWindowHasIdleInhibitor // inhibitCheck — Wayland idle-inhibit
         );
     }
 

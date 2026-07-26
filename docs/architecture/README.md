@@ -5,21 +5,21 @@ topics. Each concern lives in its own file (see the index below).
 
 ## Topics
 
-| #   | Doc                                                      | Scope                                                                                                                      |
-| --- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| 01  | [01-rationale.md](./01-rationale.md)                     | "Why" essays: platform abstraction, gpui, D-Bus plugin IPC                                                                 |
-| 02  | [02-platform.md](./02-platform.md)                       | The Platform trait, OverlayConfig, per-platform builders, concurrency model, PlatformEvent event model                     |
-| 03  | [03-linux-platform.md](./03-linux-platform.md)           | Linux Platform impl: app metadata resolution, power/session state handling, compositor support                             |
-| 04  | [04-plugin-ipc.md](./04-plugin-ipc.md)                   | org.wellbeing.v1.Manager D-Bus contract, declarative block state (ActiveBlocks), overlay lifecycle, multi-instance plugins |
-| 05  | [05-daemon-auth.md](./05-daemon-auth.md)                 | Daemon-plugin trust model: D-Bus name ownership, SO_PEERCRED authentication, no crypto                                     |
-| 06  | [06-daemon-dbus.md](./06-daemon-dbus.md)                 | org.wellbeing.v1.Controller D-Bus server, error mapping, GUI D-Bus client architecture                                     |
-| 07  | [07-rbac.md](./07-rbac.md)                               | Per-user RBAC model, policy visibility, EnforcerActor per-user application, data-model changes                             |
-| 08  | [08-modules.md](./08-modules.md)                         | Feature-per-directory layout, dependency flow, the blocking/overlay/ boundary, workspace tree                              |
-| 09  | [09-state-flow.md](./09-state-flow.md)                   | Daemon-authoritative state, GUI cache architecture, runtime model, root/user UI, view models, daemon wiring                |
-| 10  | [10-deployment.md](./10-deployment.md)                   | systemd unit, D-Bus policy files, install directory layout, D-Bus activation                                               |
-| 11  | [11-implementation-plan.md](./11-implementation-plan.md) | Phased build plan (Phase A–F)                                                                                              |
-| 12  | [12-open-questions.md](./12-open-questions.md)           | Open design questions and resolutions (resolved items kept)                                                                |
-| 13  | [13-deployment-modes.md](./13-deployment-modes.md)       | System vs session daemon: bus/scope selection, GUI + plugin bus resolution, degraded mode, deploy artifacts                |
+| #   | Doc                                                      | Scope                                                                                                                     |
+| --- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 01  | [01-rationale.md](./01-rationale.md)                     | "Why" essays: platform abstraction, gpui, D-Bus plugin IPC                                                                |
+| 02  | [02-platform.md](./02-platform.md)                       | The Platform trait, OverlayConfig, per-platform builders, concurrency model, PlatformEvent event model                    |
+| 03  | [03-linux-platform.md](./03-linux-platform.md)           | Linux Platform impl: app metadata resolution, power/session state handling, compositor support                            |
+| 04  | [04-plugin-ipc.md](./04-plugin-ipc.md)                   | org.wellbeing.v1.Manager D-Bus contract, declarative block state (BlockedApps), overlay lifecycle, multi-instance plugins |
+| 05  | [05-daemon-auth.md](./05-daemon-auth.md)                 | Daemon-plugin trust model: D-Bus name ownership, SO_PEERCRED authentication, no crypto                                    |
+| 06  | [06-daemon-dbus.md](./06-daemon-dbus.md)                 | org.wellbeing.v1.Controller D-Bus server, error mapping, GUI D-Bus client architecture                                    |
+| 07  | [07-rbac.md](./07-rbac.md)                               | Per-user RBAC model, policy visibility, EnforcerActor per-user application, data-model changes                            |
+| 08  | [08-modules.md](./08-modules.md)                         | Feature-per-directory layout, dependency flow, daemon/gui boundary, workspace tree                                        |
+| 09  | [09-state-flow.md](./09-state-flow.md)                   | Daemon-authoritative state, GUI cache architecture, runtime model, root/user UI, view models, daemon wiring               |
+| 10  | [10-deployment.md](./10-deployment.md)                   | systemd unit, D-Bus policy files, install directory layout, D-Bus activation                                              |
+| 11  | [11-implementation-plan.md](./11-implementation-plan.md) | Phased build plan (Phase A–F)                                                                                             |
+| 12  | [12-open-questions.md](./12-open-questions.md)           | Open design questions and resolutions (resolved items kept)                                                               |
+| 13  | [13-deployment-modes.md](./13-deployment-modes.md)       | System vs session daemon: bus/scope selection, GUI + plugin bus resolution, degraded mode, deploy artifacts               |
 
 ## Related Documentation
 
@@ -36,8 +36,9 @@ directories under docs/ and link back here for shared context:
 - docs/planning/ — roadmap (planned features, non-goals).
 
 The daemon is headless — no ui/ directories live in daemon feature trees. GUI
-lives in the gui/ crate under gui/src/screens/<feature>/; blocking/ has no GUI
-screen (overlay rendered by the compositor plugin, not gpui).
+lives in the gui/ crate under gui/src/dashboard/, gui/src/policies/, and
+gui/src/reports/; blocking/ has no GUI screen (overlay rendered by the
+compositor plugin, not gpui).
 
 ## Design Tenets
 
@@ -78,7 +79,7 @@ Key architectural properties:
   - org.wellbeing.v1.Controller (daemon) — policy CRUD with RBAC, usage queries,
     state change signals
   - org.wellbeing.v1.Manager (plugin) — focus events, user actions, current
-    focus property. Plugin reads block state from daemon's ActiveBlocks property
+    focus property. Plugin reads block state from daemon's BlockedApps property
     (see 04-plugin-ipc.md)
 - Per-user enforcement with RBAC — the daemon authorizes every D-Bus method call
   by the caller's uid (kernel-authenticated via SO_PEERCRED). In system mode,
@@ -87,7 +88,7 @@ Key architectural properties:
   07-rbac.md and 13-deployment-modes.md.
 - GUI as pure D-Bus client — no local SQLite, no in-process actors. The GUI
   subscribes to signals for cache-invalidation hints and re-queries data via
-  method calls. A stale-while-revalidate cache prevents redundant queries on
+  method calls. An explicit-invalidation cache prevents redundant queries on
   every render frame (see 09-state-flow.md#gui-cache-architecture).
 - gpui + tokio in GUI — gpui's retained-mode UI runs on the main thread. A
   background tokio thread handles D-Bus connections, signal subscriptions, and
@@ -96,7 +97,7 @@ Key architectural properties:
   daemon it registered with (system bus in system mode, session bus in session
   mode); it resolves that bus the same way the GUI does. The daemon
   authenticates the plugin by SO_PEERCRED uid. The plugin reads block state from
-  the daemon's ActiveBlocks D-Bus property and subscribes to BlockStateChanged
+  the daemon's BlockedApps D-Bus property and subscribes to BlockedAppsChanged
   for live updates. See 04-plugin-ipc.md and
   13-deployment-modes.md#plugin-resolution.
 - Overlay-only enforcement — blocks operate by showing an overlay that traps
@@ -125,7 +126,7 @@ Constraints (from AGENTS.md and the design docs):
 - Overlay-only enforcement (no process signals)
 - SQLite as source of truth
 - Plugin IPC via D-Bus (single interface contract)
-- Per-feature directory layout (domain / data / core / ui)
+- Per-feature directory layout (domain / data / core)
 - Newtype boundary gate for all raw strings
 - Clock trait for deterministic testing
 
@@ -141,7 +142,7 @@ gatekeeper:
 1. It queries the app's daily_usage plus active policies.
 2. It evaluates the app against policies and usage before any DB write. If the
    verdict is Block, the previous app's open interval is closed with an Unfocus
-   event, the app is added to ActiveBlocks so the plugin renders an overlay, no
+   event, the app is added to BlockedApps so the plugin renders an overlay, no
    Focus is written for the new app, and the blocked app never enters the event
    log. If the verdict is Notify, the previous interval is closed, a Focus is
    written for the new app, the app proceeds normally, and a desktop

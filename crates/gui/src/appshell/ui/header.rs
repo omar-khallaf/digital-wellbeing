@@ -25,7 +25,7 @@ pub fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
                         .text_lg()
                         .font_weight(FontWeight::BOLD)
                         .text_color(text_primary(cx))
-                        .child(active.label().to_string()),
+                        .child(active.label()),
                 )
                 .child(
                     div()
@@ -42,7 +42,7 @@ pub fn header(cx: &gpui::App, active: Tab, mode: &str) -> AnyElement {
             h_flex().gap_2().items_center().child(
                 div()
                     .text_xs()
-                    .text_color(text_secondary(cx))
+                    .text_color(text_label(cx))
                     .child(format!("{} session", mode)),
             ),
         )

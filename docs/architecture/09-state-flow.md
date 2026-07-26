@@ -12,17 +12,18 @@ through the daemon's D-Bus API.
 | Event log (focus, no-focus)     | Daemon -> SQLite                                                                                   | D-Bus method GetUsageRange()                    |
 | Policies & categories           | Daemon -> SQLite                                                                                   | D-Bus method ListPolicies(), other CRUD methods |
 | Daily usage (materialized view) | Daemon -> SQLite                                                                                   | D-Bus method GetUsageRange()                    |
-| Block state (per-app overlays)  | Plugin (overlay state); daemon emits signal at decision time; restores via CurrentFocus on restart | D-Bus signal BlockStateChanged                  |
+| Block state (per-app overlays)  | Plugin (overlay state); daemon emits signal at decision time; restores via CurrentFocus on restart | D-Bus signal BlockedAppsChanged                 |
 | Cache control                   | Daemon -> DB->signal                                                                               | D-Bus signals DailyUsageChanged, PolicyMutated  |
 
 ## GUI Cache Architecture
 
-The GUI maintains an in-memory stale-while-revalidate cache with no SQLite and
-no persistence. All data originates from the daemon.
+The GUI maintains an in-memory cache with no SQLite and no persistence. All data
+originates from the daemon. The cache is explicitly invalidated by daemon
+signals — there are no TTLs or background refreshes.
 
 On startup, the GUI calls GetUsageRange for the last 7 days to fill the range
 cache, calls ListPolicies to fill the policies cache, and subscribes to daemon
-signals: BlockStateChanged, DailyUsageChanged, PolicyMutated.
+signals: BlockedAppsChanged, DailyUsageChanged, PolicyMutated.
 
 When the user changes the time range, the GUI updates its selected range, calls
 GetUsageRange with the new start and end, stores the result in the range cache,
@@ -32,46 +33,47 @@ When a DailyUsageChanged signal is received, the GUI clears the range cache
 wholesale. The next render tick re-fetches the current selected_range via
 GetUsageRange.
 
-Cache TTLs:
-
-| Data         | TTL          | Stale-while-revalidate   |
-| ------------ | ------------ | ------------------------ |
-| Usage range  | 500ms        | Serve stale + bg refresh |
-| Policies     | 5s           | Serve stale + bg refresh |
-| Block states | signal-drive | Never stale (real-time)  |
+| Data         | Invalidation trigger        |
+| ------------ | --------------------------- |
+| Usage range  | `DailyUsageChanged` signal  |
+| Policies     | `PolicyMutated` signal      |
+| Categories   | `PolicyMutated` signal      |
+| Block states | `BlockedAppsChanged` signal |
 
 ## GUI Runtime Model
 
 The GUI process has two threads:
 
-Thread 1 (main): gpui main loop | |-- Renders UI at 60fps using gpui's
-retained-mode tree | |-- Polls mpsc receiver from tokio thread | |-- On each
-update: invalidate stale cache, re-render | |-- Sends commands via mpsc sender
-to tokio thread |-- e.g. CreatePolicy, DeletePolicy, GrantExtension,
-ChangeDateRange
+Thread 1 (main): gpui main loop
 
-Thread 2: tokio runtime | |-- zbus connection to daemon's bus (resolved by
-resolve_daemon_bus()) | |-- Subscribe to daemon signals: | |-- BlockStateChanged
--> notify gpui thread | |-- DailyUsageChanged -> invalidate range cache ->
-re-query | |-- PolicyMutated -> invalidate policy cache -> re-query | |--
-Periodic queries (every 1s when active): | |--
-GetUsageRange(selected_range.start, selected_range.end, my_uid) | |-- Update
-range cache | |-- Method calls from gpui thread: |-- CreatePolicy(input) ->
-daemon |-- UpdatePolicy(id, input) -> daemon |-- DeletePolicy(id) -> daemon |--
-GrantExtension(app_id) -> daemon |-- ChangeDateRange(start, end) -> update
-selected_range -> re-fetch via GetUsageRange -> rebuild ViewModels
+- Renders UI using gpui's retained-mode tree
+- Polls mpsc receiver from tokio thread for ViewModel updates
+- On each update: invalidate stale cache, re-render
+- Sends commands via mpsc sender to tokio thread
+  - e.g. CreatePolicy, DeletePolicy, ChangeDateRange
+
+Thread 2: tokio runtime
+
+- zbus connection to daemon's bus (resolved by bus resolution)
+- Subscribe to daemon signals:
+  - BlockedAppsChanged -> notify gpui thread
+  - DailyUsageChanged -> invalidate range cache -> re-query
+  - PolicyMutated -> invalidate policy cache -> re-query
+- Method calls from gpui thread:
+  - CreatePolicy(input) -> daemon
+  - UpdatePolicy(id, input) -> daemon
+  - DeletePolicy(id) -> daemon
+  - ChangeDateRange(start, end) -> update selected_range -> re-fetch via
+    GetUsageRange -> rebuild ViewModels
 
 ### Thread Safety
 
-All cross-thread communication uses mpsc unbounded channels with Send + static
+All cross-thread communication uses mpsc unbounded channels with Send + 'static
 messages. No Arc<Mutex> shared state between threads.
 
-gpui thread tokio thread
-
----
-
-ViewModel updates ----> receive, render receive, update cache <--- signals +
-query results User actions -----> D-Bus method calls
+The gpui thread sends user actions to the tokio thread via mpsc. The tokio
+thread sends ViewModel updates back to the gpui thread via mpsc. Daemon signals
+are received on the tokio thread and forwarded to the gpui thread.
 
 ## DateRange Type
 
@@ -87,11 +89,11 @@ mode.
 
 Three daemon-to-GUI signals carry cache-invalidation metadata:
 
-| Signal            | Payload                      | Trigger                            |
-| ----------------- | ---------------------------- | ---------------------------------- |
-| BlockStateChanged | uid, app_id, blocked, reason | Block added/removed                |
-| DailyUsageChanged | uid                          | Event written -> aggregate updated |
-| PolicyMutated     | uid                          | Policy created/updated/deleted     |
+| Signal             | Payload                      | Trigger                            |
+| ------------------ | ---------------------------- | ---------------------------------- |
+| BlockedAppsChanged | uid, app_id, blocked, reason | Block added/removed                |
+| DailyUsageChanged  | uid                          | Event written -> aggregate updated |
+| PolicyMutated      | uid                          | Policy created/updated/deleted     |
 
 Signals carry minimal metadata — just enough for the GUI to know which cache
 entry to invalidate. On DailyUsageChanged the GUI clears the entire range_cache
@@ -103,10 +105,11 @@ selected_range via GetUsageRange.
 The ViewModel pattern is retained — the data source changes, but the separation
 between data transformation and gpui rendering remains critical.
 
-Each GUI screen under gui/src/screens/<feature>/ defines ViewModels — plain
-Send + 'static structs holding a pre-computed snapshot of what the render
-function needs. Construction happens from the in-memory cache (not SQLite),
-keeping the pattern testable without gpui initialization.
+Each GUI screen under gui/src/dashboard/, gui/src/policies/, and
+gui/src/reports/ defines ViewModels — plain Send + 'static structs holding a
+pre-computed snapshot of what the render function needs. Construction happens
+from the in-memory cache (not SQLite), keeping the pattern testable without gpui
+initialization.
 
 Rules:
 
@@ -118,7 +121,8 @@ Rules:
 - ViewModels are rebuilt whenever AppState.selected_range changes.
 
 Benefits: Testable data logic without gpui initialization; swappable UI
-framework; no gpui imports outside gui/src/screens/ and gui/src/ui/.
+framework; no gpui imports outside gui/src/dashboard/, gui/src/policies/,
+gui/src/reports/, and gui/src/appshell/.
 
 The screen-specific view models (DashboardViewModel, PoliciesViewModel,
 ReportsViewModel) and the UI components that consume them are detailed in
@@ -126,16 +130,15 @@ ReportsViewModel) and the UI components that consume them are detailed in
 
 ## Daemon Wiring
 
-The daemon's actor wiring constructs a StoreBuilder to obtain the database pool,
-then exposes three D-Bus signals. Approved events flow through an mpsc channel
-from the event stream to the enforcer. The Linux platform builder provides the
-event stream. The enforcer actor receives the event stream, the pool, and the
-signal sender. The D-Bus server actor exposes methods and signals to the GUI,
-forwards commands to the enforcer, and receives the enforcer's block state
-sender.
+The daemon's main.rs constructs the platform, store, and actors. Platform events
+flow from the LinuxPlatform event stream through an mpsc channel to the
+EnforcerActor. The EnforcerActor buffers events and evaluates policies at
+minute-tick boundaries. The D-Bus server exposes methods and signals to the GUI
+and plugin, reading block state from shared memory and emitting signals when
+state changes.
 
-All data access goes through D-Bus method calls that query SQLite synchronously
-within the daemon process.
+All data access goes through D-Bus method calls that query SQLite asynchronously
+within the daemon process using diesel-async.
 
 ## Root vs User UI Adaptation
 
@@ -153,9 +156,9 @@ resolution: system present, session present, activate system, activate session.
 If the daemon is found, it connects; if all steps fail, it shows a warning
 banner and enters degraded mode. Next it determines its mode from getuid: root
 gets AdminMode, non-root gets UserMode. Then it subscribes to daemon signals:
-BlockStateChanged, DailyUsageChanged, PolicyMutated. It performs an initial data
-fetch: ListPolicies for my_uid and GetUsageRange for the last 7 days and my_uid.
-Finally it renders the dashboard.
+BlockedAppsChanged, DailyUsageChanged, PolicyMutated. It performs an initial
+data fetch: ListPolicies for my_uid and GetUsageRange for the last 7 days and
+my_uid. Finally it renders the dashboard.
 
 See [10-deployment.md](./10-deployment.md) for the activation mechanism.
 

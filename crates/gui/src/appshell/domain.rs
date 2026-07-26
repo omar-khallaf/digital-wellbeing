@@ -2,9 +2,13 @@
 //!
 //! These types define the shell-level wiring between dashboard, policies,
 //! and reports screens. `RenderMode` and `Tab` are the top-level navigation
-//! primitives; `AppState` is the shared mutable cache behind the GPUI entity.
+//! primitives; `AppState` is a minimal shared state (just connection info
+//! and selected range — all data lives in the per-flow ViewModels).
 
-use wellbeing_core::*;
+use std::sync::Arc;
+
+use tokio::sync::RwLock;
+use wellbeing_core::DateRange;
 
 use crate::dashboard;
 use crate::dbus;
@@ -62,8 +66,11 @@ impl Tab {
     }
 }
 
-/// Bundle of ViewModels sent from the background refresh loop to the GPUI
-/// entity on each data change — keeps the foreground render path single-pass.
+/// Bundle of ViewModels sent from the background flows to the GPUI entity
+/// on each data change — keeps the foreground render path single-pass.
+///
+/// Each field is `Option` so a flow can signal "data unavailable" (daemon
+/// disconnected) without blocking the other screens.
 #[derive(Debug, Clone)]
 pub struct AppViewModels {
     pub dashboard: Option<dashboard::DashboardViewModel>,
@@ -71,19 +78,16 @@ pub struct AppViewModels {
     pub reports: Option<reports::ReportsViewModel>,
 }
 
-/// Shared state accessible by all screen views.
+/// Minimal shared state between the GPUI entity and background flows.
+///
+/// No data caches — all screen data lives in per-flow ViewModels emitted
+/// through channels.  This struct only carries the date range (which both
+/// the dashboard and reports flows need) and connection metadata for the
+/// status banner.
 pub struct AppState {
     pub mode: RenderMode,
     pub uid: u32,
-    pub client: crate::dbus::DaemonClient,
-    pub selected_range: DateRange,
-    pub range_cache: Vec<DailySummary>,
-    pub policy_cache: Vec<PolicyData>,
-    pub category_cache: Vec<Category>,
-    pub app_category_cache: Vec<AppCategoryRow>,
-    pub block_cards: Vec<dashboard::BlockCardInfo>,
-    pub day_events_cache: Vec<DayEventRow>,
-    pub title_cache: Vec<DailyUsageByTitleEntry>,
-    pub daemon_available: bool,
-    pub connection_status: dbus::ConnectionStatus,
+    pub selected_range: Arc<RwLock<DateRange>>,
+    pub daemon_available: Arc<RwLock<bool>>,
+    pub connection_status: Arc<RwLock<dbus::ConnectionStatus>>,
 }

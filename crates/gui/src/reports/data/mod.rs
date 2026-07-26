@@ -1,4 +1,10 @@
-//! Reports ViewModel builder — pure function, no gpui.
+//! Reports data layer — ViewModel builder, repository, and background flow.
+
+mod flow;
+mod repo;
+
+pub use flow::{FlowState, spawn_reports_flow};
+pub use repo::ReportsRepo;
 
 use std::collections::BTreeMap;
 

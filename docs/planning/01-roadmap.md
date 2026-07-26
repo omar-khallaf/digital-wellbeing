@@ -43,14 +43,14 @@ milestones that the phases deliver.
 
 ### Phase C — Daemon actors · `Done`
 
-- [x] `tracking/*`: `FocusState` domain type (used by `EnforcerActor`),
+- [x] `blocking/domain/`: `FocusState` domain type (used by `EnforcerActor`),
       daily-usage accumulation via `accumulate_daily_usage`.
 - [x] `policy/*`: `PolicyConfig` enum (`Block`/`TimeLimit`/`Notify`),
       `evaluate()`, `app_state()`, `TimeWindow`.
 - [x] `categorization/*`: `Categorizer` + `AiClassifier` (v1 heuristic),
       `app_categories` chain.
 - [x] `blocking/*`: `EnforcerActor` gate-first pipeline, `BlockingState`,
-      `OverlayConfig`, grant-extension, plugin disconnect/reconnect
+      `OverlayConfig`, block extension, plugin disconnect/reconnect
       (`features/01-blocking.md`).
 - [x] `reports/*`: aggregate queries for history/export.
 - [x] `main.rs`: wire `EnforcerActor` + event fan-out + D-Bus server +
@@ -64,8 +64,8 @@ milestones that the phases deliver.
       mapping, subscribe to daemon signals, `range_cache` keyed by
       `"range:{start}:{end}:{uid}"` (`architecture/06-daemon-dbus.md`,
       `architecture/09-state-flow.md`).
-- [ ] `cache/mod.rs`: `ClientCache<K,V>` stale-while-revalidate, cache
-      invalidation from daemon signals — wholesale clear on `DailyUsageChanged`
+- [ ] `cache/mod.rs`: `ClientCache<K,V>` explicit-invalidation, cache clear on
+      daemon signals — clear on `DailyUsageChanged`
       (`architecture/09-state-flow.md`).
 - [ ] `main.rs`: `gpui::run` + background tokio thread + D-Bus activation
       fallback. `refresh_all_data` calls `GetUsageRange(selected_range, uid)`
@@ -73,11 +73,11 @@ milestones that the phases deliver.
 - [ ] `app.rs`: app shell (TitleBar, TabBar, tray, Admin/User mode via
       `getuid()`). `AppState` carries `selected_range: DateRange` +
       `range_cache: Vec<DailySummary>`.
-- [ ] `screens/dashboard/`: `DashboardViewModel` built from `&[DailySummary]`,
+- [ ] `dashboard/`: `DashboardViewModel` built from `&[DailySummary]`,
       `TimeRangeSelector` wired to header (`features/03-ui-design.md`).
-- [ ] `screens/policies/`: `PoliciesViewModel`, `AppSelector`, `PolicyEditor`,
+- [ ] `policies/`: `PoliciesViewModel`, `AppSelector`, `PolicyEditor`,
       `CategoryEditor` (RBAC-aware).
-- [ ] `screens/reports/`: `ReportsViewModel` built from `&[DailySummary]`,
+- [ ] `reports/`: `ReportsViewModel` built from `&[DailySummary]`,
       `TimeRangeSelector` wired to header, export stub
       (`features/03-ui-design.md`).
 
@@ -85,7 +85,7 @@ milestones that the phases deliver.
 
 - [ ] `plugins/hyprland/*`: session bus → **system bus**; add `CurrentFocus`;
       `RegisterPlugin()` reverse discovery; unified `Event` signal (EventTag);
-      read `ActiveBlocks` property on startup and on `BlockStateChanged` signal
+      read `BlockedApps` property on startup and on `BlockedAppsChanged` signal
       (`features/01-blocking.md`).
 - [ ] `deploy/*.conf`: D-Bus system policy files for both interfaces
       (`architecture/10-deployment.md`).
@@ -125,7 +125,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
    semantics; `Block`/`TimeLimit`/`Notify`; `TimeWindow`
    (`features/01-blocking.md`, `features/02-categorization.md`).
 3. **Overlay-only blocking** — gate-first evaluate before DB write; blocked app
-   never logged; block state is declarative via ActiveBlocks
+   never logged; block state is declarative via BlockedApps
    (`features/01-blocking.md`).
 4. **Block overlay (plugin)** — OpenGL backdrop + `Extra`/`Close` buttons; traps
    input; Close button handled locally in plugin via
@@ -143,7 +143,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 1. **SQLite (WAL)** — `events` (generated cols + CHECK JSON), `daily_usage`,
    `policies` (exclusive-arc + kind CHECKs), `categories`, `app_categories`;
    initial schema (`persistence/01-database.md`).
-2. **Signals** — D-Bus signals `BlockStateChanged` / `DailyUsageChanged` /
+2. **Signals** — D-Bus signals `BlockedAppsChanged` / `DailyUsageChanged` /
    `PolicyMutated` (`architecture/09-state-flow.md`).
 3. **Seeded `app_categories`** — built-in categories + `INSERT OR IGNORE`
    defaults replace `.desktop`/config parsing (`features/02-categorization.md`).
@@ -151,7 +151,7 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 ### Categorization (v1) · `Ready`
 
 1. **AI v1 heuristic** — `AiClassifier` trait, resolution chain
-   `app_categories → AI → Uncategorized`, LRU cache (60s)
+   `app_categories → AI → Uncategorized`, HashMap cache (60s)
    (`features/02-categorization.md`).
 2. **User category edits** — `SetAppCategory` + settings row; `ignore` excludes
    from tracking.
@@ -159,16 +159,15 @@ Single compositor (Hyprland), full tracking → policy → block → dashboard l
 ### Real-time UI plumbing · `Ready`
 
 1. **Signal-driven cache invalidation** — `DailyUsageChanged` / `PolicyMutated`
-   / `BlockStateChanged`; `ClientCache` keyed by `"range:{start}:{end}:{uid}"`,
-   wholesale clear on signal, TTL 500ms usage, 5s policies
-   (`architecture/09-state-flow.md`).
+   / `BlockedAppsChanged`; `ClientCache` keyed by `"range:{start}:{end}:{uid}"`,
+   clear on signal (`architecture/09-state-flow.md`).
 2. **ChangeDateRange command** — user selects new range → `GetUsageRange` →
    `range_cache` update → ViewModel rebuild (`features/03-ui-design.md`).
 
 ### v1 hardening · `Open`
 
 - [ ] **Crash recovery with active overlay** — re-issue `Overlay(show)` with
-      re-read ActiveBlocks property on daemon restart (`12-open-questions.md#3`,
+      re-read BlockedApps property on daemon restart (`12-open-questions.md#3`,
       `features/01-blocking.md`).
 - [ ] **GUI startup when daemon down** — D-Bus activation vs error dialog
       (`12-open-questions.md#2`).
@@ -188,7 +187,7 @@ already exist (`architecture/03-linux-platform.md`).
 
 1. **KWin** — `wellbeing-effect` (`KWin::Effect` + D-Bus).
 2. **Wayfire** — `wellbeing-plugin` (Wayfire API + D-Bus).
-3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies `ActiveBlocks`
+3. **GNOME Shell** — `wellbeing-extension` (GJS + D-Bus, verifies `BlockedApps`
    property).
 4. **Shared extension template** — `LockManager`/render-hook/input-trap adapter
    over the D-Bus contract.

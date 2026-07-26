@@ -17,7 +17,7 @@ the same bus is documented in [04-plugin-ipc.md](./04-plugin-ipc.md).
 | `GetUsageRange` | `start_date: s`, `end_date: s`, `user_id: u` | `summaries: a(v)` | Usage grouped by day for the inclusive date range. Dates are `%Y-%m-%d`. |
 
 `GetUsageRange` is the primary data-fetch method for the GUI. It returns
-`Vec<DailySummary>` where each `DailySummary` groups all `DailyUsageEntry`
+`Vec<DailySummary>` where each `DailySummary` groups all `DailyUsageByAppEntry`
 records for a single date. The GUI consumes this directly for both the Dashboard
 and Reports screens.
 
@@ -38,22 +38,22 @@ and Reports screens.
 
 ### Block State (Declarative)
 
-| Property       | Type          | Access | Description                                                                                                                                                                                                                                                           |
-| -------------- | ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ActiveBlocks` | `a(s(tutau))` | read   | Currently blocked apps. Each entry: `{app_id, policy_id, blocked_since, reason, available_actions}`. The canonical source of truth for blocking state. Consumed by the compositor plugin (reads on startup for crash recovery) and GUI (reads for dashboard display). |
+| Property      | Type          | Access | Description                                                                                                                                                                                                                                                           |
+| ------------- | ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BlockedApps` | `a(s(tutau))` | read   | Currently blocked apps. Each entry: `{app_id, policy_id, blocked_since, reason, available_actions}`. The canonical source of truth for blocking state. Consumed by the compositor plugin (reads on startup for crash recovery) and GUI (reads for dashboard display). |
 
-The `ActiveBlocks` property is the sole source of truth for which apps are
+The `BlockedApps` property is the sole source of truth for which apps are
 blocked and why. The daemon writes to it; all consumers (plugin, GUI) read from
-it. The plugin subscribes to `BlockStateChanged` for live updates but falls back
-to `ActiveBlocks` for initial state and reconciliation.
+it. The plugin subscribes to `BlockedAppsChanged` for live updates but falls
+back to `BlockedApps` for initial state and reconciliation.
 
 ### Signals
 
-| Signal              | Fields                                       | When                                                                                                                |
-| ------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `BlockStateChanged` | `{uid: u, app_id: s, blocked: b, reason: u}` | An app is blocked or unblocked. Consumed by plugin (real-time overlay sync) and GUI (dashboard cache invalidation). |
-| `DailyUsageChanged` | `{uid: u}`                                   | Daily usage data mutated. Consumed by GUI for cache invalidation.                                                   |
-| `PolicyMutated`     | `{uid: u}`                                   | Policy created, updated, or deleted. Consumed by GUI for cache invalidation.                                        |
+| Signal               | Fields                                       | When                                                                                                                |
+| -------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `BlockedAppsChanged` | `{uid: u, app_id: s, blocked: b, reason: u}` | An app is blocked or unblocked. Consumed by plugin (real-time overlay sync) and GUI (dashboard cache invalidation). |
+| `DailyUsageChanged`  | `{uid: u}`                                   | Daily usage data mutated. Consumed by GUI for cache invalidation.                                                   |
+| `PolicyMutated`      | `{uid: u}`                                   | Policy created, updated, or deleted. Consumed by GUI for cache invalidation.                                        |
 
 ### D-Bus Message Size Limits
 
@@ -64,7 +64,7 @@ payload sizes:
 | --------------- | -------------- | ------------ |
 | `ListPolicies`  | 200 B – 2 KB   | 50 KB        |
 | `GetUsageRange` | 10 KB – 100 KB | 1 MB         |
-| `ActiveBlocks`  | 100 B – 1 KB   | 10 KB        |
+| `BlockedApps`   | 100 B – 1 KB   | 10 KB        |
 | Signals         | < 200 B        | 1 KB         |
 
 All well within limits.
@@ -92,14 +92,14 @@ name string, rather than parsing generic failure messages.
 
 ## GUI D-Bus Client Architecture
 
-The GUI maintains an **in-memory stale-while-revalidate cache** and talks
+The GUI maintains an **in-memory explicit-invalidation cache** and talks
 exclusively to the daemon over D-Bus (never directly to SQLite). See
 [09-state-flow.md](./09-state-flow.md#gui-cache-architecture) for the GUI-side
 cache lifecycle, TTLs, and runtime model.
 
 ### Signal Coalescing
 
-D-Bus signals can fire rapidly (e.g., `BlockStateChanged` for every app,
+D-Bus signals can fire rapidly (e.g., `BlockedAppsChanged` for every app,
 `DailyUsageChanged` on every focus switch). The GUI coalesces them via atomic
 dirty flags: each signal handler sets a flag, and a drain function collects all
 dirty flags into a single notification struct. The render loop checks coalesced
@@ -122,8 +122,7 @@ The cache is purely in-memory — no SQLite, no persistence.
 
 ## References
 
-- [04-plugin-ipc.md](./04-plugin-ipc.md) — plugin IPC, `ActiveBlocks`
-  consumption
+- [04-plugin-ipc.md](./04-plugin-ipc.md) — plugin IPC, `BlockedApps` consumption
 - [05-daemon-auth.md](./05-daemon-auth.md) — trust model (no crypto needed)
 - [07-rbac.md](./07-rbac.md) — `SO_PEERCRED` uid authentication model
 - [09-state-flow.md](./09-state-flow.md) — GUI cache architecture, DateRange,

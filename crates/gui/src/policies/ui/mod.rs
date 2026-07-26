@@ -26,11 +26,6 @@ impl GuiApp {
         vm: &PoliciesViewModel,
     ) -> AnyElement {
         let entity = cx.entity();
-        let client = self
-            .state
-            .try_lock()
-            .map(|s| s.client.clone())
-            .unwrap_or_else(|_| panic!("daemon client unavailable (lock poisoned)"));
 
         v_flex()
             .gap_4()
@@ -41,7 +36,7 @@ impl GuiApp {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme::text_secondary(&*cx))
+                            .text_color(theme::text_label(&*cx))
                             .child(format!("{} policies configured", vm.policies.len())),
                     )
                     .child(
@@ -64,7 +59,7 @@ impl GuiApp {
                     ),
             )
             .child(self.render_policy_list(cx, vm, entity.clone()))
-            .child(self.render_editor(cx, vm, entity.clone(), client))
+            .child(self.render_editor(cx, vm, entity.clone()))
             .child(self.render_categories(cx, vm, entity.clone()))
             .into_any_element()
     }

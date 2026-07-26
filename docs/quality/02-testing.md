@@ -149,7 +149,7 @@ owned by uid 1000.
 | CreatePolicy sets correct created_by            | Ownership tracking     |
 | DeletePolicy rejects cross-user delete          | Permission enforcement |
 | GetDailyUsage scopes to caller uid              | Data isolation         |
-| BlockStateChanged signal emitted on block       | Signal contract        |
+| BlockedAppsChanged signal emitted on block      | Signal contract        |
 | DailyUsageChanged signal emitted on event write | Signal contract        |
 | Method call from unauthenticated connection     | Error handling         |
 | Concurrent policy CRUD from two users           | Isolation              |

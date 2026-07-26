@@ -12,11 +12,13 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::{h_flex, v_flex};
 use wellbeing_core::DateRange;
 
-use crate::chart::{daily_bar_chart, empty_state};
-use crate::components::{card, format_duration, time_range_selector};
+use crate::chart::daily_bar_chart;
+use crate::components::{
+    self as cmp, AppEntryView, TitleEntryView, card, format_duration, time_range_selector,
+};
 use crate::theme::{self, rad, sp};
 
-use super::domain::{ReportAppEntry, ReportTitleEntry, ReportsViewModel};
+use super::domain::ReportsViewModel;
 
 pub fn render_reports_view(
     cx: &App,
@@ -72,22 +74,55 @@ pub fn render_reports_view(
             Some("Daily Screen Time"),
             vec![daily_bar_chart(cx, &vm.bar_chart).into_any_element()],
         ))
-        .child(card(
-            cx,
-            Some("All Apps"),
-            vec![app_list_panel(cx, &vm.app_list).into_any_element()],
-        ))
-        .child(card(
-            cx,
-            Some("All Titles"),
-            vec![
-                div()
-                    .h(px(280.0))
-                    .overflow_y_scrollbar()
-                    .child(title_list_panel(cx, &vm.title_list))
-                    .into_any_element(),
-            ],
-        ))
+        .child({
+            let entries: Vec<AppEntryView> = vm
+                .app_list
+                .iter()
+                .map(|e| AppEntryView {
+                    rank: e.rank,
+                    display_name: e.display_name.clone(),
+                    total_millis: e.total_millis,
+                    percentage: e.percentage,
+                    dot_color: None,
+                    badge: None,
+                })
+                .collect();
+            card(
+                cx,
+                Some("All Apps"),
+                vec![
+                    div()
+                        .h(px(280.0))
+                        .overflow_y_scrollbar()
+                        .child(cmp::app_list_panel(cx, &entries))
+                        .into_any_element(),
+                ],
+            )
+        })
+        .child({
+            let entries: Vec<TitleEntryView> = vm
+                .title_list
+                .iter()
+                .map(|e| TitleEntryView {
+                    rank: e.rank,
+                    app_id: e.app_id.clone(),
+                    title: e.title.clone(),
+                    total_millis: e.total_millis,
+                    percentage: e.percentage,
+                })
+                .collect();
+            card(
+                cx,
+                Some("All Titles"),
+                vec![
+                    div()
+                        .h(px(280.0))
+                        .overflow_y_scrollbar()
+                        .child(cmp::title_list_panel(cx, &entries))
+                        .into_any_element(),
+                ],
+            )
+        })
         .child(
             h_flex()
                 .gap_2()
@@ -108,112 +143,4 @@ pub fn render_reports_view(
                         }),
                 ),
         )
-}
-
-fn app_list_panel(cx: &App, entries: &[ReportAppEntry]) -> AnyElement {
-    if entries.is_empty() {
-        return empty_state(cx, "No usage data yet.").into_any_element();
-    }
-
-    let rows: Vec<AnyElement> = entries
-        .iter()
-        .map(|entry| {
-            h_flex()
-                .px(sp::MD)
-                .py(sp::SM)
-                .rounded(rad::md())
-                .hover(|s| s.bg(theme::border(cx)))
-                .gap_4()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted(cx))
-                        .w(px(28.0))
-                        .child(format!("#{}", entry.rank)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .flex_1()
-                        .text_color(theme::text_primary(cx))
-                        .child(entry.display_name.clone()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_secondary(cx))
-                        .child(format!("{:.1}%", entry.percentage)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::text_primary(cx))
-                        .child(format_duration(entry.total_millis)),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    v_flex().gap_1().children(rows).into_any_element()
-}
-
-fn title_list_panel(cx: &App, entries: &[ReportTitleEntry]) -> AnyElement {
-    if entries.is_empty() {
-        return empty_state(cx, "No title usage data yet.").into_any_element();
-    }
-
-    let rows: Vec<AnyElement> = entries
-        .iter()
-        .map(|entry| {
-            h_flex()
-                .px(sp::MD)
-                .py(sp::SM)
-                .rounded(rad::md())
-                .hover(|s| s.bg(theme::border(cx)))
-                .gap_4()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted(cx))
-                        .w(px(28.0))
-                        .child(format!("#{}", entry.rank)),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .gap_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(theme::text_primary(cx))
-                                .child(entry.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_muted(cx))
-                                .child(entry.app_id.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_secondary(cx))
-                        .child(format!("{:.1}%", entry.percentage)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::text_primary(cx))
-                        .child(format_duration(entry.total_millis)),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    v_flex().gap_1().children(rows).into_any_element()
 }

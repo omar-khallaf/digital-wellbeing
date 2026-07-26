@@ -54,8 +54,8 @@ categorization/ feature module alongside the Categorizer actor. This keeps
 OS-specific concerns (D-Bus, plugin, metadata) fully isolated from the
 classification logic.
 
-Cache: classification results are cached in an LRU HashMap<AppId,
-(WindowCategory, Instant)> with a 60-second TTL.
+Cache: classification results are cached in a HashMap<AppId, (CategoryId,
+Instant)> with a 60-second TTL.
 
 ### Resolution Chain
 
@@ -76,8 +76,8 @@ enum with three variants:
 - Uncategorized — no mapping was found; the fallback bucket
 
 Internally, the categorizer holds a reference to the database pool and a
-thread-safe LRU cache keyed by AppId. When categorize(app_id, title) is called,
-it performs this sequence:
+thread-safe HashMap cache keyed by AppId with a 60-second TTL. When
+categorize(app_id, title) is called, it performs this sequence:
 
 1. DB lookup queries app_categories joined with categories. If a matching row
    has a non-null category_id, the resolved category is returned immediately as
@@ -99,7 +99,7 @@ to the next step.
 ## Cache Strategy
 
 - DB lookups are fast (PK point query) — no separate cache needed.
-- AI results cached in LruCache<AppId, WindowCategory> with 60-second TTL.
+- AI results cached in HashMap<AppId, (CategoryId, Instant)> with 60-second TTL.
 - Cache is invalidated on app_categories INSERT/UPDATE/DELETE via PolicyMutated.
 - At startup, the cache is empty — AI classifies apps lazily on first focus.
 
@@ -108,8 +108,8 @@ to the next step.
 When the user modifies an app's category in the UI, the change is written to
 app_categories in the DB. The daemon broadcasts PolicyMutated, which prompts the
 Categorizer to evict the cached entry for that app_id. The categorizer exposes a
-public invalidate(app_id) method that removes the matching key from the LRU
-cache if present — a no-op for unknown app_ids.
+public invalidate(app_id) method that removes the matching key from the cache if
+present — a no-op for unknown app_ids.
 
 ## Category System
 

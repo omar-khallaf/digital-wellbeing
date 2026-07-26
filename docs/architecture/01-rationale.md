@@ -41,9 +41,6 @@ See [02-platform.md](./02-platform.md) and
 - GPU-efficient (only redraws dirty regions).
 - Proper text shaping with system font stack (Arabic, CJK, emoji).
 - Native window management (multiple windows for overlay + dashboard).
-- Pinned to a specific git commit for reproducibility (see
-  [11-implementation-plan.md](./11-implementation-plan.md#open-questions) for
-  the pin strategy).
 
 ## Why D-Bus for Plugin IPC (Not Per-Compositor Detection)
 
@@ -51,8 +48,8 @@ The compositor plugin is discovered dynamically on the system bus, with no
 per-compositor feature gates or environment-variable detection:
 
 1. **Zero detection** — the daemon publishes block state on its own D-Bus
-   interface (`org.wellbeing.v1.Controller.ActiveBlocks`). The plugin reads
-   state from the daemon's well-known name. The daemon never probes
+   interface (`org.wellbeing.v1.Controller.BlockedApps`). The plugin reads state
+   from the daemon's well-known name. The daemon never probes
    compositor-specific env vars or socket paths.
 2. **Single IPC contract** — all compositor plugins implement the same D-Bus
    interface. The daemon has one code path regardless of compositor.
@@ -66,7 +63,7 @@ per-compositor feature gates or environment-variable detection:
    dashboard banner auto-dismisses. Block state accumulates regardless of plugin
    connectivity — overlays appear on reconnect.
 
-**Mock testing** uses a `MockManagerClient` implementing the same interface — no
+**Mock testing** uses a `MockPlatform` implementing the `Platform` trait — no
 `MockCompositor` needed, no env var stubs, no feature flags.
 
 The full contract is in [04-plugin-ipc.md](./04-plugin-ipc.md).

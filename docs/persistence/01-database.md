@@ -50,25 +50,25 @@ migration because SQLite DDL is transactional for most DDL statements.
 
 ### `events` — Append-Only Event Log
 
-Eight event types cover every focus switch and state change. Every focus switch
+Nine event types cover every focus switch and state change. Every focus switch
 or state change writes exactly one row.
 
 The schema uses direct typed columns rather than a JSON payload. Each event row
-carries: an integer `event_type` discriminant (0-7), the `user_id`, a
+carries: an integer `event_type` discriminant (0-8), the `user_id`, a
 `timestamp` as epoch milliseconds (i64), optional `app_id` (nullable text), and
-optional `title` (nullable text, up to 256 chars). Interval computation happens
+optional `title` (nullable text, up to 1024 chars). Interval computation happens
 in Rust via `apply_closed_deltas_from_buffer` called in the same transaction as
 the event INSERT, so business logic stays in application code instead of SQL
 triggers.
 
-| Column     | Type    | Notes                                          |
-| ---------- | ------- | ---------------------------------------------- |
-| id         | INTEGER | AUTOINCREMENT primary key                      |
-| event_type | INTEGER | 0=WindowFocused, 1=Unfocused, 2=Idle, …        |
-| user_id    | INTEGER | UID of the user this event belongs to          |
-| timestamp  | BIGINT  | Epoch milliseconds (UTC) — indexed for queries |
-| app_id     | TEXT?   | Non-null for WindowFocused/Idle/Resumed        |
-| title      | TEXT?   | Window title, present on WindowFocused events  |
+| Column     | Type    | Notes                                                 |
+| ---------- | ------- | ----------------------------------------------------- |
+| id         | INTEGER | AUTOINCREMENT primary key                             |
+| event_type | INTEGER | 0=WindowFocused, 1=Unfocused, 2=Idle, …               |
+| user_id    | INTEGER | UID of the user this event belongs to                 |
+| timestamp  | BIGINT  | Epoch milliseconds (UTC) — indexed for queries        |
+| app_id     | TEXT?   | Non-null for WindowFocused/Idle/Resumed/Blocked       |
+| title      | TEXT?   | Window title, present on WindowFocused/Blocked events |
 
 The `id` column uses AUTOINCREMENT because it serves as an ordering token for
 the reactive watch channel; consumers track last seen event id to avoid
@@ -90,6 +90,7 @@ sequence if needed.
 | 5    | ShutDown      | System shut down               |
 | 6    | Locked        | Session locked                 |
 | 7    | LoggedOut     | User logged out                |
+| 8    | WindowBlocked | Window was blocked by policy   |
 
 The event type constants are shared across the daemon and GUI via
 `wellbeing_core::event_types`.
@@ -107,7 +108,7 @@ user, never persisted in the database.
 `accumulate_daily_usage` computes elapsed minutes from the focus state
 (wall-clock time including idle), derives the date from the focus start time,
 and upserts into `daily_usage` within the same transaction as the event INSERT.
-Block state is managed declaratively through the daemon's ActiveBlocks D-Bus
+Block state is managed declaratively through the daemon's BlockedApps D-Bus
 property, not through the events table or daily_usage.
 
 Application-level transactions provide the same atomicity that SQL triggers
@@ -170,9 +171,8 @@ The tracker, enforcer, and dashboard each hold a watch::Receiver cloned from the
 notifier. On notification they check the variant: the tracker updates active
 window state on EventWritten and re-evaluates limits on PolicyMutated; the
 enforcer re-evaluates blocks on EventWritten and checks whether a policy change
-lifts an active block on PolicyMutated; the dashboard invalidates its
-stale-while-revalidate cache on any notification so the next render frame
-re-fetches.
+lifts an active block on PolicyMutated; the GUI dashboard invalidates its
+in-memory cache on any notification so the next render frame re-fetches.
 
 ---
 

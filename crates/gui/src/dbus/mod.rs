@@ -1,14 +1,12 @@
 //! GUI D-Bus client: connection management, signal handling, and daemon proxy.
 //!
-//! Re-exports from three sub-modules:
+//! Re-exports from two sub-modules:
 //! - `bus` — bus selection, daemon presence watching, connection status types
-//! - `client` — `DaemonClient` proxy wrapper with response caching
-//! - `signals` — `SignalCoalescer` + signal subscription
+//! - `client` — generated `DaemonProxy` trait
 
-mod bus;
-mod client;
-mod signals;
+pub mod bus;
+pub mod client;
 
-pub use bus::{BusType, ConnectionStatus, DaemonPresenceEvent, spawn_daemon_name_watch};
-pub use client::DaemonClient;
-pub use signals::{CoalescedNotifications, SignalCoalescer, spawn_signal_listener};
+pub use bus::{
+    BusManager, BusType, ConnectionStatus, DaemonPresenceEvent, spawn_daemon_presence_broadcast,
+};

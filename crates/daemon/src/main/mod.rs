@@ -85,7 +85,6 @@ async fn main() -> Result<()> {
     let (enforcer_tx, enforcer_rx) =
         mpsc::channel::<wellbeing_daemon::platform::PlatformEvent>(256);
 
-    // Fan out platform events to the enforcer
     tokio::spawn(async move {
         let mut stream = event_stream;
         while let Some(event) = stream.next().await {
@@ -156,7 +155,6 @@ async fn main() -> Result<()> {
         .await
         .context("failed to register D-Bus object")?;
 
-    // Acquire well-known D-Bus name; daemon is unreachable without it
     conn.request_name(DAEMON_BUS_NAME)
         .await
         .context("failed to acquire D-Bus name")?;
@@ -168,7 +166,6 @@ async fn main() -> Result<()> {
         .unwrap_or_default();
     *serving_state.write().await = Some((conn.clone(), our_unique_name));
 
-    // Watchdog: monitor for D-Bus name loss and re-acquire on fresh connection
     let watchdog_handle = watchdog::spawn(
         bus,
         recovery_pool,
@@ -179,7 +176,6 @@ async fn main() -> Result<()> {
         shutdown_token.clone(),
     );
 
-    // Signal emission task: forward DaemonSignals to D-Bus
     let dbus_state = serving_state.clone();
     let signal_shutdown = shutdown_token.clone();
     let signal_handle = tokio::spawn(async move {
@@ -205,7 +201,6 @@ async fn main() -> Result<()> {
 
     info!("digital-wellbeing daemon started");
 
-    // Wait for shutdown signal or watchdog cancellation
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("failed to install SIGTERM handler");
     let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -234,7 +229,6 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Flush remaining buffered events to DB
     let (done_tx, done_rx) = oneshot::channel();
     if flush_tx
         .send(InternalEvent::Flush(Some(done_tx)))
@@ -244,11 +238,18 @@ async fn main() -> Result<()> {
         let _ = done_rx.await;
     }
 
+    // Sever D-Bus serving BEFORE cancelling background tasks.
+    // Closing the connection first drops the object server, preventing new
+    // D-Bus method calls from arriving while the pool/runtime unwinds.
+    // Without this, clients can dispatch queries during shutdown that fail
+    // with "task was cancelled" errors from spawn_blocking.
+    *serving_state.write().await = None;
+    drop(conn);
+
     shutdown_token.cancel();
     let _ = watchdog_handle.await;
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), signal_handle).await;
 
-    drop(serving_state);
     Ok(())
 }
 

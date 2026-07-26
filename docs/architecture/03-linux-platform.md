@@ -7,17 +7,14 @@ Platform trait it implements is in [02-platform.md](./02-platform.md).
 
 ## App Metadata Resolution
 
-App display name and icon are resolved from the app_categories table (see
-[persistence/01-database.md](../persistence/01-database.md)). By default, app_id
-is used as the display name. The display_name and icon_path columns in
-app_categories allow per-app overrides configured by the user or seeded as
-defaults.
+App metadata (display name, icon) is resolved in the daemon's categorization
+module, not in the Platform trait. `PlatformEvent` carries only `app_id`,
+`title`, `pid`, and `uid`. The categorizer resolution chain is:
 
-The categorizer resolution chain is:
-
-1. app_categories (DB — seeded defaults + user edits)
-2. AI classification (unmapped apps)
-3. Uncategorized
+1. `app_categories` DB (seeded defaults + user edits)
+2. In-memory cache (60s TTL for AI-classified apps)
+3. AI classification (unmapped apps)
+4. Uncategorized
 
 ## Power & Session State Handling
 

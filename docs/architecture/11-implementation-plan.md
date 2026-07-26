@@ -15,44 +15,49 @@ Status: **DONE** (A1–A3 completed in initial workspace restructuring)
 
 ## Phase B: Daemon core (store + platform + D-Bus server)
 
-| Step | File(s)                  | What                                         |
-| ---- | ------------------------ | -------------------------------------------- |
-| B1   | `daemon/src/store/*`     | DbPool, StoreBuilder, migrations, schema.rs  |
-| B2   | `daemon/src/platform/*`  | Platform trait, LinuxPlatform, ManagerClient |
-| B3   | `daemon/src/dbus/mod.rs` | org.wellbeing.v1.Controller server + RBAC    |
+| Step | File(s)                 | What                                         |
+| ---- | ----------------------- | -------------------------------------------- |
+| B1   | `daemon/src/store/*`    | DbPool, StoreBuilder, migrations, schema.rs  |
+| B2   | `daemon/src/platform/*` | Platform trait, LinuxPlatform, ManagerClient |
+| B3   | `daemon/src/dbus/*`     | org.wellbeing.v1.Controller server + RBAC    |
 
-Status: **B1 done** (store), B2–B3 **in progress**.
+Status: **DONE** (B1–B3 completed)
 
 ## Phase C: Daemon actors (tracking, policy engine, enforcer)
 
-| Step | File(s)                       | What                                                |
-| ---- | ----------------------------- | --------------------------------------------------- |
-| C1   | `daemon/src/tracking/*`       | `FocusState` domain type + `accumulate_daily_usage` |
-| C2   | `daemon/src/policy/*`         | PolicyEngine — evaluate(), domain types             |
-| C3   | `daemon/src/blocking/*`       | EnforcerActor — gate-first pipeline, overlay        |
-| C4   | `daemon/src/categorization/*` | Category resolution + AI fallback                   |
-| C5   | `daemon/src/reports/*`        | Aggregate queries for history/export                |
-| C6   | `daemon/src/main.rs`          | Wiring all actors + D-Bus server                    |
+| Step | File(s)                       | What                                            |
+| ---- | ----------------------------- | ----------------------------------------------- |
+| C1   | `daemon/src/blocking/*`       | EnforcerActor — event buffer, policy evaluation |
+| C2   | `daemon/src/policy/*`         | PolicyEngine — evaluate(), domain types         |
+| C3   | `daemon/src/categorization/*` | Category resolution + AI fallback               |
+| C4   | `daemon/src/reports/*`        | Aggregate queries for history/export            |
+| C5   | `daemon/src/main/mod.rs`      | Wiring all actors + D-Bus server                |
+
+Status: **DONE** (C1–C5 completed)
 
 ## Phase D: GUI
 
 | Step | File(s)                | What                                                    |
 | ---- | ---------------------- | ------------------------------------------------------- |
-| D1   | `gui/src/dbus/mod.rs`  | DaemonClient + SignalCoalescer, signal subscription     |
-| D2   | `gui/src/cache/mod.rs` | ClientCache (stale-while-revalidate)                    |
-| D3   | `gui/src/main.rs`      | gpui::run + background tokio thread                     |
+| D1   | `gui/src/dbus/*`       | DaemonClient + SignalCoalescer, signal subscription     |
+| D2   | `gui/src/cache/mod.rs` | ClientCache (explicit invalidation)                     |
+| D3   | `gui/src/main/mod.rs`  | gpui::run + background tokio thread                     |
 | D4   | `gui/src/app.rs`       | App shell (TitleBar, TabBar, tray, user mode detection) |
-| D5   | `gui/src/dashboard.rs` | Dashboard screen (usage charts)                         |
-| D6   | `gui/src/policies.rs`  | Policies screen (CRUD, RBAC-aware)                      |
-| D7   | `gui/src/reports.rs`   | Reports screen (history, export)                        |
+| D5   | `gui/src/dashboard/*`  | Dashboard screen (usage charts)                         |
+| D6   | `gui/src/policies/*`   | Policies screen (CRUD, RBAC-aware)                      |
+| D7   | `gui/src/reports/*`    | Reports screen (history, export)                        |
 
-## Phase E: Plugin migration
+Status: **DONE** (D1–D7 completed)
 
-| Step | File(s)                  | What                            |
-| ---- | ------------------------ | ------------------------------- |
-| E1   | `plugins/hyprland/src/*` | Change session bus → system bus |
-| E2   | `plugins/hyprland/src/*` | Add CurrentFocus property       |
-| E3   | `deploy/*.conf`          | D-Bus system policy files       |
+## Phase E: Plugin
+
+| Step | File(s)                  | What                             |
+| ---- | ------------------------ | -------------------------------- |
+| E1   | `plugins/hyprland/app/*` | Event signal, BlockedAppsChanged |
+| E2   | `plugins/hyprland/app/*` | CurrentFocus property            |
+| E3   | `deploy/*.conf`          | D-Bus system policy files        |
+
+Status: **DONE** (E1–E3 completed)
 
 ## Phase F: Deployment
 
@@ -61,3 +66,5 @@ Status: **B1 done** (store), B2–B3 **in progress**.
 | F1   | `deploy/systemd/digital-wellbeing-daemon.service` | systemd unit       |
 | F2   | `deploy/*.conf`                                   | D-Bus policy files |
 | F3   | `Makefile` or `justfile`                          | Install targets    |
+
+Status: **F1–F3 in progress**

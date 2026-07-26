@@ -100,11 +100,10 @@ acts as gate — evaluates BEFORE any DB write:
 
 If PolicyVerdict::Block: a. Check in-memory focus state — if previous app A has
 open interval: INSERT Unfocus (closes A's interval) (EnforcerActor
-`accumulate_daily_usage` closes A via in-memory focus state) b. Build
-ShowOverlayConfig with reason, policy_id, and available_actions: Block ->
-[Close]; TimeLimit -> [Close] c. platform.show_overlay(config) — fire-and-forget
-D-Bus d. Do NOT write Focus for B (B never enters event log — no interval to
-close)
+`accumulate_daily_usage` closes A via in-memory focus state) b. Update
+BlockedApps state with reason, policy_id, and available_actions: Block ->
+[Close]; TimeLimit -> [Close] c. Emit BlockedAppsChanged signal on D-Bus d. Do
+NOT write Focus for B (B never enters event log — no interval to close)
 
 If PolicyVerdict::Notify: a. INSERT Unfocus (closes previous A's interval) b.
 INSERT Focus for B (opens B's interval) (trigger accumulates A, opens B) c.
@@ -267,8 +266,8 @@ The EnforcerActor handles the block path after evaluate() returns Block:
 No in-memory block state:
 
 The overlay is owned by the plugin; the daemon keeps no active overlay map.
-Block state is shared declaratively through the ActiveBlocks D-Bus property. The
-plugin reads state from ActiveBlocks and renders overlays accordingly. Close is
+Block state is shared declaratively through the BlockedApps D-Bus property. The
+plugin reads state from BlockedApps and renders overlays accordingly. Close is
 handled locally in the plugin via LockManager::hideOverlay() -- no signal is
 sent to the daemon.
 
@@ -279,12 +278,13 @@ repeated here to avoid a second source of truth.
 
 C++ plugin side (Hyprland, sdbus-cpp v2): The plugin exposes
 org.wellbeing.v1.Manager on both the system and session buses. The unified Event
-signal carries a (u32, u32, String, String, u32, u32) struct whose first u32
-discriminator separates desktop focus from application focus, with distinct tags
-for Focus (tag=1) and Block (tag=2). A plain U32(0) means no application window
-is focused. The CurrentFocus readable property uses the identical tag encoding,
-allowing late-joining clients to read the current focus state even when they
-missed the ephemeral signal.
+signal carries a (u32, String, String, u32, u32) struct whose first u32
+discriminator is the event tag: Focus (tag=0), Unfocus (tag=1), Block (tag=2),
+Idle (tag=3), Resume (tag=4), LogOut (tag=5), Power (tag=6), Locked (tag=7). A
+plain Focus with empty app_id means no application window is focused. The
+CurrentFocus readable property uses the identical tag encoding, allowing
+late-joining clients to read the current focus state even when they missed the
+ephemeral signal.
 
 On startup the plugin registers with the daemon and discovers the active daemon
 bus through a four-step resolution. If the daemon name appears or disappears,
@@ -382,20 +382,20 @@ D-Bus Interface (org.wellbeing.v1.Manager):
 
 The plugin exposes signals and a property, but no methods for the daemon to
 call. The daemon never commands the plugin — block state is shared declaratively
-through the daemon's ActiveBlocks property and BlockedAppsChanged signal (see
+through the daemon's BlockedApps property and BlockedAppsChanged signal (see
 [04-plugin-ipc.md](../architecture/04-plugin-ipc.md)).
 
 Signals (plugin -> daemon):
 
-| Signal | Payload                                                                                                                 |
-| ------ | ----------------------------------------------------------------------------------------------------------------------- |
-| Event  | (u32, u32, String, String, u32, u32) — (tag, variant, app_id, title, pid, uid); tag=0=Desktop, tag=1=Focus, tag=2=Block |
+| Signal | Payload                                                                                                         |
+| ------ | --------------------------------------------------------------------------------------------------------------- |
+| Event  | (u32, String, String, u32, u32) — (tag, app_id, title, pid, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block |
 
 Property:
 
 | Property     | Type | Returns                                                                           |
 | ------------ | ---- | --------------------------------------------------------------------------------- |
-| CurrentFocus | v    | Same tag encoding as Event signal — Desktop (tag=0), Focus (tag=1), Block (tag=2) |
+| CurrentFocus | v    | Same tag encoding as Event signal — Focus (tag=0), Unfocus (tag=1), Block (tag=2) |
 
 The Block variant (tag=2) is used when the focused window has an active overlay.
 The plugin determines this by checking LockManager::isOverlayShown() at emit
@@ -403,13 +403,13 @@ time. The variant tag encodes the distinction without a separate boolean field.
 
 Blocking state is published by the daemon on Controller:
 
-| Property / Signal  | Type | Purpose                                     |
-| ------------------ | ---- | ------------------------------------------- |
-| ActiveBlocks       | a(u) | Readable list of all currently blocked apps |
-| BlockedAppsChanged | s    | Signal: {app_id, blocked: bool}             |
+| Property / Signal  | Type         | Purpose                                     |
+| ------------------ | ------------ | ------------------------------------------- |
+| BlockedApps        | a(s(tutau))  | Readable list of all currently blocked apps |
+| BlockedAppsChanged | (u, s, b, u) | Signal: {uid, app_id, blocked, reason}      |
 
-The daemon writes to ActiveBlocks when a block starts or ends. The plugin reads
-ActiveBlocks on startup and subscribes to BlockedAppsChanged for live updates.
+The daemon writes to BlockedApps when a block starts or ends. The plugin reads
+BlockedApps on startup and subscribes to BlockedAppsChanged for live updates.
 Overlay rendering is triggered by the plugin's local overlay set, not by daemon
 commands.
 
@@ -423,13 +423,13 @@ Focus for B -> EnforcerActor evaluates -> Block verdict | v
 1. If previous app A has open interval: INSERT Unfocus (closes A) (EnforcerActor
    `accumulate_daily_usage` closes A via in-memory focus state — interval
    management, NOT block enforcement)
-2. Daemon adds app to ActiveBlocks -> emits BlockedAppsChanged signal on D-Bus
+2. Daemon updates BlockedApps state -> emits BlockedAppsChanged signal on D-Bus
 3. Cancel any stale limit timer for B
 4. Plugin (subscribed to BlockedAppsChanged) receives the signal, reads
-   ActiveBlocks for full block details, and renders overlay on next compositor
+   BlockedApps for full block details, and renders overlay on next compositor
    frame -> daemon continues processing events immediately
 5. Overlay is plugin-owned — daemon stores no block state. Block state is shared
-   declaratively through ActiveBlocks.
+   declaratively through BlockedApps.
 
 If plugin not connected -> Unfocus already written (previous A closed), no
 overlay possible. App B runs unblocked. On next focus event, re-evaluates.
@@ -461,7 +461,7 @@ effectively lifted — the app keeps running with no input trapping.
    block was active, but cannot grant time or close the app. Only the overlay
    (when the plugin reconnects) can resolve the block.
 3. If the plugin reconnects and the app is still focused, the overlay re-appears
-   and normal flow resumes. The plugin re-reads ActiveBlocks from the daemon and
+   and normal flow resumes. The plugin re-reads BlockedApps from the daemon and
    re-establishes overlays for all blocked apps. Block resolution is handled
    locally by the plugin.
 4. The daemon subscribes to NameOwnerChanged on the daemon's bus for
@@ -472,8 +472,8 @@ blocked app never had a Focus event persisted — no interval to clean up. The
 block is lifted until the plugin returns.
 
 Called when the plugin's bus name (re-)appears. Re-evaluate and, if the app is
-still blocked, update ActiveBlocks — the plugin re-reads the property and
-re-establishes overlays. No active_blocks map to consult — re-derive from the
+still blocked, update BlockedApps — the plugin re-reads the property and
+re-establishes overlays. No blocked_apps map to consult — re-derive from the
 current policy verdict.
 
 ### Startup Recovery — Plugin State Reconciliation

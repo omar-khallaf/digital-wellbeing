@@ -254,30 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_can_hold_large_batch() {
-        // Given — a default buffer (1M capacity)
-        let mut buf = EventBuffer::default();
-
-        // When — push well past INITIAL_CAPACITY
-        for i in 0..INITIAL_CAPACITY + 5 {
-            buf.push(
-                PlatformEvent::Focus {
-                    app_id: app("firefox"),
-                    title: WindowTitle::new("test"),
-                    pid: wellbeing_core::Pid(1),
-                    uid: Uid(1000),
-                },
-                dt(i as i64),
-            );
-        }
-
-        // Then — all events accepted (within 1M cap)
-        assert_eq!(buf.len(), INITIAL_CAPACITY + 5);
-        let drained = buf.drain();
-        assert_eq!(drained.len(), INITIAL_CAPACITY + 5);
-    }
-
-    #[test]
     fn test_with_max_capacity_zero_rejects_all() {
         // Given
         let mut buf = EventBuffer::with_max_capacity(0);

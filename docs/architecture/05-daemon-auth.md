@@ -4,7 +4,7 @@ The architecture uses no cryptographic signing between daemon and plugin. Trust
 derives from D-Bus name ownership and kernel-authenticated credentials.
 
 **The plugin never accepts commands.** The daemon only writes state to its own
-D-Bus interface (`ActiveBlocks` property, `BlockStateChanged` signal). The
+D-Bus interface (`BlockedApps` property, `BlockedAppsChanged` signal). The
 plugin reads state from the daemon's well-known D-Bus name
 (`org.wellbeing.v1.Controller`). Only the daemon process can own that name, so
 reads are authenticated by the D-Bus daemon itself.

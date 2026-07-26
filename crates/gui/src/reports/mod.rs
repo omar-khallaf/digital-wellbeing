@@ -1,6 +1,6 @@
 //! Reports screen — usage reports with charts and export (CSV / JSON).
 
-mod data;
+pub mod data;
 mod domain;
 mod ui;
 

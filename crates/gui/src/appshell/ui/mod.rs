@@ -8,7 +8,7 @@ mod content;
 mod header;
 mod sidebar;
 
-use self::content::{dashboard_content, loading_state, reports_content, spawn_async_refresh};
+use self::content::{dashboard_content, loading_state, reports_content};
 use self::header::header;
 use self::sidebar::sidebar;
 
@@ -28,7 +28,6 @@ use super::domain::Tab;
 
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Lazily create policy editor and custom date range input entities.
         self.ensure_policy_editor_inputs(window, cx);
         self.ensure_custom_range_inputs(window, cx);
 
@@ -54,58 +53,47 @@ impl Render for App {
 impl App {
     fn content_area(&mut self, cx: &mut Context<Self>, active_tab: Tab) -> AnyElement {
         let state = self.state.clone();
+        let state2 = self.state.clone();
         let show_custom = self.show_custom_range;
         let custom_start = self.custom_start_input.clone();
         let custom_end = self.custom_end_input.clone();
         let app_entity = cx.entity();
 
-        let make_on_range = |app_entity: Entity<Self>| {
-            let state = state.clone();
+        let make_on_range = move |app_entity: Entity<Self>| {
+            let entity = app_entity.clone();
             move |new_range: DateRange, gpui_app: &mut gpui::App| {
-                let state = state.clone();
-                let entity = app_entity.clone();
-
-                // IMMEDIATE: rebuild reports ViewModel from existing cache so the
-                // range label updates right away (no waiting for D-Bus round-trip).
-                // Update selected_range synchronously so any concurrent signal
-                // handler (e.g. minute-ticker) sees the new range immediately.
-                if let Ok(mut s) = state.try_lock() {
-                    s.selected_range = new_range;
-                    let rep_vm = crate::reports::build_reports_viewmodel(
-                        new_range,
-                        &s.range_cache,
-                        &s.app_category_cache,
-                        &s.title_cache,
-                    );
-                    entity.update(gpui_app, |app, cx| {
-                        app.reports_vm = Some(rep_vm);
-                        app.show_custom_range = false;
-                        cx.notify();
-                    });
+                // Write new range to shared state so background flows pick it up.
+                if let Ok(mut guard) = state.selected_range.try_write() {
+                    *guard = new_range;
                 }
-
-                spawn_async_refresh(state.clone(), entity.clone(), new_range, gpui_app);
+                // Trigger reports flow to re-fetch with the new range.
+                entity.update(gpui_app, |this, cx| {
+                    if let Some(tx) = &this.reports_refresh_tx {
+                        let _ = tx.send(());
+                    }
+                    this.show_custom_range = false;
+                    cx.notify();
+                });
             }
         };
 
         let toggle_custom = {
-            let state = state.clone();
             let entity = app_entity.clone();
             move |app: &mut gpui::App| {
                 let was_custom = entity.read(app).show_custom_range;
-
                 entity.update(app, |this, cx| {
                     this.show_custom_range = !this.show_custom_range;
                     cx.notify();
                 });
-
                 if was_custom {
-                    spawn_async_refresh(
-                        state.clone(),
-                        entity.clone(),
-                        DateRange::last_n_days(1),
-                        app,
-                    );
+                    if let Ok(mut guard) = state2.selected_range.try_write() {
+                        *guard = DateRange::last_n_days(7);
+                    }
+                    entity.update(app, |this, _cx| {
+                        if let Some(tx) = &this.reports_refresh_tx {
+                            let _ = tx.send(());
+                        }
+                    });
                 }
             }
         };

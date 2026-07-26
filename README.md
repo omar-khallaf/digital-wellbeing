@@ -7,14 +7,14 @@ Inspired by Android's Digital Wellbeing, built for Linux desktop.
 
 ## Project Status
 
-**MVP — architecture in place.** The system tracks activity on hyprland, but
-still missing proper implementation for policies, categorization, schema, RBAC,
-charts, authenticated dbus access to the daemon, and other rough edges.
+**v0.1 — core tracking and GUI are implemented.** Remaining work: policies
+enforcement, categorization, RBAC hardening, chart & schema refinements, and
+additional compositor plugins.
 
 ## Architecture
 
-The system is split into **two binaries communicating over D-Bus**, with an
-optional compositor plugin for overlay enforcement:
+The system is split into **two binaries communicating over D-Bus**, with a
+compositor plugin for overlay enforcement and state tracking:
 
 - **`wellbeing-daemon`** — tokio async daemon (runs as root in **system mode**
   or non-root in **session mode**; mode selected at startup by uid) that owns
@@ -88,33 +88,34 @@ optional compositor plugin for overlay enforcement:
 
 ```
 crates/
-├── core/src/           # well-being-core: valuetypes, errors, clock, domain (shared)
+├── core/src/           # wellbeing-core: valuetypes, errors, clock, domain (shared)
 ├── daemon/src/
-│   ├── main.rs         # Actor wiring, D-Bus server start
+│   ├── main/           # main.rs, wiring.rs, watchdog.rs
 │   ├── lib.rs          # Re-exports for integration tests
+│   ├── bus_resolution.rs
+│   ├── logind.rs
+│   ├── signal.rs
 │   ├── store/          # DbPool, migrations, schema
 │   ├── platform/       # Platform trait + LinuxPlatform + ManagerClient
 │   ├── dbus/           # org.wellbeing.v1.Controller server + RBAC
-│   ├── tracking/       # domain/ (FocusState used by blocking)
-│   ├── policy/         # domain/ data/ core/ (PolicyEngine)
-│   ├── categorization/ # data/ core/ (Categorizer + AI fallback)
-│   ├── blocking/       # domain/ overlay/ core/ (EnforcerActor)
-│   └── reports/        # domain/ data/ core/ (aggregate queries)
+│   ├── blocking/       # core/ data/ domain/ (EnforcerActor)
+│   ├── policy/         # core/ data/ domain/ (PolicyEngine)
+│   ├── categorization/ # core.rs domain.rs (Categorizer + AI fallback)
+│   └── reports/        # core/ data/ domain.rs (aggregate queries)
 └── gui/
     └── src/
-        ├── main.rs            #   gpui::Application::run + bg tokio thread
-        ├── app.rs             #   App shell (TitleBar, TabBar, tray, user mode)
-        ├── dbus/              #   DaemonClient (zbus proxy + signal coalescing)
-        ├── cache/             #   ClientCache<K,V> stale-while-revalidate
-        ├── dashboard/
-        │   ├── mod.rs         #   Screen registration
-        │   └── view.rs        #   DashboardViewModel + gpui component tree
-        ├── policies/
-        │   ├── mod.rs         #   Screen registration
-        │   └── view.rs        #   PoliciesViewModel + gpui components
-        └── reports/
-            ├── mod.rs         #   Screen registration
-            └── view.rs        #   EventLog, ExportDialog
+        ├── main/           # gpui::Application::run + bg tokio thread
+        ├── app.rs          # App shell (TitleBar, TabBar, tray, user mode)
+        ├── chart.rs        # Chart components
+        ├── theme.rs        # Theme definitions
+        ├── components.rs   # Reusable gpui components
+        ├── lib.rs
+        ├── dbus/           # DaemonClient (zbus proxy + signal coalescing)
+        ├── cache/         # ClientCache<K,V> stale-while-revalidate
+        ├── appshell/      # App shell components
+        ├── dashboard/     # domain.rs timeline.rs viewmodel.rs ui/
+        ├── policies/      # data.rs domain.rs ui/
+        └── reports/       # data.rs domain.rs ui.rs
 ```
 
 **Dependency rules:** `core/` → zero deps → feature `*/domain` → `*/data` →
