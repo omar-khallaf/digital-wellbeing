@@ -139,34 +139,50 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     }
 
     /// Flush buffered events to the database, apply closed-interval deltas
-    /// from the buffer — all in a single transaction.
+    /// from the buffer, and refresh open intervals — in a single transaction.
+    ///
+    /// All affected UIDs (from events and registered plugins) receive a
+    /// [`DaemonSignal::DailyUsageChanged`] so the daily-usage counter advances
+    /// even when no focus-switch events arrive.
     pub async fn flush_buffer(&mut self) -> anyhow::Result<()> {
-        let events = self.event_buffer.drain();
         let now = self.clock.now();
+
+        // Collect affected uids once — before draining the buffer.
+        let event_uids = self.event_buffer.uids();
+        let all_uids = {
+            let mut set: std::collections::HashSet<Uid> = event_uids.iter().copied().collect();
+            set.extend(self.registry.read().await.registered_uids());
+            set.into_iter().collect::<Vec<_>>()
+        };
+
+        let events = self.event_buffer.drain();
         let mut conn = self.repo.pool.get().await?;
 
-        if !events.is_empty() {
-            conn.transaction(async |conn| {
+        conn.transaction(async |conn| {
+            if !events.is_empty() {
                 self.repo
-                    .apply_closed_deltas_from_buffer(conn, &events, now)
+                    .apply_closed_deltas_from_buffer(conn, &events, &event_uids, now)
                     .await?;
                 self.repo.flush_events(conn, &events).await?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await?;
-        }
+            }
+            BlockingRepo::refresh_open_intervals(conn, &all_uids, now).await?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await?;
 
-        // Emit DailyUsageChanged for uids that had events in this batch.
-        let mut seen_uids: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        for e in &events {
-            seen_uids.insert(e.event.uid().0);
-        }
-        for uid_val in seen_uids {
+        self.emit_daily_usage_changed(&all_uids);
+
+        Ok(())
+    }
+
+    /// Emit [`DaemonSignal::DailyUsageChanged`] for every UID whose usage
+    /// may have changed during this flush cycle.
+    fn emit_daily_usage_changed(&self, uids: &[Uid]) {
+        for uid in uids {
             let _ = self
                 .signal_tx
-                .send(DaemonSignal::DailyUsageChanged { uid: uid_val });
+                .send(DaemonSignal::DailyUsageChanged { uid: uid.0 });
         }
-        Ok(())
     }
 
     /// Evaluate policies for all currently focused apps and enforce blocks.
@@ -174,10 +190,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     /// Queries the plugin registry for each registered uid's current focus
     /// since the plugin is the sole source of truth for window state.
     async fn evaluate_and_enforce(&mut self, now: DateTime<Utc>) -> anyhow::Result<()> {
-        let uids: Vec<Uid> = {
-            let reg = self.registry.read().await;
-            reg.registered_uids()
-        };
+        let uids = self.registry.read().await.registered_uids();
 
         for uid in uids {
             let focused = {

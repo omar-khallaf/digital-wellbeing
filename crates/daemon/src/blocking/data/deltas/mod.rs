@@ -63,6 +63,7 @@ impl BlockingRepo {
         &self,
         conn: &mut Conn,
         events: &[TimedEvent],
+        uids: &[Uid],
         now: DateTime<Utc>,
     ) -> anyhow::Result<()>
     where
@@ -74,27 +75,16 @@ impl BlockingRepo {
 
         let now_millis = now.timestamp_millis();
 
-        // ── 1. Collect unique uids ──────────────────────────────────
-        let mut uid_set: Vec<Uid> = Vec::new();
-        {
-            let mut seen = std::collections::HashSet::new();
-            for e in events {
-                if seen.insert(e.event.uid()) {
-                    uid_set.push(e.event.uid());
-                }
-            }
-        }
+        // ── 1. Fetch last event per uid from DB ─────────────────────
+        let last_events = Self::fetch_last_events_for_uids(conn, uids).await;
 
-        // ── 2. Fetch last event per uid from DB ─────────────────────
-        let last_events = Self::fetch_last_events_for_uids(conn, &uid_set).await;
-
-        // ── 3. Partition buffer events by uid ───────────────────────
+        // ── 2. Partition buffer events by uid ───────────────────────
         let mut per_uid: HashMap<Uid, Vec<&TimedEvent>> = HashMap::new();
         for timed in events {
             per_uid.entry(timed.event.uid()).or_default().push(timed);
         }
 
-        // ── 4. Aggregate maps ───────────────────────────────────────
+        // ── 3. Aggregate maps ───────────────────────────────────────
         type ClosedAgg = HashMap<(Uid, AggKeyApp), i64>;
         type ClosedAggTitle = HashMap<(Uid, AggKeyTitle), i64>;
         type OpenAgg = HashMap<(Uid, AggKeyApp), i64>;
@@ -105,13 +95,13 @@ impl BlockingRepo {
         let mut agg_open: OpenAgg = HashMap::new();
         let mut agg_open_by_title: OpenAggTitle = HashMap::new();
 
-        // ── 5. Process each uid ────────────────────────────────────
+        // ── 4. Process each uid ────────────────────────────────────
         for (uid, mut uid_events) in per_uid {
             uid_events.sort_by_key(|t| t.timestamp.timestamp_millis());
 
             let mut open_focus: Option<OpenFocus> = None;
 
-            // 5a. Seed open_focus from the last DB event if it's a Focus.
+            // 4a. Seed open_focus from the last DB event if it's a Focus.
             if let Some(Some(row)) = last_events.get(&uid)
                 && row.event_type == EVENT_WINDOW_FOCUSED
             {
@@ -132,7 +122,7 @@ impl BlockingRepo {
                 });
             }
 
-            // 5b. Walk buffer events chronologically.
+            // 4b. Walk buffer events chronologically.
             for timed in uid_events {
                 let ts_ms = timed.timestamp.timestamp_millis();
                 let is_focus = timed.event.event_type() == EVENT_WINDOW_FOCUSED;
@@ -176,7 +166,7 @@ impl BlockingRepo {
                 }
             }
 
-            // 5c. Remaining open focus → open interval.
+            // 4c. Remaining open focus → open interval.
             if let Some(focus) = open_focus {
                 accumulate_open(
                     &focus,
@@ -188,7 +178,7 @@ impl BlockingRepo {
             }
         }
 
-        // ── 6. Batch-upsert closed deltas ───────────────────────────
+        // ── 5. Batch-upsert closed deltas ───────────────────────────
         for ((uid, key), delta_ms) in &agg_closed {
             Self::upsert_closed_delta(conn, &key.date, *uid, &key.app_id, *delta_ms).await?;
         }
@@ -204,7 +194,79 @@ impl BlockingRepo {
             .await?;
         }
 
-        // ── 7. Upsert open intervals ────────────────────────────────
+        // ── 6. Upsert open intervals ────────────────────────────────
+        for ((uid, key), open_ms) in &agg_open {
+            Self::upsert_open_delta(conn, &key.date, *uid, &key.app_id, *open_ms).await?;
+        }
+        for ((uid, key), open_ms) in &agg_open_by_title {
+            Self::upsert_open_delta_by_title(
+                conn,
+                &key.date,
+                *uid,
+                &key.app_id,
+                &key.title,
+                *open_ms,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Refresh `open_millis` for registered uids whose last event is an
+    /// open focus interval, keeping daily usage up-to-date even when no
+    /// focus-switch events arrive between minute ticks.
+    ///
+    /// Called by `flush_buffer()` on every minute tick.
+    pub(crate) async fn refresh_open_intervals<Conn>(
+        conn: &mut Conn,
+        uids: &[Uid],
+        now: DateTime<Utc>,
+    ) -> anyhow::Result<()>
+    where
+        Conn: AsyncConnection<Backend = diesel::sqlite::Sqlite>,
+    {
+        let now_millis = now.timestamp_millis();
+        let last_events = Self::fetch_last_events_for_uids(conn, uids).await;
+
+        let mut agg_open: HashMap<(Uid, AggKeyApp), i64> = HashMap::new();
+        let mut agg_open_by_title: HashMap<(Uid, AggKeyTitle), i64> = HashMap::new();
+
+        for (&uid, row) in &last_events {
+            let Some(row) = row else { continue };
+            if row.event_type != EVENT_WINDOW_FOCUSED {
+                continue;
+            }
+            if now_millis <= row.timestamp {
+                continue;
+            }
+
+            let app_id = row
+                .app_id
+                .as_deref()
+                .and_then(|s| AppId::new(s).ok())
+                .unwrap_or_else(|| AppId::new("unknown").unwrap());
+            let title = row
+                .title
+                .as_deref()
+                .map(WindowTitle::new)
+                .unwrap_or_else(|| WindowTitle::new("(untitled)"));
+
+            let focus = OpenFocus {
+                ts_ms: row.timestamp,
+                app_id,
+                title,
+            };
+
+            accumulate_open(
+                &focus,
+                now_millis,
+                uid,
+                &mut agg_open,
+                &mut agg_open_by_title,
+            );
+        }
+
         for ((uid, key), open_ms) in &agg_open {
             Self::upsert_open_delta(conn, &key.date, *uid, &key.app_id, *open_ms).await?;
         }

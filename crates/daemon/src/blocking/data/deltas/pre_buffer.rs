@@ -40,7 +40,7 @@ impl BlockingRepo {
     ///
     /// Uses one query per uid. In practice the buffer typically contains 1-3
     /// distinct uids, so this is a bounded 1-3 round trips rather than O(N).
-    pub(super) async fn fetch_last_events_for_uids<Conn>(
+    pub(crate) async fn fetch_last_events_for_uids<Conn>(
         conn: &mut Conn,
         uids: &[Uid],
     ) -> HashMap<Uid, Option<EventRow>>

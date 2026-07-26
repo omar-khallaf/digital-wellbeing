@@ -10,6 +10,10 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 
+use std::collections::HashSet;
+
+use wellbeing_core::Uid;
+
 use crate::blocking::domain::TimedEvent;
 use crate::platform::PlatformEvent;
 
@@ -52,6 +56,16 @@ impl EventBuffer {
             events: VecDeque::with_capacity(cap),
             max_capacity: max,
         }
+    }
+
+    /// Return all unique UIDs present in the buffer.
+    pub fn uids(&self) -> Vec<Uid> {
+        let mut seen = HashSet::new();
+        self.events
+            .iter()
+            .filter(|te| seen.insert(te.event.uid()))
+            .map(|te| te.event.uid())
+            .collect()
     }
 
     /// Drain all buffered events in FIFO order.

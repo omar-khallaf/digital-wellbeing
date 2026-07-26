@@ -22,6 +22,16 @@ fn dt(ms: i64) -> chrono::DateTime<Utc> {
     DateTime::from_timestamp_millis(ms).unwrap()
 }
 
+/// Extract deduplicated UIDs from a slice of timed events.
+fn event_uids(events: &[TimedEvent]) -> Vec<Uid> {
+    let mut seen = std::collections::HashSet::new();
+    events
+        .iter()
+        .filter(|te| seen.insert(te.event.uid()))
+        .map(|te| te.event.uid())
+        .collect()
+}
+
 fn focus_event(uid: u32, app_name: &str, ts: i64) -> TimedEvent {
     TimedEvent {
         event: PlatformEvent::Focus {
@@ -127,7 +137,8 @@ async fn test_pre_buffer_focus_is_closed_by_close_event() {
     // When: a close event arrives in the buffer at ts=3000
     let events = vec![close_event(1000, "firefox", 1, 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(3_000_000))
         .await
         .unwrap();
 
@@ -145,7 +156,8 @@ async fn test_window_focused_implicitly_closes_previous_interval() {
         focus_event(1000, "code", 1_000_100),
     ];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(1_000_100))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(1_000_100))
         .await
         .unwrap();
 
@@ -163,7 +175,8 @@ async fn test_window_blocked_closes_previous_interval() {
         close_event(1000, "firefox", 8, 1_001_000), // EVENT_WINDOW_BLOCKED = 8
     ];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(1_001_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(1_001_000))
         .await
         .unwrap();
 
@@ -188,7 +201,8 @@ async fn test_window_focused_closes_pre_buffer_interval_for_different_app() {
     // When: the next buffer contains a WindowFocused for a DIFFERENT app at t=3000
     let events = vec![focus_event(1000, "chrome", 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(3_000_000))
         .await
         .unwrap();
 
@@ -214,7 +228,8 @@ async fn test_window_focused_closes_pre_buffer_interval_for_same_app() {
     // (this represents switching back to the same app — still closes prior interval)
     let events = vec![focus_event(1000, "firefox", 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(3_000_000))
         .await
         .unwrap();
 
@@ -253,7 +268,8 @@ async fn test_idle_resumed_do_not_break_interval_chaining() {
     // app at t=3000 — this should close the firefox interval.
     let events = vec![focus_event(1000, "chrome", 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(3_000_000))
         .await
         .unwrap();
 
@@ -292,7 +308,8 @@ async fn test_close_before_idle_resumed_does_not_chain_interval() {
     // When: new Focus at t=3000 for a different app.
     let events = vec![focus_event(1000, "chrome", 3_000_000)];
     let mut conn = repo.pool.get().await.unwrap();
-    repo.apply_closed_deltas_from_buffer(&mut conn, &events, dt(3_000_000))
+    let uids = event_uids(&events);
+    repo.apply_closed_deltas_from_buffer(&mut conn, &events, &uids, dt(3_000_000))
         .await
         .unwrap();
 

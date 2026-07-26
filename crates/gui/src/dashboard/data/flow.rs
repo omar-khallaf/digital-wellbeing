@@ -1,16 +1,17 @@
 //! DashboardFlow — independent background task that listens for D-Bus signals,
-//! periodic ticks, and presence events, fetches fresh data via the repository,
-//! builds a ViewModel, and emits it to the GPUI thread.
+//! presence events, and manual refresh triggers, fetches fresh data via the
+//! repository, builds a ViewModel, and emits it to the GPUI thread.
+//!
+//! Relies on the daemon's `DailyUsageChanged` signal (emitted every minute) to
+//! drive re-fetches — no polling ticker needed.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::interval;
 use tracing::{info, warn};
 use wellbeing_core::DateRange;
 
@@ -42,9 +43,6 @@ pub fn spawn_dashboard_flow(
     vm_tx: UnboundedSender<Option<DashboardViewModel>>,
 ) {
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(60));
-        ticker.tick().await; // skip first immediate tick
-
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut proxy_subscribed = false;
 
@@ -101,9 +99,6 @@ pub fn spawn_dashboard_flow(
                             false
                         }
                     }
-                }
-                _ = ticker.tick() => {
-                    daemon_available
                 }
                 Some(_) = signal_rx.recv() => {
                     daemon_available

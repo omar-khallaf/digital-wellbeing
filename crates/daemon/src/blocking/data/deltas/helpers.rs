@@ -89,7 +89,7 @@ impl BlockingRepo {
 
     /// Upsert an open interval into daily_usage: SET open_millis, leave
     /// closed_millis untouched. Creates the row if it doesn't exist.
-    pub(super) async fn upsert_open_delta<Conn>(
+    pub(crate) async fn upsert_open_delta<Conn>(
         conn: &mut Conn,
         today: &str,
         uid: Uid,
@@ -119,7 +119,7 @@ impl BlockingRepo {
     }
 
     /// Upsert an open interval into daily_usage_by_title: SET open_millis.
-    pub(super) async fn upsert_open_delta_by_title<Conn>(
+    pub(crate) async fn upsert_open_delta_by_title<Conn>(
         conn: &mut Conn,
         today: &str,
         uid: Uid,

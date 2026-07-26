@@ -106,6 +106,7 @@ impl PluginRegistry {
         }
     }
 
+    /// Return all currently registered UIDs.
     pub fn registered_uids(&self) -> Vec<Uid> {
         self.by_uid.keys().copied().collect()
     }

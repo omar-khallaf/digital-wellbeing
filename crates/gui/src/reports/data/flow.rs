@@ -1,5 +1,8 @@
-//! ReportsFlow — independent background task with periodic + signal-triggered
-//! refresh, presence-aware reconnection, and timeout-guarded D-Bus fetches.
+//! ReportsFlow — independent background task with signal-triggered refresh,
+//! presence-aware reconnection, and timeout-guarded D-Bus fetches.
+//!
+//! Relies on the daemon's `DailyUsageChanged` signal (emitted every minute) to
+//! drive re-fetches — no polling ticker needed.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +11,6 @@ use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::interval;
 use tracing::{info, warn};
 use wellbeing_core::DateRange;
 
@@ -26,7 +28,6 @@ pub struct FlowState {
 /// - `daily_usage_changed` D-Bus signal
 /// - Daemon presence change (reconnect)
 /// - Manual refresh trigger
-/// - 5-minute periodic ticker
 pub fn spawn_reports_flow(
     repo: ReportsRepo,
     state: Arc<FlowState>,
@@ -35,9 +36,6 @@ pub fn spawn_reports_flow(
     vm_tx: UnboundedSender<Option<super::ReportsViewModel>>,
 ) {
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(300));
-        ticker.tick().await;
-
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut proxy_subscribed = false;
         let mut daemon_available = true;
@@ -82,9 +80,6 @@ pub fn spawn_reports_flow(
                             false
                         }
                     }
-                }
-                _ = ticker.tick() => {
-                    daemon_available
                 }
                 Some(_) = signal_rx.recv() => {
                     daemon_available
