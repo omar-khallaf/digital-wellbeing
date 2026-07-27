@@ -94,10 +94,14 @@ class LockManager {
 
     [[nodiscard]] auto getFocusedApp() const -> const std::optional<AppClass> & { return m_focusedApp; }
 
-    /// Post-render: draw dark backdrop + prompt + action buttons over all
-    /// blocked windows. Called from the RENDER_POST_WINDOW stage listener.
-    /// Uses g_pHyprOpenGL (Hyprland internal renderer).
-    void drawOverlay();
+    /// Pre-windows: refresh window-handle and button-position caches.
+    /// Called from the RENDER_PRE_WINDOWS stage listener.
+    void refreshOverlay();
+
+    /// Per-window: draw a dark backdrop over the given window if it belongs
+    /// to a blocked app. Called from the RENDER_POST_WINDOW stage listener
+    /// so the backdrop is naturally covered by overlapping windows above.
+    void drawBackdropForHandle(uint64_t windowHandle);
 
     /// Mouse click handler. Hit-tests saved button rects for the focused
     /// app's overlay; invokes m_userActionCb on a match.

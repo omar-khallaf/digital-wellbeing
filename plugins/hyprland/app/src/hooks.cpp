@@ -15,6 +15,7 @@
 #include <hyprland/event/EventBus.hpp>
 #include <hyprland/managers/input/InputManager.hpp>
 #include <hyprland/render/OpenGL.hpp>
+#include <hyprland/render/Renderer.hpp>
 
 #include "lockdown.hpp"
 #include "logging.hpp"
@@ -35,8 +36,19 @@ namespace {
 void registerRenderHook() {
     static auto HOOK = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) -> void {
         try {
-            if (stage == eRenderStage::RENDER_POST_WINDOWS) {
-                g_ctx->lockManager->drawOverlay();
+            // Refresh window handles and button positions before any window
+            // renders.  This runs once per frame.
+            if (stage == eRenderStage::RENDER_PRE_WINDOWS) {
+                g_ctx->lockManager->refreshOverlay();
+            }
+
+            // Per-window: draw a dark backdrop over each blocked app's window
+            // immediately after its content.  Windows above in the z-order
+            // render after this, naturally covering any part of the backdrop
+            // that overlaps them — no manual occlusion computation needed.
+            if (stage == eRenderStage::RENDER_POST_WINDOW) {
+                auto currentWindow = g_pHyprRenderer->m_renderData.currentWindow.lock();
+                if (currentWindow) g_ctx->lockManager->drawBackdropForHandle(currentWindow->m_stableID);
             }
 
             if (stage == eRenderStage::RENDER_POST) {
