@@ -31,6 +31,11 @@ pub struct App {
     pub(crate) time_limit_input: Option<Entity<InputState>>,
     pub(crate) app_class_input: Option<Entity<InputState>>,
     pub(crate) priority_input: Option<Entity<InputState>>,
+    /// InputState entities for schedule time inputs.
+    pub(crate) schedule_start_hour: Option<Entity<InputState>>,
+    pub(crate) schedule_start_minute: Option<Entity<InputState>>,
+    pub(crate) schedule_end_hour: Option<Entity<InputState>>,
+    pub(crate) schedule_end_minute: Option<Entity<InputState>>,
     /// Custom date range picker state.
     pub(crate) show_custom_range: bool,
     pub(crate) custom_start_input: Option<Entity<InputState>>,
@@ -60,6 +65,10 @@ impl App {
             time_limit_input: None,
             app_class_input: None,
             priority_input: None,
+            schedule_start_hour: None,
+            schedule_start_minute: None,
+            schedule_end_hour: None,
+            schedule_end_minute: None,
             show_custom_range: false,
             custom_start_input: None,
             custom_end_input: None,
@@ -284,6 +293,30 @@ impl App {
                     state.set_value(desired, window, cx);
                 }
             });
+        }
+    }
+
+    /// Ensure policy-schedule InputState entities exist; call from `render()`.
+    pub(crate) fn ensure_policy_schedule_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.schedule_start_hour.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("0-23"));
+            self.schedule_start_hour = Some(entity);
+        }
+        if self.schedule_start_minute.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("0-59"));
+            self.schedule_start_minute = Some(entity);
+        }
+        if self.schedule_end_hour.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("0-23"));
+            self.schedule_end_hour = Some(entity);
+        }
+        if self.schedule_end_minute.is_none() {
+            let entity = cx.new(|cx| InputState::new(window, cx).placeholder("0-59"));
+            self.schedule_end_minute = Some(entity);
         }
     }
 }

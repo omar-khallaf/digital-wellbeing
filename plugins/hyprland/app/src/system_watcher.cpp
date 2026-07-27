@@ -112,7 +112,7 @@ void wellbeing::WellbeingManager::handlePrepareForSleep(bool sleeping) {
         } else {
             logInfo("system: resumed from suspend — re-emitting current focus");
             if (g_ctx) {
-                emitFocusEvent(g_ctx->focusState);
+                emitFocusEvent(focusStateSnapshot());
             }
         }
         return;
@@ -136,7 +136,7 @@ void wellbeing::WellbeingManager::handleScreenSaverActive(bool active) {
         // Screen unlocked — re-send current focus to restart the tracking interval.
         logInfo("system: screen unlocked — re-emitting current focus");
         if (g_ctx) {
-            emitFocusEvent(g_ctx->focusState);
+            emitFocusEvent(focusStateSnapshot());
         }
         return;
     }

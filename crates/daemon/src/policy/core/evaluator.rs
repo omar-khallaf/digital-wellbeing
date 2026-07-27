@@ -13,6 +13,7 @@
 //! - `Target::Any` matches everything but is evaluated last in priority order.
 //! - Empty slice → `EvalResult::unrestricted()`.
 
+use tracing::debug;
 use wellbeing_core::{AppClass, PolicyId};
 
 use crate::policy::domain::{Effect, EvalResult, Policy, PolicyTarget};
@@ -72,12 +73,23 @@ pub fn evaluate(
                     {
                         continue;
                     }
+                    debug!(
+                        policy_id = ?policy.id,
+                        effect = ?policy.effect,
+                        "evaluate: terminating match — breaking"
+                    );
                     terminating = Some((policy.id, policy.effect));
                     break;
                 }
             }
             Effect::Notify { limit_minutes } => {
                 if usage_minutes >= limit_minutes {
+                    debug!(
+                        policy_id = ?policy.id,
+                        limit_minutes,
+                        usage_minutes,
+                        "evaluate: Notify threshold exceeded"
+                    );
                     notifies.push((policy.id, policy.effect));
                 }
             }

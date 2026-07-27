@@ -7,7 +7,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, NumberInput};
 use gpui_component::{h_flex, v_flex};
 
-use wellbeing_core::AppClass;
+use wellbeing_core::{AppClass, TimeWindow};
 
 use crate::app::{App as GuiApp, RenderMode};
 use crate::components::card;
@@ -279,6 +279,226 @@ impl GuiApp {
                         ),
                     ),
             )
+            // ── Schedule section ──────────────────────────────
+            .child({
+                const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+                // Format a 7-bit day mask into a human-readable label.
+                let day_label = |mask: u8| -> String {
+                    if mask == 0x7F {
+                        "All".into()
+                    } else if mask == 0 {
+                        "—".into()
+                    } else {
+                        DAY_NAMES
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| mask & (1 << i) != 0)
+                            .map(|(_, l)| *l)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    }
+                };
+
+                // Clone schedules so we can iterate without holding the borrow.
+                let windows: Vec<TimeWindow> = form.schedules.clone();
+
+                // Build existing-window rows.
+                let window_rows: Vec<AnyElement> = windows
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, w)| {
+                        let label = day_label(w.day_mask);
+                        let start =
+                            format!("{:02}:{:02}", w.start_minute / 60, w.start_minute % 60);
+                        let end = format!("{:02}:{:02}", w.end_minute / 60, w.end_minute % 60);
+                        let remove_idx = idx;
+                        let entity = entity.clone();
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_primary(&*cx))
+                                    .child(format!("{label}  {start} → {end}")),
+                            )
+                            .child({
+                                let entity = entity.clone();
+                                Button::new(format!("rm-sched-{idx}"))
+                                    .label("×")
+                                    .danger()
+                                    .on_click(move |_, _window, app| {
+                                        entity.update(app, |this, cx2| {
+                                            if let Some((_, ref mut f)) = this.policy_edit {
+                                                if remove_idx < f.schedules.len() {
+                                                    f.schedules.remove(remove_idx);
+                                                }
+                                            }
+                                            cx2.notify();
+                                        });
+                                    })
+                            })
+                            .into_any_element()
+                    })
+                    .collect();
+
+                let empty_hint = if window_rows.is_empty() {
+                    vec![
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_muted(&*cx))
+                            .child("Always active")
+                            .into_any_element(),
+                    ]
+                } else {
+                    window_rows
+                };
+
+                // Current day-mask for new-window controls.
+                let current_day_mask = form.schedule_new_day_mask;
+
+                // Build day-toggle buttons (Sun–Sat).
+                let day_buttons: Vec<AnyElement> = DAY_NAMES
+                    .iter()
+                    .enumerate()
+                    .map(|(i, label)| {
+                        let bit = 1u8 << i;
+                        let is_set = current_day_mask & bit != 0;
+                        let entity = entity.clone();
+                        Button::new(format!("day-toggle-{i}"))
+                            .label(*label)
+                            .when(is_set, |b| b.primary())
+                            .on_click(move |_, _window, app| {
+                                entity.update(app, |this, cx2| {
+                                    if let Some((_, ref mut f)) = this.policy_edit {
+                                        f.schedule_new_day_mask ^= bit;
+                                    }
+                                    cx2.notify();
+                                });
+                            })
+                            .into_any_element()
+                    })
+                    .collect();
+
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::text_primary(&*cx))
+                            .child("Schedule (when this policy applies)"),
+                    )
+                    .children(empty_hint)
+                    // Day toggle row.
+                    .child(h_flex().gap_1().items_center().children(day_buttons))
+                    // Time input row.
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_primary(&*cx))
+                                    .child("Start:"),
+                            )
+                            .child(
+                                div().w(px(50.0)).child(Input::new(
+                                    self.schedule_start_hour
+                                        .as_ref()
+                                        .expect("schedule inputs not initialized"),
+                                )),
+                            )
+                            .child(div().text_xs().child(":"))
+                            .child(
+                                div().w(px(50.0)).child(Input::new(
+                                    self.schedule_start_minute
+                                        .as_ref()
+                                        .expect("schedule inputs not initialized"),
+                                )),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::text_primary(&*cx))
+                                    .child("End:"),
+                            )
+                            .child(
+                                div().w(px(50.0)).child(Input::new(
+                                    self.schedule_end_hour
+                                        .as_ref()
+                                        .expect("schedule inputs not initialized"),
+                                )),
+                            )
+                            .child(div().text_xs().child(":"))
+                            .child(
+                                div().w(px(50.0)).child(Input::new(
+                                    self.schedule_end_minute
+                                        .as_ref()
+                                        .expect("schedule inputs not initialized"),
+                                )),
+                            ),
+                    )
+                    // Add Window button.
+                    .child({
+                        let entity = entity.clone();
+                        Button::new("add-schedule-window")
+                            .label("Add Window")
+                            .on_click(move |_, _window, app| {
+                                let (sh, sm, eh, em, dm) = {
+                                    let me = entity.read(app);
+                                    let sh = me
+                                        .schedule_start_hour
+                                        .as_ref()
+                                        .and_then(|e| e.read(app).value().parse::<u16>().ok())
+                                        .unwrap_or(0)
+                                        .min(23);
+                                    let sm = me
+                                        .schedule_start_minute
+                                        .as_ref()
+                                        .and_then(|e| e.read(app).value().parse::<u16>().ok())
+                                        .unwrap_or(0)
+                                        .min(59);
+                                    let eh = me
+                                        .schedule_end_hour
+                                        .as_ref()
+                                        .and_then(|e| e.read(app).value().parse::<u16>().ok())
+                                        .unwrap_or(0)
+                                        .min(23);
+                                    let em = me
+                                        .schedule_end_minute
+                                        .as_ref()
+                                        .and_then(|e| e.read(app).value().parse::<u16>().ok())
+                                        .unwrap_or(0)
+                                        .min(59);
+                                    let dm = me
+                                        .policy_edit
+                                        .as_ref()
+                                        .map(|(_, f)| f.schedule_new_day_mask)
+                                        .unwrap_or(0x7F);
+                                    (sh, sm, eh, em, dm)
+                                };
+                                entity.update(app, |this, cx2| {
+                                    let start_minute = sh * 60 + sm;
+                                    let end_minute = eh * 60 + em;
+                                    if start_minute == end_minute {
+                                        return;
+                                    }
+                                    if let Some((_, ref mut f)) = this.policy_edit {
+                                        f.schedules.push(TimeWindow {
+                                            start_minute,
+                                            end_minute,
+                                            day_mask: dm,
+                                        });
+                                        f.schedule_new_day_mask = 0x7F;
+                                    }
+                                    cx2.notify();
+                                });
+                            })
+                    })
+                    .into_any_element()
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -327,6 +547,9 @@ impl GuiApp {
                                             form.app_class = AppClass::new(&ai)
                                                 .unwrap_or_else(|_| form.app_class.clone());
                                             form.priority = pr;
+                                            form.schedule_json =
+                                                serde_json::to_string(&form.schedules)
+                                                    .unwrap_or_else(|_| "[]".into());
                                         }
                                         if let Some((target, form)) = this.policy_edit.clone() {
                                             let uid = this.state.uid;

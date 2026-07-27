@@ -5,11 +5,12 @@
 //! Dedup (coalescing consecutive identical Focus events) is the plugin's
 //! responsibility.
 //!
-//! On every `Focus` event, `evaluate_and_enforce` is called immediately in
-//! addition to the periodic minute-ticker. This prevents evasion: a blocked
-//! app is detected within milliseconds of receiving focus, not up to 60 s
-//! later. The evaluation is lightweight — it reads the current focus from
-//! the in-memory registry and queries policies/usage from the database.
+//! On every `Focus`/`Block` event, the event's own payload is used directly
+//! for evaluation instead of re-querying the plugin's `CurrentFocus` D-Bus
+//! property. This avoids a timing race where the compositor could switch
+//! focus between signal receipt and property query. The periodic minute-ticker
+//! (`evaluate_and_enforce`) still re-queries `CurrentFocus` as it has no
+//! event payload to work from.
 
 use tracing::{error, warn};
 
@@ -24,15 +25,28 @@ impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C>
             PlatformEvent::Focus { .. } | PlatformEvent::Block { .. }
         );
 
-        self.event_buffer.push(event, self.clock.now());
-
-        // Per-focus/per-block evaluation: detect blocks immediately on focus
-        // switch and self-correct stale overlays when a Block event arrives
-        // for an app whose policy has since been relaxed.
-        // This runs BEFORE the buffer-threshold flush so enforcement is not
-        // delayed by the batching window.
-        if should_evaluate && let Err(e) = self.evaluate_and_enforce(self.clock.now()).await {
-            warn!(error = %e, "Per-event evaluation failed");
+        // Extract uid + app_class BEFORE pushing event into the buffer
+        // (which moves it). Per-focus/per-block evaluation uses the event's
+        // own payload directly instead of re-querying CurrentFocus via D-Bus,
+        // avoiding a timing race where compositor could switch focus between
+        // signal receipt and property query. The periodic minute-ticker
+        // (evaluate_and_enforce) still re-queries CurrentFocus as it has no
+        // event payload.
+        if should_evaluate {
+            let uid = event.uid();
+            if let Some(app_class) = event.app_class().cloned() {
+                self.event_buffer.push(event, self.clock.now());
+                if let Err(e) = self
+                    .evaluate_and_apply(uid, &app_class, self.clock.now())
+                    .await
+                {
+                    warn!(error = %e, "Per-event evaluation failed");
+                }
+            } else {
+                self.event_buffer.push(event, self.clock.now());
+            }
+        } else {
+            self.event_buffer.push(event, self.clock.now());
         }
 
         // Buffer threshold flush

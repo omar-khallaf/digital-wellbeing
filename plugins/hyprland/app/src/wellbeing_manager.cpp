@@ -47,18 +47,24 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
     m_sysObject
         ->addVTable(sdbus::registerSignal(wellbeing::EVENT_SIGNAL).withParameters<sdbus::Variant>({"payload"}),
                     sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
-                        bool blocked =
-                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appClass);
-                        return windowInfoToVariant(g_ctx->focusState, blocked);
+                        auto info = focusStateSnapshot();
+                        bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appClass);
+                        auto result = windowInfoToVariant(info, blocked);
+                        logInfo("CurrentFocus getter -> " + (info.has_value() ? info->appClass.value() : "(no focus)") +
+                                (blocked ? " [blocked]" : ""));
+                        return result;
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
 
     m_sessObject
         ->addVTable(sdbus::registerSignal(wellbeing::EVENT_SIGNAL).withParameters<sdbus::Variant>({"payload"}),
                     sdbus::registerProperty("CurrentFocus").withGetter([this]() -> sdbus::Variant {
-                        bool blocked =
-                            g_ctx->focusState.has_value() && m_lockManager->isOverlayShown(g_ctx->focusState->appClass);
-                        return windowInfoToVariant(g_ctx->focusState, blocked);
+                        auto info = focusStateSnapshot();
+                        bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appClass);
+                        auto result = windowInfoToVariant(info, blocked);
+                        logInfo("CurrentFocus getter -> " + (info.has_value() ? info->appClass.value() : "(no focus)") +
+                                (blocked ? " [blocked]" : ""));
+                        return result;
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
 
@@ -120,7 +126,7 @@ auto WellbeingManager::handshake() -> fire_and_forget {
 
     co_await fetchBlocks();
 
-    emitFocusEvent(g_ctx->focusState);
+    emitFocusEvent(focusStateSnapshot());
 }
 
 auto WellbeingManager::fetchBlocks() -> task {
@@ -196,15 +202,15 @@ void WellbeingManager::setupBlockedAppsWatch() {
 
                     if (blocked) {
                         [this]() -> fire_and_forget { co_await fetchBlocks(); }();
-                        if (g_ctx->focusState.has_value() &&
-                            g_ctx->focusState->appClass == *appClass) {
-                            this->emitFocusEvent(g_ctx->focusState);
+                        auto info = focusStateSnapshot();
+                        if (info.has_value() && info->appClass == *appClass) {
+                            this->emitFocusEvent(info);
                         }
                     } else {
                         m_lockManager->hideOverlay(*appClass);
-                        if (g_ctx->focusState.has_value() &&
-                            g_ctx->focusState->appClass == *appClass) {
-                            this->emitFocusEvent(g_ctx->focusState);
+                        auto info = focusStateSnapshot();
+                        if (info.has_value() && info->appClass == *appClass) {
+                            this->emitFocusEvent(info);
                         }
                     }
                 } catch (const std::exception &e) {

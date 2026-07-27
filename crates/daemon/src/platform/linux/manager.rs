@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use futures::StreamExt;
 
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::platform::{PlatformEvent, PowerEventKind};
 use wellbeing_core::{
@@ -64,8 +64,20 @@ impl ManagerClient {
     /// no app window is focused (the plugin sends [`EVENT_TAG_UNFOCUS`]
     /// with the uid).
     pub async fn current_focus(&self) -> Option<PlatformEvent> {
-        let val: OwnedValue = self.proxy.current_focus().await.ok()?;
-        parse_event_payload(val, self.uid)
+        let val = self.proxy.current_focus().await;
+        match val {
+            Ok(v) => {
+                let parsed = parse_event_payload(v, self.uid);
+                if parsed.is_none() {
+                    warn!(uid = ?self.uid, "ManagerClient::current_focus: D-Bus call succeeded but parse failed");
+                }
+                parsed
+            }
+            Err(e) => {
+                warn!(uid = ?self.uid, error = %e, "ManagerClient::current_focus: D-Bus call failed");
+                None
+            }
+        }
     }
 }
 
@@ -117,7 +129,17 @@ impl PluginRegistry {
     pub async fn current_focus_for_uid(&self, uid: Uid) -> Option<PlatformEvent> {
         let instance_id = self.by_uid.get(&uid)?;
         let client = self.clients.get(instance_id)?;
-        client.current_focus().await
+        let result = client.current_focus().await;
+        if result.is_none() {
+            warn!(
+                ?uid,
+                instance_id = %instance_id.as_str(),
+                "current_focus_for_uid: plugin returned None"
+            );
+        } else {
+            debug!(?uid, "current_focus_for_uid: got focus from plugin");
+        }
+        result
     }
 
     /// Subscribe to the unified `Event` signal from a plugin instance.
@@ -185,9 +207,22 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
 
     // Every variant must be a struct with at least EVENT_STRUCT_FIELD_COUNT fields.
     let v: Value = val.into();
+    // Unwrap outer Variant wrapper (D-Bus VARIANT / sdbus::Variant wrapping).
+    let v = match v {
+        Value::Value(boxed) => *boxed,
+        other => other,
+    };
     let f = match &v {
         Value::Structure(s) if s.fields().len() >= EVENT_STRUCT_FIELD_COUNT => s.fields(),
-        _ => return None,
+        other => {
+            warn!(
+                ?uid,
+                value_type = ?std::mem::discriminant(other),
+                value_debug = ?other,
+                "parse_event_payload: expected struct — got unexpected Value shape"
+            );
+            return None;
+        }
     };
 
     match &f[EVENT_FIELD_TAG] {

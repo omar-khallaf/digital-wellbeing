@@ -29,6 +29,7 @@ use super::domain::Tab;
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_policy_editor_inputs(window, cx);
+        self.ensure_policy_schedule_inputs(window, cx);
         self.ensure_custom_range_inputs(window, cx);
 
         let mode = self.mode_label();

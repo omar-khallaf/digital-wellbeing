@@ -92,6 +92,14 @@ externalproject_add(hyprland-headers
             <SOURCE_DIR>/protocols/
             ${CMAKE_STAGING_PREFIX}/include/hyprland/protocols/
 
+        # Fix relative include paths in staged headers.
+        # src/render/Renderer.hpp uses "../../protocols/" to reach the project
+        # root, but in the staging layout (hyprland/render/) "../../" goes past
+        # hyprland/ into the stage prefix root. The correct relative path is
+        # "../protocols/".
+        COMMAND sed -i "s|../../protocols/|../protocols/|g"
+            ${CMAKE_STAGING_PREFIX}/include/hyprland/render/Renderer.hpp
+
         # Copy pre-generated hyprland.pc
         COMMAND ${CMAKE_COMMAND} -E copy
             ${_HYPRLAND_PC}

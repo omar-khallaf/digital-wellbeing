@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -102,19 +104,27 @@ class LockManager {
     /// Returns true to swallow the event.
     auto onMouseClick(double x, double y) -> bool;
 
-    /// Keyboard handler. Returns true when the focused app is blocked so
-    /// the compositor swallows all keys.
-    auto onKey() -> bool;
-
     [[nodiscard]] auto isTarget(uint64_t windowHandle) const -> bool;
 
-    [[nodiscard]] auto isOverlayShown(const AppClass &appClass) const -> bool { return m_overlays.contains(appClass); }
+    [[nodiscard]] auto isOverlayShown(const AppClass &appClass) const -> bool {
+        std::scoped_lock lock(*m_mutex);
+        return m_overlays.contains(appClass);
+    }
 
   private:
+    /// Mutex protects m_overlays against concurrent access from D-Bus thread
+    /// (showOverlay/hideOverlay) and Hyprland compositor thread
+    /// (drawOverlay/onMouseClick/onKey).
+    /// Unique ptr to keep LockManager movable (std::mutex is not movable).
+    mutable std::unique_ptr<std::mutex> m_mutex{std::make_unique<std::mutex>()};
     std::unordered_map<AppClass, ActiveOverlay> m_overlays;
+
+    /// Unlocked erase — caller must hold m_mutex.
+    auto eraseOverlay(const AppClass &appClass) -> LockManagerError;
 
     /// AppClass of the currently-focused window. Gates keyboard/mouse input
     /// to the focused window's app only. std::nullopt = no focus.
+    /// Only accessed from Hyprland compositor thread — no sync needed.
     std::optional<AppClass> m_focusedApp;
 
     static auto withinRect(const ButtonRect &r, double x, double y) -> bool;

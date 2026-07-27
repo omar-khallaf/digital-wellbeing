@@ -1,7 +1,7 @@
 //! Policies domain types — pure data structures, no gpui dependency.
 
 use wellbeing_core::{
-    AppClass, Category, DomainPattern, Effect, PolicyData, PolicyInput, TargetType, Uid,
+    AppClass, Category, DomainPattern, Effect, PolicyData, PolicyInput, TargetType, TimeWindow, Uid,
 };
 
 /// Pure-data ViewModel for the Policies screen.
@@ -41,12 +41,16 @@ pub struct PolicyConfigForm {
     pub time_limit_minutes: i64,
     /// JSON-encoded schedule rules (Vec<TimeWindow>).
     pub schedule_json: String,
+    /// Parsed schedule rules from `schedule_json` — UI state, not serialized.
+    pub schedules: Vec<TimeWindow>,
     /// Target app id (window class for Hyprland).
     pub app_class: AppClass,
     /// Target category name — valid when target_type is Category.
     pub category_name: String,
     /// Priority (lower = evaluated first). Default 100.
     pub priority: i64,
+    /// Working day-mask for the "add new window" controls. 7-bit bitmask (0x7F = all days).
+    pub schedule_new_day_mask: u8,
 }
 
 impl Default for PolicyConfigForm {
@@ -55,9 +59,11 @@ impl Default for PolicyConfigForm {
             kind: "Block".into(),
             time_limit_minutes: 60,
             schedule_json: "[]".into(),
+            schedules: vec![],
             app_class: AppClass::new("_").expect("static sentinel is non-empty"),
             category_name: String::new(),
             priority: 100,
+            schedule_new_day_mask: 0x7F,
         }
     }
 }

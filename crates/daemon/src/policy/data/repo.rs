@@ -275,6 +275,16 @@ impl PolicyRepo {
             minute,
         )
         .await?;
-        Ok(rows.into_iter().map(Policy::from).collect())
+        let policies: Vec<Policy> = rows.into_iter().map(Policy::from).collect();
+        tracing::debug!(
+            app_id,
+            ?uid,
+            day_mask,
+            minute,
+            ?category_names,
+            count = policies.len(),
+            "resolve_for_app: returning policies"
+        );
+        Ok(policies)
     }
 }

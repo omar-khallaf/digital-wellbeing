@@ -35,7 +35,7 @@ namespace {
 void registerRenderHook() {
     static auto HOOK = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) -> void {
         try {
-            if (stage == eRenderStage::RENDER_POST_WINDOW) {
+            if (stage == eRenderStage::RENDER_POST_WINDOWS) {
                 g_ctx->lockManager->drawOverlay();
             }
 
@@ -87,13 +87,19 @@ void registerInputHooks() {
             }
         });
 
-    // Keyboard key → user activity + overlay input trapping
+    // Keyboard key → user activity + keyboard swallowing when blocked
     static auto KEY_HOOK =
-        Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent, Event::SCallbackInfo &info) -> void {
+        Event::bus()->m_events.input.keyboard.key.listen([](IKeyboard::SKeyEvent, Event::SCallbackInfo &) -> void {
             try {
                 g_ctx->idleTracker->notifyActivity();
-                if (g_ctx->lockManager->onKey()) {
-                    info.cancelled = true;
+                const auto focused = g_ctx->lockManager->getFocusedApp();
+                if (focused.has_value() && g_ctx->lockManager->isOverlayShown(*focused)) {
+                    // Redirect keyboard focus to null so key events don't reach
+                    // the blocked app's surface. Compositor shortcuts (super+key,
+                    // workspace switches) still work because they're processed
+                    // at the compositor level before surface routing.
+                    // Using info.cancelled = true would block shortcuts too.
+                    g_pSeatManager->setKeyboardFocus(nullptr);
                 }
             } catch (const std::exception &e) {
                 logErr("keyboard: " + std::string(e.what()));
@@ -244,8 +250,14 @@ void registerWindowHooks() {
     static auto WINDOW_FOCUS_HOOK =
         Event::bus()->m_events.window.active.listen([](const PHLWINDOW &w, Desktop::eFocusReason) -> void {
             try {
+                std::optional<WindowInfo> snapshot;
+
                 if (!w) {
-                    g_ctx->focusState.reset();
+                    {
+                        std::scoped_lock lock(g_ctx->m_focusMutex);
+                        g_ctx->focusState.reset();
+                        snapshot = g_ctx->focusState;
+                    }
                     g_ctx->focusedHyprWindow.reset();
                     g_ctx->lockManager->setFocusedApp(std::nullopt);
                 } else {
@@ -258,13 +270,17 @@ void registerWindowHooks() {
                         return;
                     }
 
+                    {
+                        std::scoped_lock lock(g_ctx->m_focusMutex);
+                        g_ctx->focusState = WindowInfo{
+                            .appClass = *appClass,
+                            .title = title,
+                            .pid = static_cast<uint32_t>(pid),
+                            .uid = g_ctx->uid,
+                        };
+                        snapshot = g_ctx->focusState;
+                    }
                     g_ctx->focusedHyprWindow = w;
-                    g_ctx->focusState = WindowInfo{
-                        .appClass = *appClass,
-                        .title = title,
-                        .pid = static_cast<uint32_t>(pid),
-                        .uid = g_ctx->uid,
-                    };
                     // LockManager queries g_ctx->focusState directly as single
                     // source of truth. setFocusedApp is only for initial sync.
                     g_ctx->lockManager->setFocusedApp(appClass);
@@ -272,7 +288,7 @@ void registerWindowHooks() {
                     // BlockedAppsChanged signal subscription in WellbeingManager.
                 }
                 if (g_ctx->wellbeingManager) {
-                    g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
+                    g_ctx->wellbeingManager->emitFocusEvent(snapshot);
                 }
             } catch (const std::exception &e) {
                 logErr("window focus: " + std::string(e.what()));
@@ -288,37 +304,57 @@ void registerWindowHooks() {
             // registered, so we never saw the initial focus.  The first
             // title event after plugin load is reliably from the focused
             // window — use it to initialize focus state.
-            if (!focused && !g_ctx->focusState.has_value()) {
-                const auto appClassRaw = w->m_initialClass;
-                const auto title = w->m_title;
-                const auto pid = w->getPID();
+            if (!focused) {
+                bool needsInit;
+                {
+                    std::scoped_lock lock(g_ctx->m_focusMutex);
+                    needsInit = !g_ctx->focusState.has_value();
+                }
+                if (needsInit) {
+                    const auto appClassRaw = w->m_initialClass;
+                    const auto title = w->m_title;
+                    const auto pid = w->getPID();
 
-                auto appClass = AppClass::from_raw(appClassRaw);
-                if (!appClass.has_value()) {
+                    auto appClass = AppClass::from_raw(appClassRaw);
+                    if (!appClass.has_value()) {
+                        return;
+                    }
+
+                    std::optional<WindowInfo> snapshot;
+                    {
+                        std::scoped_lock lock(g_ctx->m_focusMutex);
+                        g_ctx->focusState = WindowInfo{
+                            .appClass = *appClass,
+                            .title = title,
+                            .pid = static_cast<uint32_t>(pid),
+                            .uid = g_ctx->uid,
+                        };
+                        snapshot = g_ctx->focusState;
+                    }
+                    g_ctx->focusedHyprWindow = w;
+                    g_ctx->lockManager->setFocusedApp(appClass);
+                    if (g_ctx->wellbeingManager) {
+                        g_ctx->wellbeingManager->emitFocusEvent(snapshot);
+                    }
                     return;
                 }
+            }
 
-                g_ctx->focusedHyprWindow = w;
-                g_ctx->focusState = WindowInfo{
-                    .appClass = *appClass,
-                    .title = title,
-                    .pid = static_cast<uint32_t>(pid),
-                    .uid = g_ctx->uid,
-                };
-                g_ctx->lockManager->setFocusedApp(appClass);
-                if (g_ctx->wellbeingManager) {
-                    g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
+            {
+                std::scoped_lock lock(g_ctx->m_focusMutex);
+                if (!focused || focused != w || !g_ctx->focusState.has_value()) {
+                    return;
                 }
-                return;
             }
 
-            if (!focused || focused != w || !g_ctx->focusState.has_value()) {
-                return;
+            std::optional<WindowInfo> snapshot;
+            {
+                std::scoped_lock lock(g_ctx->m_focusMutex);
+                g_ctx->focusState->title = w->m_title;
+                snapshot = g_ctx->focusState;
             }
-
-            g_ctx->focusState->title = w->m_title;
             if (g_ctx->wellbeingManager) {
-                g_ctx->wellbeingManager->emitFocusEvent(g_ctx->focusState);
+                g_ctx->wellbeingManager->emitFocusEvent(snapshot);
             }
         } catch (const std::exception &e) {
             logErr("window title: " + std::string(e.what()));

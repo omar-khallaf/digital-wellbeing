@@ -22,7 +22,7 @@ use std::sync::Arc;
 use chrono::{Datelike, Timelike};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use wellbeing_core::*;
 
@@ -195,48 +195,87 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 let reg = self.registry.read().await;
                 reg.current_focus_for_uid(uid).await
             };
-            let Some(event) = focused else { continue };
+            let Some(event) = focused else {
+                debug!(
+                    ?uid,
+                    "evaluate_and_enforce: no current focus for uid — skipping"
+                );
+                continue;
+            };
             let Some(app_class) = event.app_class() else {
+                debug!(
+                    ?uid,
+                    "evaluate_and_enforce: current focus has no app_class — skipping"
+                );
                 continue;
             };
 
-            match self.evaluate_single_app(uid, app_class, now).await? {
-                Some(entry) => {
-                    let reason = entry.reason;
-                    let was_new = self
-                        .blocked_apps
-                        .write()
-                        .await
-                        .entry(uid)
-                        .or_default()
-                        .insert(app_class.clone(), entry)
-                        .is_none();
-                    if was_new {
-                        let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
-                            uid,
-                            app_class: app_class.clone(),
-                            blocked: true,
-                            reason,
-                        });
-                    }
+            debug!(?uid, %app_class, "evaluate_and_enforce: evaluating focused app");
+
+            self.evaluate_and_apply(uid, app_class, now).await?;
+        }
+        Ok(())
+    }
+
+    /// Evaluate a specific app for a uid and apply the result to blocked_apps.
+    /// Emits BlockedAppsChanged signals as needed.
+    /// Used by handle_event (with event payload data) and evaluate_and_enforce
+    /// (with re-queried CurrentFocus data).
+    async fn evaluate_and_apply(
+        &mut self,
+        uid: Uid,
+        app_class: &AppClass,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        match self.evaluate_single_app(uid, app_class, now).await? {
+            Some(entry) => {
+                let reason = entry.reason;
+                let was_new = self
+                    .blocked_apps
+                    .write()
+                    .await
+                    .entry(uid)
+                    .or_default()
+                    .insert(app_class.clone(), entry)
+                    .is_none();
+                if was_new {
+                    info!(
+                        ?uid, %app_class, ?reason,
+                        "evaluate_and_apply: NEW block — emitting BlockedAppsChanged {{blocked: true}}"
+                    );
+                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                        uid,
+                        app_class: app_class.clone(),
+                        blocked: true,
+                        reason,
+                    });
+                } else {
+                    debug!(
+                        ?uid, %app_class,
+                        "evaluate_and_apply: app was already blocked — no signal"
+                    );
                 }
-                None => {
-                    if self
-                        .blocked_apps
-                        .write()
-                        .await
-                        .entry(uid)
-                        .or_default()
-                        .remove(app_class)
-                        .is_some()
-                    {
-                        let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
-                            uid,
-                            app_class: app_class.clone(),
-                            blocked: false,
-                            reason: BlockReason::AppBlock,
-                        });
-                    }
+            }
+            None => {
+                if self
+                    .blocked_apps
+                    .write()
+                    .await
+                    .entry(uid)
+                    .or_default()
+                    .remove(app_class)
+                    .is_some()
+                {
+                    info!(
+                        ?uid, %app_class,
+                        "evaluate_and_apply: unblocked — emitting BlockedAppsChanged {{blocked: false}}"
+                    );
+                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                        uid,
+                        app_class: app_class.clone(),
+                        blocked: false,
+                        reason: BlockReason::AppBlock,
+                    });
                 }
             }
         }
@@ -281,7 +320,14 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             .resolve_for_app(app_id, &category_names, uid, day_mask, minute_of_day)
             .await
         {
-            Ok(p) => p,
+            Ok(p) => {
+                debug!(
+                    %app_class, app_id, policy_count = p.len(),
+                    day_mask, minute_of_day,
+                    "evaluate_single_app: fetched policies"
+                );
+                p
+            }
             Err(e) => {
                 tracing::warn!(%app_class, error = %e, "Failed to fetch policies");
                 Vec::new()
@@ -289,6 +335,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         };
 
         if policies.is_empty() {
+            debug!(%app_class, app_id, "evaluate_single_app: no matching policies — unrestricted");
             return Ok(None);
         }
 
@@ -307,6 +354,13 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         let usage_min = (usage_ms / 60000) as u64;
         let result = evaluate(&policies, usage_min, now);
 
+        debug!(
+            %app_class,
+            terminating = ?result.terminating,
+            notifies = result.notifies.len(),
+            "evaluate_single_app: evaluate() returned"
+        );
+
         // Handle Notify effects (non-terminating) — fire-and-forget.
         for (_notify_id, effect) in &result.notifies {
             if matches!(effect, crate::policy::Effect::Notify { .. }) {
@@ -321,7 +375,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         if let Some((policy_id, ref effect)) = result.terminating {
             match effect {
                 crate::policy::Effect::Block => {
-                    info!(%app_class, "Block policy matched — enforcing block");
                     return Ok(Some(BlockedAppEntry {
                         app_class: app_class.clone(),
                         policy_id,
@@ -330,7 +383,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     }));
                 }
                 crate::policy::Effect::TimeLimit { .. } => {
-                    info!(%app_class, "TimeLimit exceeded — enforcing block");
                     return Ok(Some(BlockedAppEntry {
                         app_class: app_class.clone(),
                         policy_id,

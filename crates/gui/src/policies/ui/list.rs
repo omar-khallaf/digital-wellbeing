@@ -126,9 +126,12 @@ impl GuiApp {
                                         },
                                         time_limit_minutes: tls,
                                         schedule_json: schedule.clone(),
+                                        schedules: serde_json::from_str(&schedule)
+                                            .unwrap_or_default(),
                                         app_class: app_class.clone(),
                                         category_name: cat_name.clone(),
                                         priority,
+                                        schedule_new_day_mask: 0x7F,
                                     },
                                 ));
                                 cx2.notify();
