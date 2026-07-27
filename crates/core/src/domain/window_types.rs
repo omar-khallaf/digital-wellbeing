@@ -18,8 +18,6 @@ pub enum BlockReason {
     CategoryBlock = 3,
 }
 
-// ── Boundary conversions ─────────────────────────────────────────────────────
-
 impl From<BlockReason> for u32 {
     fn from(r: BlockReason) -> Self {
         r as u32
@@ -50,4 +48,18 @@ pub struct BlockedAppEntry {
     pub policy_id: PolicyId,
     pub reason: BlockReason,
     pub blocked_since: u64,
+}
+
+/// Payload for the `BlockedAppsChanged` D-Bus signal.
+///
+/// Emitted when a block is added or removed for a user.  The D-Bus wire
+/// signature is `(usbu)` — matching the field order below.
+///
+/// `blocked` is `true` when the app is now blocked and `false` when unblocked.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Value)]
+pub struct BlockedAppsChangedSignal {
+    pub uid: Uid,
+    pub app_class: AppClass,
+    pub blocked: bool,
+    pub reason: BlockReason,
 }

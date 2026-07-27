@@ -183,12 +183,12 @@ TEST(DbusSerializationTest, PowerTagValues) {
 // ═════════════════════════════════════════════════════════════════════════════
 // BlockedApps property encoding
 //
-// C++ reads via Properties.Get:  variant containing a(stutau)
-// Rust sends:                    v(a(stutau))  →  Vec<BlockedAppEntry>
+// C++ reads via Properties.Get:  variant containing a(sxut)
+// Rust sends:                    v(a(sxut))  →  Vec<BlockedAppEntry>
 // ═════════════════════════════════════════════════════════════════════════════
 
 TEST(DbusSerializationTest, BlockedAppsPropertyRoundtrip) {
-    using BlockTuple = sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>;
+    using BlockTuple = sdbus::Struct<std::string, int64_t, uint32_t, uint64_t>;
     using BlockEntries = std::vector<BlockTuple>;
 
     BlockEntries original = {
@@ -212,7 +212,7 @@ TEST(DbusSerializationTest, BlockedAppsPropertyRoundtrip) {
 }
 
 TEST(DbusSerializationTest, BlockedAppsEmptyArrayRoundtrip) {
-    using BlockEntries = std::vector<sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>>;
+    using BlockEntries = std::vector<sdbus::Struct<std::string, int64_t, uint32_t, uint64_t>>;
 
     BlockEntries original;
     auto variant = sdbus::Variant{original};

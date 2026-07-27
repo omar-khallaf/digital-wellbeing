@@ -62,7 +62,13 @@ void WellbeingManager::setupNameOwnerWatch(bool system) {
                 std::string name;
                 std::string oldOwner;
                 std::string newOwner;
-                msg >> name >> oldOwner >> newOwner;
+                try {
+                    msg >> name >> oldOwner >> newOwner;
+                } catch (const sdbus::Error &e) {
+                    logErr("setupNameOwnerWatch: failed to deserialize NameOwnerChanged signal (" +
+                           std::string(e.what()) + ")");
+                    return;
+                }
                 onNameOwnerChanged(name, oldOwner, newOwner, isSystem);
             },
             sdbus::return_slot);

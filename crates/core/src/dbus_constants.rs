@@ -4,13 +4,10 @@
 
 // ── Daemon (Controller) interface ────────────────────────────────────────────
 
-/// Well-known D-Bus interface name for the daemon's Controller API.
 pub const DAEMON_INTERFACE: &str = "org.wellbeing.v1.Controller";
 
-/// Object path where the Controller interface is registered.
 pub const DAEMON_OBJECT_PATH: &str = "/org/wellbeing/Controller";
 
-/// Well-known bus name for the daemon.
 pub const DAEMON_BUS_NAME: &str = "org.wellbeing.v1.Controller";
 
 // ── Plugin (Manager) interface ───────────────────────────────────────────────
@@ -18,7 +15,6 @@ pub const DAEMON_BUS_NAME: &str = "org.wellbeing.v1.Controller";
 /// Well-known D-Bus interface name for the compositor plugin's Manager API.
 pub const MANAGER_INTERFACE: &str = "org.wellbeing.v1.Manager";
 
-/// Object path where the Manager interface is registered.
 pub const MANAGER_OBJECT_PATH: &str = "/org/wellbeing/Manager";
 
 // ── Signal names on the Controller interface ─────────────────────────────────
@@ -50,7 +46,6 @@ pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 //
 // Signature: `(ussuu)`
 
-/// D-Bus struct signature for the unified event payload.
 pub const EVENT_STRUCT_SIGNATURE: &str = "(ussuu)";
 
 /// Event tag for Focus — a window received focus. Applies to `uid`.
@@ -87,13 +82,10 @@ pub const EVENT_TAG_LOCKED: u32 = 7;
 
 // ── Power tags (inner discriminator for EVENT_TAG_POWER) ─────────────────────
 
-/// Power-event inner tag for Suspend.
 pub const EVENT_POWER_SUSPEND: u32 = 0;
 
-/// Power-event inner tag for Hibernate.
 pub const EVENT_POWER_HIBERNATE: u32 = 1;
 
-/// Power-event inner tag for Shutdown.
 pub const EVENT_POWER_SHUTDOWN: u32 = 2;
 
 // ── Event struct field indices ───────────────────────────────────────────────
@@ -113,7 +105,6 @@ pub const EVENT_FIELD_PID: usize = 3;
 /// Index: power_tag (u32) — inner discriminator for PowerEvent (Suspend/Hibernate/Shutdown).
 pub const EVENT_FIELD_POWER_TAG: usize = 4;
 
-/// Total number of fields in the event struct.
 pub const EVENT_STRUCT_FIELD_COUNT: usize = 5;
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -125,9 +116,11 @@ pub const EVENT_STRUCT_FIELD_COUNT: usize = 5;
 // serialization errors if these diverge.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// D-Bus struct signature for BlockedAppEntry: (string, uint64, uint32, uint64).
+/// D-Bus struct signature for BlockedAppEntry: (string, int64, uint32, uint64).
+/// `s` = AppClass (string), `x` = PolicyId (int64), `u` = BlockReason (uint32),
+/// `t` = blocked_since (uint64).
 /// Must match C++ tuple type in wellbeing_manager.cpp readBlockedApps.
-pub const BLOCKED_APP_SIGNATURE: &str = "(stut)";
+pub const BLOCKED_APP_SIGNATURE: &str = "(sxut)";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Legacy FocusChanged constants — retained during migration, no longer emitted by the plugin.
@@ -142,23 +135,16 @@ pub const FOCUS_TAG_APP: u32 = 1;
 /// Legacy: FocusChanged variant U32 value — window blocked by enforcement.
 pub const FOCUS_TAG_BLOCKED: u32 = 2;
 
-/// Legacy: Index of the variant-tag field in the FocusChanged struct.
 pub const FOCUS_FIELD_TAG: usize = 0;
 
-/// Legacy: Index of the app_class field in the FocusChanged struct.
 pub const FOCUS_FIELD_APP_ID: usize = 1;
 
-/// Legacy: Index of the window-title field in the FocusChanged struct.
 pub const FOCUS_FIELD_TITLE: usize = 2;
 
-/// Legacy: Index of the PID field in the FocusChanged struct.
 pub const FOCUS_FIELD_PID: usize = 3;
 
-/// Legacy: Index of the UID field in the FocusChanged struct.
 pub const FOCUS_FIELD_UID: usize = 4;
 
-/// Legacy: Total number of fields in the FocusChanged app struct.
 pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
 
-/// Legacy: D-Bus struct signature for FocusChanged app variant: (u, s, s, u, u).
 pub const FOCUS_STRUCT_SIGNATURE: &str = "(ussuu)";

@@ -283,7 +283,6 @@ impl GuiApp {
             .child({
                 const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-                // Format a 7-bit day mask into a human-readable label.
                 let day_label = |mask: u8| -> String {
                     if mask == 0x7F {
                         "All".into()
@@ -303,7 +302,6 @@ impl GuiApp {
                 // Clone schedules so we can iterate without holding the borrow.
                 let windows: Vec<TimeWindow> = form.schedules.clone();
 
-                // Build existing-window rows.
                 let window_rows: Vec<AnyElement> = windows
                     .iter()
                     .enumerate()
@@ -330,10 +328,10 @@ impl GuiApp {
                                     .danger()
                                     .on_click(move |_, _window, app| {
                                         entity.update(app, |this, cx2| {
-                                            if let Some((_, ref mut f)) = this.policy_edit {
-                                                if remove_idx < f.schedules.len() {
-                                                    f.schedules.remove(remove_idx);
-                                                }
+                                            if let Some((_, ref mut f)) = this.policy_edit
+                                                && remove_idx < f.schedules.len()
+                                            {
+                                                f.schedules.remove(remove_idx);
                                             }
                                             cx2.notify();
                                         });
@@ -355,10 +353,8 @@ impl GuiApp {
                     window_rows
                 };
 
-                // Current day-mask for new-window controls.
                 let current_day_mask = form.schedule_new_day_mask;
 
-                // Build day-toggle buttons (Sun–Sat).
                 let day_buttons: Vec<AnyElement> = DAY_NAMES
                     .iter()
                     .enumerate()
@@ -390,9 +386,7 @@ impl GuiApp {
                             .child("Schedule (when this policy applies)"),
                     )
                     .children(empty_hint)
-                    // Day toggle row.
                     .child(h_flex().gap_1().items_center().children(day_buttons))
-                    // Time input row.
                     .child(
                         h_flex()
                             .gap_2()
@@ -440,7 +434,6 @@ impl GuiApp {
                                 )),
                             ),
                     )
-                    // Add Window button.
                     .child({
                         let entity = entity.clone();
                         Button::new("add-schedule-window")

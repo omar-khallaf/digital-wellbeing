@@ -29,8 +29,6 @@ fn card_shadow() -> Vec<BoxShadow> {
     }]
 }
 
-/// A titled, bordered surface panel.
-///
 /// `title` of `None` renders a padded card (useful for chart containers).
 /// `title` of `Some(..)` adds a small caption header above the children.
 pub fn card(
@@ -61,8 +59,6 @@ pub fn card(
         .into_any_element()
 }
 
-/// A KPI tile: small label + large value, with an optional accent dot.
-///
 /// The caller should pass a pre-adjusted dot color from [`theme::primary`],
 /// [`theme::secondary`], [`theme::danger`], etc.
 pub fn stat_card(cx: &App, value: &str, label: &str, dot: Option<Hsla>) -> AnyElement {
@@ -105,7 +101,6 @@ pub fn stat_card(cx: &App, value: &str, label: &str, dot: Option<Hsla>) -> AnyEl
         .into_any_element()
 }
 
-/// Small semibold caption used above card content.
 pub fn section_title(cx: &App, title: &str) -> AnyElement {
     div()
         .text_sm()
@@ -137,8 +132,6 @@ pub struct AppEntryView {
     pub badge: Option<AppBadge>,
 }
 
-/// Renders a scrollable list of app entries.
-///
 /// Layout per row (mirrors `title_list_panel`):
 /// ```text
 /// [#rank] [●] [display_name] [BADGE] [duration  ]
@@ -176,6 +169,7 @@ pub fn app_list_panel(cx: &App, entries: &[AppEntryView]) -> AnyElement {
                     div()
                         .text_sm()
                         .flex_1()
+                        .truncate()
                         .text_color(theme::text_primary(cx))
                         .child(entry.display_name.clone()),
                 )
@@ -223,8 +217,6 @@ pub struct TitleEntryView {
     pub percentage: f64,
 }
 
-/// Renders a scrollable list of title entries.
-///
 /// Layout per row:
 /// ```text
 /// [#rank] [Title      ] [duration  ]
@@ -259,15 +251,18 @@ pub fn title_list_panel(cx: &App, entries: &[TitleEntryView]) -> AnyElement {
                     v_flex()
                         .flex_1()
                         .gap_0()
+                        .overflow_hidden()
                         .child(
                             div()
                                 .text_sm()
+                                .truncate()
                                 .text_color(theme::text_primary(cx))
                                 .child(entry.title.clone()),
                         )
                         .child(
                             div()
                                 .text_xs()
+                                .truncate()
                                 .text_color(theme::text_muted(cx))
                                 .child(entry.app_class.clone()),
                         ),

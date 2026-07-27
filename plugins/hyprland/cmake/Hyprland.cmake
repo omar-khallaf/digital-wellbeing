@@ -74,7 +74,6 @@ externalproject_add(hyprland-headers
 
     # ── Install ──────────────────────────────────────────────────────────────
     INSTALL_COMMAND
-        # Create output directories
         COMMAND ${CMAKE_COMMAND} -E make_directory
             ${CMAKE_STAGING_PREFIX}/include/hyprland/protocols
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -87,7 +86,6 @@ externalproject_add(hyprland-headers
             <SOURCE_DIR>/src/
             ${CMAKE_STAGING_PREFIX}/include/hyprland/
 
-        # Copy generated protocol headers
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             <SOURCE_DIR>/protocols/
             ${CMAKE_STAGING_PREFIX}/include/hyprland/protocols/
@@ -100,7 +98,6 @@ externalproject_add(hyprland-headers
         COMMAND sed -i "s|../../protocols/|../protocols/|g"
             ${CMAKE_STAGING_PREFIX}/include/hyprland/render/Renderer.hpp
 
-        # Copy pre-generated hyprland.pc
         COMMAND ${CMAKE_COMMAND} -E copy
             ${_HYPRLAND_PC}
             ${CMAKE_STAGING_PREFIX}/lib/pkgconfig/hyprland.pc

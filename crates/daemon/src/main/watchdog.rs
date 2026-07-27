@@ -14,8 +14,8 @@ use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{DAEMON_BUS_NAME, DAEMON_OBJECT_PATH};
 use wellbeing_daemon::{
     blocking::InternalEvent, bus_resolution::BusMode, dbus::DaemonInterface,
-    dbus::domain::BlockedAppsMap, platform::PlatformEvent, platform::linux::PluginRegistry,
-    store::DbPool,
+    dbus::DaemonInterfaceConfig, dbus::domain::BlockedAppsMap, platform::PlatformEvent,
+    platform::linux::PluginRegistry, store::DbPool,
 };
 
 #[zbus::proxy(
@@ -35,6 +35,7 @@ trait DBusFdo {
     fn name_lost(&self, name: String) -> zbus::Result<()>;
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn(
     bus_mode: BusMode,
     recovery_pool: DbPool,
@@ -60,6 +61,7 @@ pub(crate) fn spawn(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     bus_mode: BusMode,
     recovery_pool: DbPool,
@@ -118,7 +120,7 @@ async fn run(
                                         &shutdown_token,
                                     ).await;
                                 }
-                                Ok(_) => {} // not our name
+                                Ok(_) => {}
                                 Err(e) => {
                                     error!(%e, "watchdog: failed to parse NameOwnerChanged args");
                                 }
@@ -181,27 +183,26 @@ async fn attempt_recovery(
             Some(c) => c,
             None => {
                 retries += 1;
-                if retries >= 5 {
-                    error!("max retries exceeded, shutting down");
-                    shutdown_token.cancel();
+                if should_shutdown(retries, shutdown_token).await {
                     return;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(500 * retries as u64)).await;
                 continue;
             }
         };
 
-        let fresh_interface = DaemonInterface::new(
-            wellbeing_daemon::policy::data::PolicyRepo::new(recovery_pool.clone()),
-            wellbeing_daemon::categorization::data::CategorizationRepo::new(recovery_pool.clone()),
-            wellbeing_daemon::reports::data::ReportsRepo::new(recovery_pool.clone()),
-            recovery_registry.clone(),
-            recovery_event_tx.clone(),
-            Box::new(SystemClock),
-            recovery_blocked_apps.clone(),
-            tokio::runtime::Handle::current(),
-            recovery_policy_tx.clone(),
-        );
+        let fresh_interface = DaemonInterface::new(DaemonInterfaceConfig {
+            policy_repo: wellbeing_daemon::policy::data::PolicyRepo::new(recovery_pool.clone()),
+            categorization_repo: wellbeing_daemon::categorization::data::CategorizationRepo::new(
+                recovery_pool.clone(),
+            ),
+            reports_repo: wellbeing_daemon::reports::data::ReportsRepo::new(recovery_pool.clone()),
+            registry: recovery_registry.clone(),
+            event_tx: recovery_event_tx.clone(),
+            clock: Box::new(SystemClock),
+            blocked_apps: recovery_blocked_apps.clone(),
+            tokio_handle: tokio::runtime::Handle::current(),
+            policy_tx: recovery_policy_tx.clone(),
+        });
 
         if let Err(e) = fresh_conn
             .object_server()
@@ -210,12 +211,9 @@ async fn attempt_recovery(
         {
             error!(%e, "watchdog: failed to register object server on fresh connection");
             retries += 1;
-            if retries >= 5 {
-                error!("max retries exceeded, shutting down");
-                shutdown_token.cancel();
+            if should_shutdown(retries, shutdown_token).await {
                 return;
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(500 * retries as u64)).await;
             continue;
         }
 
@@ -237,24 +235,31 @@ async fn attempt_recovery(
 
                 error!("fresh connection lost unique name during stabilization, retrying");
                 retries += 1;
-                if retries >= 5 {
-                    error!("max retries exceeded, shutting down");
-                    shutdown_token.cancel();
+                if should_shutdown(retries, shutdown_token).await {
                     return;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(500 * retries as u64)).await;
             }
             Err(e) => {
                 error!(%e, "watchdog: failed to re-acquire D-Bus name");
                 retries += 1;
-                if retries >= 5 {
-                    error!("max retries exceeded, shutting down");
-                    shutdown_token.cancel();
+                if should_shutdown(retries, shutdown_token).await {
                     return;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_millis(500 * retries as u64)).await;
             }
         }
+    }
+}
+
+/// Returns `true` when retries are exhausted (caller should return immediately).
+/// Returns `false` after applying exponential backoff delay (caller should retry).
+async fn should_shutdown(retries: u32, shutdown_token: &CancellationToken) -> bool {
+    if retries >= 5 {
+        error!("max retries exceeded, shutting down");
+        shutdown_token.cancel();
+        true
+    } else {
+        tokio::time::sleep(tokio::time::Duration::from_millis(500 * retries as u64)).await;
+        false
     }
 }
 

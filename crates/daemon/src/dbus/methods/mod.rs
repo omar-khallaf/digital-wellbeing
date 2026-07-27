@@ -194,16 +194,28 @@ impl DaemonInterface {
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: Option<zbus::message::Header<'_>>,
     ) -> fdo::Result<Vec<BlockedAppEntry>> {
+        use tracing::debug;
         let header = header.ok_or_else(|| fdo::Error::Failed("missing header".into()))?;
         let caller = authenticate(conn, header).await?;
         let blocks = self.blocked_apps.read().await;
-        let result = if caller == 0 {
+        let result: Vec<BlockedAppEntry> = if caller == 0 {
             blocks.values().flat_map(|v| v.values()).cloned().collect()
         } else if let Some(uid_blocks) = blocks.get(&Uid(caller)) {
             uid_blocks.values().cloned().collect()
         } else {
             vec![]
         };
+        #[cfg(debug_assertions)]
+        if !result.is_empty() {
+            debug!(
+                "blocked_apps property returning {} entries, first: app_class={}, policy_id={}, reason={:?}, blocked_since={}",
+                result.len(),
+                result[0].app_class.as_ref(),
+                result[0].policy_id.0,
+                result[0].reason,
+                result[0].blocked_since,
+            );
+        }
         Ok(result)
     }
 

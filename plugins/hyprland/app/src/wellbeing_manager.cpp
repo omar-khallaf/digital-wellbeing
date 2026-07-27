@@ -50,8 +50,6 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
                         auto info = focusStateSnapshot();
                         bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appClass);
                         auto result = windowInfoToVariant(info, blocked);
-                        logInfo("CurrentFocus getter -> " + (info.has_value() ? info->appClass.value() : "(no focus)") +
-                                (blocked ? " [blocked]" : ""));
                         return result;
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
@@ -62,8 +60,6 @@ WellbeingManager::WellbeingManager(std::shared_ptr<LockManager> lockManager,
                         auto info = focusStateSnapshot();
                         bool blocked = info.has_value() && m_lockManager->isOverlayShown(info->appClass);
                         auto result = windowInfoToVariant(info, blocked);
-                        logInfo("CurrentFocus getter -> " + (info.has_value() ? info->appClass.value() : "(no focus)") +
-                                (blocked ? " [blocked]" : ""));
                         return result;
                     }))
         .forInterface(wellbeing::MANAGER_INTERFACE);
@@ -131,14 +127,20 @@ auto WellbeingManager::handshake() -> fire_and_forget {
 
 auto WellbeingManager::fetchBlocks() -> task {
     try {
-        using BlockEntry = sdbus::Struct<std::string, uint64_t, uint32_t, uint64_t>;
+        using BlockEntry = sdbus::Struct<std::string, int64_t, uint32_t, uint64_t>;
         using BlockEntries = std::vector<BlockEntry>;
 
         auto result = co_await m_daemonProxy->callMethodAsync("Get")
                           .onInterface("org.freedesktop.DBus.Properties")
                           .withArguments(wellbeing::DAEMON_INTERFACE, "BlockedApps")
                           .getResultAsAwaitable<sdbus::Variant>();
-        auto blocks = result.get<BlockEntries>();
+        BlockEntries blocks;
+        try {
+            blocks = result.get<BlockEntries>();
+        } catch (const sdbus::Error &e) {
+            logErr("fetchBlocks: failed to deserialize BlockedApps D-Bus property: " + std::string(e.what()));
+            co_return;
+        }
 
         for (auto &block : blocks) {
             auto &rawAppClass = std::get<0>(block);
@@ -161,7 +163,7 @@ auto WellbeingManager::fetchBlocks() -> task {
             m_lockManager->showOverlay(*appClass, policyId, *br, blockedSince, {ActionType::Close});
         }
     } catch (const sdbus::Error &e) {
-        logInfo("syncBlockedApps: daemon not available (" + std::string(e.what()) + ")");
+        logErr("fetchBlocks: D-Bus call failed (" + std::string(e.what()) + ")");
     }
 }
 
@@ -192,7 +194,12 @@ void WellbeingManager::setupBlockedAppsWatch() {
                     std::string rawAppClass;
                     bool blocked = false;
                     uint32_t reason = 0;
-                    msg >> uid >> rawAppClass >> blocked >> reason;
+                    try {
+                        msg >> uid >> rawAppClass >> blocked >> reason;
+                    } catch (const sdbus::Error &e) {
+                        logErr("BlockedAppsChanged: failed to deserialize signal (" + std::string(e.what()) + ")");
+                        return;
+                    }
 
                     auto appClass = AppClass::from_raw(rawAppClass);
                     if (!appClass.has_value()) {

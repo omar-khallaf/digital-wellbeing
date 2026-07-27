@@ -63,7 +63,6 @@ impl App {
         let make_on_range = move |app_entity: Entity<Self>| {
             let entity = app_entity.clone();
             move |new_range: DateRange, gpui_app: &mut gpui::App| {
-                // Write new range to shared state so background flows pick it up.
                 if let Ok(mut guard) = state.selected_range.try_write() {
                     *guard = new_range;
                 }

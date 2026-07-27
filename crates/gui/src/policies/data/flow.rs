@@ -34,7 +34,8 @@ pub fn spawn_policies_flow(
     vm_tx: UnboundedSender<Option<super::PoliciesViewModel>>,
 ) {
     tokio::spawn(async move {
-        let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel();
+        // bool: true = signal received, false = signal stream ended
+        let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
         let mut proxy_subscribed = false;
 
         let mut daemon_available = true;
@@ -49,8 +50,10 @@ pub fn spawn_policies_flow(
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(());
+                                    let _ = tx.send(true);
                                 }
+                                warn!("policies flow: policy_mutated signal stream ended");
+                                let _ = tx.send(false);
                             });
                         }
                         proxy_subscribed = true;
@@ -80,7 +83,11 @@ pub fn spawn_policies_flow(
                         }
                     }
                 }
-                Some(_) = signal_rx.recv() => {
+                Some(alive) = signal_rx.recv() => {
+                    if !alive {
+                        warn!("policies flow: signal stream lost — will re-subscribe");
+                        proxy_subscribed = false;
+                    }
                     daemon_available
                 }
                 Ok(_) = refresh_rx.recv() => {

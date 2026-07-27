@@ -54,26 +54,29 @@ impl WindowTitle {
     }
 }
 
-/// Process ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, Value)]
 #[zvariant(signature = "u")]
 pub struct Pid(pub u32);
 
 /// Policy identifier (SQLite row id).
+///
+/// # Wire format
+/// Explicit `x` (INT64) signature to match serde's i64 serialization.
+/// Do NOT use `t` (UINT64) — that would disagree with serde and cause
+/// "incorrect type" errors in the D-Bus Value deserialization path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
-#[zvariant(signature = "t")]
+#[zvariant(signature = "x")]
 pub struct PolicyId(pub i64);
 
 /// Category identifier (SQLite row id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
-#[zvariant(signature = "t")]
+#[zvariant(signature = "x")]
 pub struct CategoryId(pub i64);
 
-/// Duration in seconds.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type, Value,
 )]
-#[zvariant(signature = "t")]
+#[zvariant(signature = "x")]
 pub struct DurationSecs(pub i64);
 
 impl DurationSecs {
@@ -82,7 +85,6 @@ impl DurationSecs {
     }
 }
 
-/// Unix user ID.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type, Value,
 )]
@@ -107,7 +109,6 @@ impl DateRange {
         Self { start, end: today }
     }
 
-    /// Validate that start <= end.
     pub fn validate(self) -> Result<(), Error> {
         if self.start > self.end {
             return Err(Error::InvalidArgument("DateRange start must be <= end"));

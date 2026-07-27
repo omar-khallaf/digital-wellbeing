@@ -13,7 +13,7 @@
 using wellbeing::ActionType;
 using wellbeing::AppClass;
 
-void LockManager::showOverlay(const AppClass &appClass, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
+void LockManager::showOverlay(const AppClass &appClass, int64_t policyId, BlockReason reason, uint64_t blockedSince,
                               const std::vector<ActionType> &actions) {
     // Store overlay metadata only. Window capture and button positioning
     // are deferred to refreshOverlay() — windowHandles and buttons are
@@ -121,7 +121,6 @@ void LockManager::drawBackdropForHandle(uint64_t windowHandle) {
 
     if (m_overlays.empty()) return;
 
-    // Check if this window belongs to any blocked app.
     bool isBlocked = false;
     for (const auto &[appClass, overlay] : m_overlays) {
         (void)appClass;

@@ -4,8 +4,43 @@
 //! trait. Re-exported from the parent module for use by `DaemonClient` and
 //! `SignalCoalescer`.
 
+use tracing::warn;
 use wellbeing_core::*;
 use zbus::proxy;
+use zbus::zvariant::{OwnedValue, Value};
+
+/// Wrapper around `Vec<BlockedAppEntry>` with a `TryFrom<OwnedValue>` impl
+/// that strips the outer `Value::Value(...)` Variant layer added by
+/// `Properties.Get`.
+///
+/// zbus 5.18's `Proxy::get_property` calls `T::try_from(OwnedValue)` directly,
+/// but `Vec<T>::try_from` only handles `Value::Array` — not `Value::Value`
+/// wrapping it. This wrapper unwraps the Variant before delegating.
+#[derive(Debug, Clone)]
+pub struct BlockedApps(pub Vec<BlockedAppEntry>);
+
+impl std::convert::TryFrom<OwnedValue> for BlockedApps {
+    type Error = zbus::Error;
+
+    fn try_from(value: OwnedValue) -> std::result::Result<Self, Self::Error> {
+        let inner = match Value::from(value) {
+            Value::Value(v) => *v,
+            other => other,
+        };
+        let entries = Vec::<BlockedAppEntry>::try_from(inner).map_err(|e| {
+            let msg = e.to_string();
+            warn!(error = %msg, "BlockedApps: failed to deserialize blocked_apps D-Bus property");
+            zbus::Error::Failure(msg)
+        })?;
+        Ok(BlockedApps(entries))
+    }
+}
+
+impl From<BlockedApps> for Vec<BlockedAppEntry> {
+    fn from(w: BlockedApps) -> Self {
+        w.0
+    }
+}
 
 #[proxy(
     interface = "org.wellbeing.v1.Controller",
@@ -60,23 +95,18 @@ pub trait Daemon {
     async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
     async fn set_app_category(&self, app_class: &str, category_id: CategoryId) -> zbus::Result<()>;
 
+    /// Read-only property — returns [`BlockedApps`] instead of raw `Vec` to work
+    /// around zbus 5.18's Variant-unwrapping bug in `Proxy::get_property`.
+    #[zbus(property)]
+    fn blocked_apps(&self) -> zbus::Result<BlockedApps>;
+
     /// Signals (non-async — zbus generates receivers)
     #[zbus(signal, name = "BlockedAppsChanged")]
-    fn on_blocked_apps_changed(&self) -> zbus::Result<(Uid, AppClass, bool, BlockReason)>;
+    fn on_blocked_apps_changed(&self) -> zbus::Result<BlockedAppsChangedSignal>;
 
     #[zbus(signal)]
     fn daily_usage_changed(&self) -> zbus::Result<Uid>;
 
     #[zbus(signal)]
     fn policy_mutated(&self) -> zbus::Result<u32>;
-}
-
-/// Property accessor for `BlockedApps`.
-///
-/// `BlockedAppEntry` now derives `Value`, so `Vec<BlockedAppEntry>` satisfies
-/// `TryFrom<OwnedValue>` required by the property getter.
-impl DaemonProxy<'_> {
-    pub async fn blocked_apps(&self) -> zbus::Result<Vec<BlockedAppEntry>> {
-        self.inner().get_property("BlockedApps").await
-    }
 }

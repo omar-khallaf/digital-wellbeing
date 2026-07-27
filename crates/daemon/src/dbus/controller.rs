@@ -16,11 +16,36 @@ use crate::reports::data::ReportsRepo;
 
 use super::domain::BlockedAppsMap;
 
+/// Configuration bundle for constructing a [`DaemonInterface`].
+///
+/// All fields are required — use the struct literal directly:
+/// ```ignore
+/// DaemonInterface::new(DaemonInterfaceConfig {
+///     policy_repo,
+///     categorization_repo,
+///     reports_repo,
+///     registry,
+///     event_tx: platform.event_tx(),
+///     clock: Box::new(SystemClock),
+///     blocked_apps,
+///     tokio_handle: tokio::runtime::Handle::current(),
+///     policy_tx,
+/// })
+/// ```
+pub struct DaemonInterfaceConfig {
+    pub policy_repo: PolicyRepo,
+    pub categorization_repo: CategorizationRepo,
+    pub reports_repo: ReportsRepo,
+    pub registry: Arc<RwLock<PluginRegistry>>,
+    pub event_tx: UnboundedSender<PlatformEvent>,
+    pub clock: Box<dyn Clock>,
+    pub blocked_apps: BlockedAppsMap,
+    pub tokio_handle: tokio::runtime::Handle,
+    pub policy_tx: mpsc::Sender<InternalEvent>,
+}
+
 /// The main D-Bus interface object, registered on the bus as
 /// `org.wellbeing.v1.Controller`.
-///
-/// Holds shared state and feature repositories — all created once at
-/// startup and reused for the lifetime of the process.
 pub struct DaemonInterface {
     pub(crate) policy_repo: PolicyRepo,
     pub(crate) categorization_repo: CategorizationRepo,
@@ -35,17 +60,18 @@ pub struct DaemonInterface {
 }
 
 impl DaemonInterface {
-    pub fn new(
-        policy_repo: PolicyRepo,
-        categorization_repo: CategorizationRepo,
-        reports_repo: ReportsRepo,
-        registry: Arc<RwLock<PluginRegistry>>,
-        event_tx: mpsc::UnboundedSender<PlatformEvent>,
-        clock: Box<dyn Clock>,
-        blocked_apps: BlockedAppsMap,
-        tokio_handle: tokio::runtime::Handle,
-        policy_tx: mpsc::Sender<InternalEvent>,
-    ) -> Self {
+    pub fn new(config: DaemonInterfaceConfig) -> Self {
+        let DaemonInterfaceConfig {
+            policy_repo,
+            categorization_repo,
+            reports_repo,
+            registry,
+            event_tx,
+            clock,
+            blocked_apps,
+            tokio_handle,
+            policy_tx,
+        } = config;
         Self {
             policy_repo,
             categorization_repo,

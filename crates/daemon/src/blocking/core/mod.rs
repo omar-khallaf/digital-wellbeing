@@ -35,7 +35,6 @@ use crate::policy::evaluate;
 use crate::signal::DaemonSignal;
 use crate::store::DbPool;
 
-/// Internal events for the blocking actor.
 pub enum InternalEvent {
     /// Flush the event buffer. The optional oneshot sender is signaled
     /// after the flush completes.
@@ -45,7 +44,6 @@ pub enum InternalEvent {
     PolicyMutated { owner_id: Uid },
 }
 
-/// Core enforcement actor, generic over [`Platform`] and [`Clock`].
 pub struct EnforcerActor<P: Platform, C: Clock> {
     pub(crate) blocking_repo: BlockingRepo,
     pub(crate) policy_repo: PolicyRepo,
@@ -96,7 +94,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         self.internal_tx.clone()
     }
 
-    /// Main actor loop.
     pub async fn run(
         &mut self,
         mut enforcer_rx: mpsc::Receiver<PlatformEvent>,
@@ -159,7 +156,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         }
     }
 
-    /// Flush buffered events to the database.
     pub async fn flush_buffer(&mut self) -> anyhow::Result<()> {
         let now = self.clock.now();
         let event_uids = self.event_buffer.uids();
@@ -282,14 +278,12 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         Ok(())
     }
 
-    /// Handles notification side-effects internally.
     async fn evaluate_single_app(
         &mut self,
         uid: Uid,
         app_class: &AppClass,
         now: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Option<BlockedAppEntry>> {
-        // Upsert app into registry, get apps.id
         let app_id = match self.blocking_repo.ensure_app(app_class).await {
             Ok(id) => id,
             Err(e) => {
@@ -362,12 +356,10 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         );
 
         // Handle Notify effects (non-terminating) — fire-and-forget.
-        for (_notify_id, effect) in &result.notifies {
-            if matches!(effect, crate::policy::Effect::Notify { .. }) {
-                let body = format!("{} has exceeded its usage threshold.", app_class);
-                if let Err(e) = self.platform.notify("Usage limit reached", &body).await {
-                    tracing::warn!(%app_class, error = %e, "Failed to send notification");
-                }
+        for (_notify_id, _effect) in &result.notifies {
+            let body = format!("{} has exceeded its usage threshold.", app_class);
+            if let Err(e) = self.platform.notify("Usage limit reached", &body).await {
+                tracing::warn!(%app_class, error = %e, "Failed to send notification");
             }
         }
 
@@ -454,8 +446,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         Ok(())
     }
 
-    /// Check whether the date has rolled over since the last midnight reset.
-    /// If it has, clear daily time-limit blocks and update the tracker.
     async fn maybe_midnight_reset(&mut self) -> anyhow::Result<()> {
         let now_utc = chrono::Utc::now();
         let today = now_utc.date_naive();

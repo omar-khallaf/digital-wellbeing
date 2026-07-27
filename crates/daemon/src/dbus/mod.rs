@@ -6,4 +6,4 @@ pub mod domain;
 mod methods;
 mod signals;
 
-pub use controller::DaemonInterface;
+pub use controller::{DaemonInterface, DaemonInterfaceConfig};

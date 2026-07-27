@@ -19,7 +19,6 @@ use crate::policy::data::insert::{NewPolicy, UpdatePolicy};
 use crate::policy::data::models::{PolicyRow, ScheduleRow};
 use crate::policy::domain::{Effect, Policy, PolicyTarget};
 use crate::store::DbPool;
-use crate::store::connection::DbConn;
 use crate::store::daos::apps::AppsDao;
 use crate::store::daos::policies::queries;
 use crate::store::schema;
@@ -35,23 +34,6 @@ pub struct PolicyRepo {
 impl PolicyRepo {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
-    }
-
-    /// Load schedules from `policy_schedules` for a policy row.
-    async fn load_schedules(&self, conn: &mut DbConn, policy_id: i32) -> Vec<TimeWindow> {
-        let rows: Vec<ScheduleRow> = schema::policy_schedules::table
-            .filter(schema::policy_schedules::policy_id.eq(policy_id))
-            .load(conn)
-            .await
-            .unwrap_or_default();
-
-        rows.into_iter()
-            .map(|r| TimeWindow {
-                start_minute: r.start_minute as u16,
-                end_minute: r.end_minute as u16,
-                day_mask: r.day_mask as u8,
-            })
-            .collect()
     }
 
     /// Convert a [`PolicyRow`] to a domain [`Policy`] with schedules loaded.
@@ -124,9 +106,30 @@ impl PolicyRepo {
             app_rows.into_iter().collect()
         };
 
+        // Batch-load schedules: one query instead of N+1.
+        let policy_ids: Vec<i32> = rows.iter().map(|r| r.id).collect();
+        let mut schedule_map: HashMap<i32, Vec<TimeWindow>> = HashMap::new();
+        if !policy_ids.is_empty() {
+            let sched_rows: Vec<ScheduleRow> = schema::policy_schedules::table
+                .filter(schema::policy_schedules::policy_id.eq_any(&policy_ids))
+                .load(&mut conn)
+                .await
+                .unwrap_or_default();
+            for sr in sched_rows {
+                schedule_map
+                    .entry(sr.policy_id)
+                    .or_default()
+                    .push(TimeWindow {
+                        start_minute: sr.start_minute as u16,
+                        end_minute: sr.end_minute as u16,
+                        day_mask: sr.day_mask as u8,
+                    });
+            }
+        }
+
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
-            let schedules = self.load_schedules(&mut conn, row.id).await;
+            let schedules = schedule_map.remove(&row.id).unwrap_or_default();
             let app_class_str = row
                 .app_id
                 .and_then(|id| app_map.get(&id).cloned())

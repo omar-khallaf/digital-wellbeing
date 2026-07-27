@@ -14,20 +14,9 @@
 //! - Empty slice → `EvalResult::unrestricted()`.
 
 use tracing::debug;
-use wellbeing_core::{AppClass, PolicyId};
+use wellbeing_core::PolicyId;
 
-use crate::policy::domain::{Effect, EvalResult, Policy, PolicyTarget};
-
-/// Determine whether a policy's target matches the given app and category names.
-#[allow(dead_code)]
-fn target_matches(target: &PolicyTarget, app_class: &AppClass, category_names: &[String]) -> bool {
-    match target {
-        PolicyTarget::Any => true,
-        PolicyTarget::App(t) => t == app_class,
-        PolicyTarget::Category(cat_name) => category_names.contains(cat_name),
-        PolicyTarget::Domain(_) => false, // DNS-level — excluded from app evaluation
-    }
-}
+use crate::policy::domain::{Effect, EvalResult, Policy};
 
 /// Check if a schedule (vec of time windows) is active at `now`.
 ///
@@ -107,6 +96,19 @@ mod tests {
     use super::*;
     use crate::policy::domain::{Effect, Policy, PolicyTarget};
     use wellbeing_core::{AppClass, PolicyId, TimeWindow};
+
+    fn target_matches(
+        target: &PolicyTarget,
+        app_class: &AppClass,
+        category_names: &[String],
+    ) -> bool {
+        match target {
+            PolicyTarget::Any => true,
+            PolicyTarget::App(t) => t == app_class,
+            PolicyTarget::Category(cat_name) => category_names.contains(cat_name),
+            PolicyTarget::Domain(_) => false, // DNS-level — excluded from app evaluation
+        }
+    }
 
     fn policy(id: i64, effect: Effect, priority: u64) -> Policy {
         Policy {

@@ -24,7 +24,6 @@ struct hash<wellbeing::AppClass> {
 };
 } // namespace std
 
-// Screen-space bounding box for an overlay action button.
 // Used by LockManager::onMouseClick() for hit-testing.
 struct ButtonRect {
     int x = 0, y = 0, w = 0, h = 0;
@@ -36,7 +35,7 @@ struct ButtonRect {
 // can be blocked simultaneously, each with its own ActiveOverlay.
 struct ActiveOverlay {
     AppClass appClass;
-    uint64_t policyId = 0;
+    int64_t policyId = 0;
     uint64_t blockedSince = 0;
     std::vector<ActionType> actions;
     BlockReason reason = BlockReason::AppTimeLimit;
@@ -79,7 +78,7 @@ class LockManager {
 
     /// All fields come from the daemon's BlockedApps entry. Captures window
     /// geometry for button positioning.
-    void showOverlay(const AppClass &appClass, uint64_t policyId, BlockReason reason, uint64_t blockedSince,
+    void showOverlay(const AppClass &appClass, int64_t policyId, BlockReason reason, uint64_t blockedSince,
                      const std::vector<ActionType> &actions);
 
     /// Erases the stored ActiveOverlay. Returns AppClassMismatch if appClass is

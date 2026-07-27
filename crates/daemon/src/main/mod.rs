@@ -12,6 +12,7 @@ use futures::StreamExt;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use wellbeing_core::BlockedAppsChangedSignal;
 use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{
     BLOCKED_APPS_CHANGED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
@@ -21,6 +22,7 @@ use wellbeing_daemon::{
     bus_resolution::{self, BusMode, DaemonMode},
     categorization::data::CategorizationRepo,
     dbus::DaemonInterface,
+    dbus::DaemonInterfaceConfig,
     policy::data::PolicyRepo,
     reports::data::ReportsRepo,
     signal::DaemonSignal,
@@ -151,17 +153,17 @@ async fn main() -> Result<()> {
 
     // Register object server BEFORE requesting the name to avoid zbus warnings
     // about method calls arriving before interfaces exist.
-    let interface = DaemonInterface::new(
+    let interface = DaemonInterface::new(DaemonInterfaceConfig {
         policy_repo,
         categorization_repo,
         reports_repo,
         registry,
-        platform.event_tx(),
-        Box::new(SystemClock),
+        event_tx: platform.event_tx(),
+        clock: Box::new(SystemClock),
         blocked_apps,
-        tokio::runtime::Handle::current(),
+        tokio_handle: tokio::runtime::Handle::current(),
         policy_tx,
-    );
+    });
     conn.object_server()
         .at(DAEMON_OBJECT_PATH, interface)
         .await
@@ -274,14 +276,19 @@ async fn emit_signal(conn: &zbus::Connection, signal: DaemonSignal) {
             blocked,
             reason,
         } => {
-            let app_class_str = app_class.as_ref().to_string();
+            let payload = BlockedAppsChangedSignal {
+                uid,
+                app_class,
+                blocked,
+                reason,
+            };
             if let Err(e) = conn
                 .emit_signal(
                     None::<&str>,
                     DAEMON_OBJECT_PATH,
                     DAEMON_INTERFACE,
                     BLOCKED_APPS_CHANGED_SIGNAL,
-                    &(uid, app_class_str, blocked, reason),
+                    &payload,
                 )
                 .await
             {

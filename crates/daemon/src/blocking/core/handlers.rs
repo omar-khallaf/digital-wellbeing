@@ -25,31 +25,19 @@ impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C>
             PlatformEvent::Focus { .. } | PlatformEvent::Block { .. }
         );
 
-        // Extract uid + app_class BEFORE pushing event into the buffer
-        // (which moves it). Per-focus/per-block evaluation uses the event's
-        // own payload directly instead of re-querying CurrentFocus via D-Bus,
-        // avoiding a timing race where compositor could switch focus between
-        // signal receipt and property query. The periodic minute-ticker
-        // (evaluate_and_enforce) still re-queries CurrentFocus as it has no
-        // event payload.
-        if should_evaluate {
-            let uid = event.uid();
-            if let Some(app_class) = event.app_class().cloned() {
-                self.event_buffer.push(event, self.clock.now());
-                if let Err(e) = self
-                    .evaluate_and_apply(uid, &app_class, self.clock.now())
+        let uid = event.uid();
+        let app_class = event.app_class().cloned();
+
+        self.event_buffer.push(event, self.clock.now());
+
+        if should_evaluate
+            && let Some(ref app_class) = app_class
+                && let Err(e) = self
+                    .evaluate_and_apply(uid, app_class, self.clock.now())
                     .await
                 {
                     warn!(error = %e, "Per-event evaluation failed");
                 }
-            } else {
-                self.event_buffer.push(event, self.clock.now());
-            }
-        } else {
-            self.event_buffer.push(event, self.clock.now());
-        }
-
-        // Buffer threshold flush
         if self.event_buffer.len() >= 100
             && let Err(e) = self.flush_buffer().await
         {

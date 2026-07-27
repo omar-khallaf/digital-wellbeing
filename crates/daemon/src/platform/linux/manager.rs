@@ -17,8 +17,6 @@ use wellbeing_core::{
 use zbus::proxy;
 use zvariant::OwnedValue;
 
-// ── Proxy ────────────────────────────────────────────────────────────────────
-
 /// The `org.wellbeing.v1.Manager` D-Bus interface exposed by the compositor plugin.
 ///
 /// Signals:
@@ -46,8 +44,6 @@ pub trait Manager {
     #[zbus(property)]
     fn current_focus(&self) -> zbus::Result<OwnedValue>;
 }
-
-// ── Client ───────────────────────────────────────────────────────────────────
 
 pub struct ManagerClient {
     pub uid: Uid,
@@ -80,8 +76,6 @@ impl ManagerClient {
         }
     }
 }
-
-// ── Registry ─────────────────────────────────────────────────────────────────
 
 pub struct PluginRegistry {
     clients: HashMap<PluginInstanceId, ManagerClient>,
@@ -166,10 +160,21 @@ impl PluginRegistry {
             loop {
                 tokio::select! {
                     Some(signal) = event_stream.next() => {
-                            if let Ok(args) = signal.args()
-                                && let Some(event) = parse_event_payload(args.payload, uid) {
-                                tx.send(event).await.ok();
+                        match signal.args() {
+                            Ok(args) => {
+                                match parse_event_payload(args.payload, uid) {
+                                    Some(event) => {
+                                        tx.send(event).await.ok();
+                                    }
+                                    None => {
+                                        warn!(?uid, "subscribe_signals: failed to parse event payload from plugin");
+                                    }
+                                }
                             }
+                            Err(e) => {
+                                warn!(?uid, error = %e, "subscribe_signals: failed to deserialize signal args");
+                            }
+                        }
                     }
                     else => break,
                 }
@@ -185,8 +190,6 @@ impl Default for PluginRegistry {
         Self::new()
     }
 }
-
-// ── Payload parser (D-Bus → PlatformEvent boundary) ─────────────────────────
 
 /// Parse a unified `Event` signal / `CurrentFocus` property payload into a
 /// [`PlatformEvent`].
@@ -205,7 +208,6 @@ impl Default for PluginRegistry {
 pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
     use zvariant::Value;
 
-    // Every variant must be a struct with at least EVENT_STRUCT_FIELD_COUNT fields.
     let v: Value = val.into();
     // Unwrap outer Variant wrapper (D-Bus VARIANT / sdbus::Variant wrapping).
     let v = match v {
@@ -229,17 +231,32 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
         Value::U32(EVENT_TAG_FOCUS) => {
             let app_class_str = match &f[EVENT_FIELD_APP_ID] {
                 Value::Str(s) => s.as_str(),
-                _ => return None,
+                other => {
+                    warn!(?uid, tag = "Focus", field = "app_class", value_debug = ?other, "parse_event_payload: expected string for app_class");
+                    return None;
+                }
             };
             let title_str = match &f[EVENT_FIELD_TITLE] {
                 Value::Str(s) => s.as_str(),
-                _ => return None,
+                other => {
+                    warn!(?uid, tag = "Focus", field = "title", value_debug = ?other, "parse_event_payload: expected string for title");
+                    return None;
+                }
             };
             let pid_val = match &f[EVENT_FIELD_PID] {
                 Value::U32(p) => wellbeing_core::Pid(*p),
-                _ => return None,
+                other => {
+                    warn!(?uid, tag = "Focus", field = "pid", value_debug = ?other, "parse_event_payload: expected u32 for pid");
+                    return None;
+                }
             };
-            let aid = wellbeing_core::AppClass::new(app_class_str).ok()?;
+            let aid = match wellbeing_core::AppClass::new(app_class_str) {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(?uid, tag = "Focus", app_class = app_class_str, error = %e, "parse_event_payload: AppClass validation failed");
+                    return None;
+                }
+            };
             Some(PlatformEvent::Focus {
                 app_class: aid,
                 title: wellbeing_core::WindowTitle::new(title_str),
@@ -251,13 +268,25 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
         Value::U32(EVENT_TAG_BLOCK) => {
             let app_class_str = match &f[EVENT_FIELD_APP_ID] {
                 Value::Str(s) => s.as_str(),
-                _ => return None,
+                other => {
+                    warn!(?uid, tag = "Block", field = "app_class", value_debug = ?other, "parse_event_payload: expected string for app_class");
+                    return None;
+                }
             };
             let title_str = match &f[EVENT_FIELD_TITLE] {
                 Value::Str(s) => s.as_str(),
-                _ => return None,
+                other => {
+                    warn!(?uid, tag = "Block", field = "title", value_debug = ?other, "parse_event_payload: expected string for title");
+                    return None;
+                }
             };
-            let aid = wellbeing_core::AppClass::new(app_class_str).ok()?;
+            let aid = match wellbeing_core::AppClass::new(app_class_str) {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!(?uid, tag = "Block", app_class = app_class_str, error = %e, "parse_event_payload: AppClass validation failed");
+                    return None;
+                }
+            };
             Some(PlatformEvent::Block {
                 app_class: aid,
                 title: wellbeing_core::WindowTitle::new(title_str),
@@ -273,10 +302,16 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
                 Value::U32(EVENT_POWER_HIBERNATE) => PowerEventKind::Hibernate,
                 Value::U32(EVENT_POWER_SHUTDOWN) => PowerEventKind::Shutdown,
                 Value::U32(EVENT_POWER_SUSPEND) => PowerEventKind::Suspend,
-                _ => return None,
+                other => {
+                    warn!(?uid, power_tag_debug = ?other, "parse_event_payload: expected known power tag (0=suspend,1=hibernate,2=shutdown)");
+                    return None;
+                }
             };
             Some(PlatformEvent::PowerEvent { kind, uid })
         }
-        _ => None,
+        tag => {
+            warn!(?uid, tag_debug = ?tag, "parse_event_payload: unknown event tag");
+            None
+        }
     }
 }

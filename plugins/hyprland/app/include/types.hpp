@@ -129,8 +129,9 @@ inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 5;
 // Cross-reference: Rust BLOCKED_APP_SIGNATURE / EVENT_STRUCT_SIGNATURE in
 // crates/core/src/dbus_constants.rs.
 
-/// (string, uint64, uint32, uint64) — no actions vector, close button handled locally.
-inline constexpr auto BLOCKED_APP_SIGNATURE = "(stut)";
+/// (string, int64, uint32, uint64) — PolicyId is int64 (`x`) on the wire.
+/// Cross-reference: Rust BLOCKED_APP_SIGNATURE in crates/core/src/dbus_constants.rs.
+inline constexpr auto BLOCKED_APP_SIGNATURE = "(sxut)";
 
 /// (uint32, string, string, uint32, uint32).
 inline constexpr auto EVENT_STRUCT_SIGNATURE = "(ussuu)";

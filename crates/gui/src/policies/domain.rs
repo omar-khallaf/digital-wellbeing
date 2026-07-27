@@ -43,7 +43,6 @@ pub struct PolicyConfigForm {
     pub schedule_json: String,
     /// Parsed schedule rules from `schedule_json` — UI state, not serialized.
     pub schedules: Vec<TimeWindow>,
-    /// Target app id (window class for Hyprland).
     pub app_class: AppClass,
     /// Target category name — valid when target_type is Category.
     pub category_name: String,

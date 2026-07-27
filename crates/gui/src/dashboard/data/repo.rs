@@ -12,7 +12,7 @@ use tracing::warn;
 use wellbeing_core::*;
 
 use crate::dbus::BusManager;
-use crate::dbus::client::DaemonProxy;
+use crate::dbus::client::{BlockedApps, DaemonProxy};
 
 const DBUS_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -31,7 +31,7 @@ impl DashboardRepo {
         Self { bus }
     }
 
-    /// Create a fresh proxy.  Returns `Err` if the daemon is unreachable.
+    /// Returns `Err` if the daemon is unreachable.
     pub(crate) async fn proxy(&self) -> Result<DaemonProxy<'static>> {
         self.bus.create_proxy().await
     }
@@ -51,10 +51,11 @@ impl DashboardRepo {
 
     pub async fn get_blocked_apps(&self) -> Result<Vec<BlockedAppEntry>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.blocked_apps())
+        let result: BlockedApps = timeout(DBUS_TIMEOUT, proxy.blocked_apps())
             .await
             .map_err(|_| anyhow::anyhow!("timeout: blocked_apps"))?
-            .map_err(Into::into)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(result.into())
     }
 
     pub async fn get_day_events(
