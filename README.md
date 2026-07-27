@@ -8,14 +8,15 @@ Inspired by Android's Digital Wellbeing, built for Linux desktop.
 ## Project Status
 
 **v0.1 — core tracking, daemon actors, GUI, and Hyprland plugin are
-implemented.** Remaining work: DNS+eBPF domain blocking, policy engine redesign
-(priority-ordered evaluation + Allow effect + Any target), allow-only mode, DND
-integration, preset blocklists, and enhanced reports.
+implemented.** Remaining work: D-Bus interface revamp (properties→methods,
+uid-from-connection), browser extension + native bridge for per-tab domain
+blocking, allow-only mode, DND integration, preset blocklists, and enhanced
+reports with interactive timeline.
 
 ## Architecture
 
-The system is split into **two binaries communicating over D-Bus**, with a
-compositor plugin for overlay enforcement and state tracking:
+The system is split into **two binaries communicating over D-Bus**, with
+compositor and browser plugins for overlay enforcement and state tracking:
 
 - **`wellbeing-daemon`** — tokio async daemon (runs as root in **system mode**
   or non-root in **session mode**; mode selected at startup by uid) that owns
@@ -28,12 +29,18 @@ compositor plugin for overlay enforcement and state tracking:
   stale-while-revalidate cache. **Resolves the daemon's bus at runtime** via a
   4-step algorithm (system present → session present → activate system →
   activate session), never hardcodes a bus.
-- **Compositor plugin** (`org.wellbeing.v1.Manager`) — renders block overlays
-  via OpenGL and emits the unified `Event` signal (with `EventTag` enum). Runs
-  in the user's compositor session and resolves the daemon's bus using the
-  **identical 4-step algorithm** as the GUI, so it always lands on the same
-  daemon instance. This guarantees exactly one enforcing daemon per user — no
-  double overlay.
+- **Compositor plugin** (`org.wellbeing.v1.Manager`) — renders app-level block
+  overlays via OpenGL and emits the unified `Event` signal (with `EventTag`
+  enum). Runs in the user's compositor session and resolves the daemon's bus
+  using the **identical 4-step algorithm** as the GUI, so it always lands on
+  the same daemon instance.
+- **Native bridge** (`org.wellbeing.v1.Bridge`) + **browser extension** —
+  renders per-tab domain block overlays in the browser. The bridge is a
+  per-user D-Bus client that registers with the daemon (reverse discovery) and
+  exposes a `DomainEvent` signal. The browser extension communicates with the
+  bridge via native messaging and tracks tab/window focus (chrome.tabs,
+  chrome.windows). Domain-level and app-level enforcement are independent and
+  run in parallel.
 
 ```text
                      ┌──────────────────────────────────────────┐
@@ -179,7 +186,7 @@ cargo clippy -- -D warnings
 | [01-performance.md](docs/quality/01-performance.md)        | Developers | Zero-alloc hot path, CPU budget, async discipline                                                                     |
 | [02-testing.md](docs/quality/02-testing.md)                | Developers | Given-When-Then, domain events, sociable tests                                                                        |
 | [01-database.md](docs/persistence/01-database.md)          | Developers | Schema, migration policy, batch write strategy                                                                        |
-| [01-roadmap.md](docs/planning/01-roadmap.md)               | Developers | Phased build plan: policy redesign → DNS+eBPF blocking → allow-only + DND → preset blocklists → enhanced reports      |
+| [01-roadmap.md](docs/planning/01-roadmap.md)               | Developers | Phased build plan: D-Bus revamp → browser extension domain blocking → allow-only + DND → preset blocklists → enhanced reports |
 
 ## Roadmap
 

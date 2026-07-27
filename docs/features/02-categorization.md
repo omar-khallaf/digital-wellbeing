@@ -154,12 +154,13 @@ domain.
 Tracking data is always stored per-app — categories are computed at query time
 via the app_categories table.
 
-## Domain Categorization (DNS Blocking)
+## Domain Categorization (Browser Extension)
 
-Domain-level categorization powers the DNS blocking feature. When the daemon
-receives a DNS query, it resolves the domain's category before checking policies
-— enabling policies that target entire categories of websites (e.g.,
-`Block(Social)` blocks `reddit.com`, `twitter.com`, etc. at DNS level).
+Domain-level categorization powers the browser extension domain blocking
+feature. When the daemon receives a `DomainEvent` signal from the bridge, it
+resolves the domain's category before checking policies — enabling policies
+that target entire categories of websites (e.g., `Block(Social)` blocks
+`reddit.com`, `twitter.com`, etc. at the browser tab level).
 
 ### domain_categories Table
 
@@ -212,8 +213,8 @@ The `AiClassifier` trait is extended to accept domain names in addition to
 - v2: burn model with the same distilled BERT architecture, trained on domain
   patterns.
 
-The DNS daemon queries the categorizer for each incoming domain before passing
-it to the policy engine.
+The daemon queries the categorizer for each domain event before passing the
+domain to the policy engine.
 
 ---
 
