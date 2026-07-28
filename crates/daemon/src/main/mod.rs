@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
 
     let (done_tx, done_rx) = oneshot::channel();
     if flush_tx
-        .send(InternalEvent::Flush(Some(done_tx)))
+        .send(InternalEvent::Shutdown(Some(done_tx)))
         .await
         .is_ok()
     {

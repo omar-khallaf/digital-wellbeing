@@ -28,7 +28,7 @@ use wellbeing_core::*;
 
 use super::data::BlockingRepo;
 use crate::platform::linux::PluginRegistry;
-use crate::platform::{Platform, PlatformEvent};
+use crate::platform::{Platform, PlatformEvent, PowerEventKind};
 use crate::policy::Policy;
 use crate::policy::data::PolicyRepo;
 use crate::policy::evaluate;
@@ -39,6 +39,10 @@ pub enum InternalEvent {
     /// Flush the event buffer. The optional oneshot sender is signaled
     /// after the flush completes.
     Flush(Option<oneshot::Sender<()>>),
+    /// Insert a shutdown event for every registered UID, then flush
+    /// the event buffer. Used when the daemon receives SIGTERM/SIGINT
+    /// so the shutdown is recorded before exit.
+    Shutdown(Option<oneshot::Sender<()>>),
     /// A policy was mutated for the given user. Re-evaluate the currently
     /// focused app and update the blocked-apps map accordingly.
     PolicyMutated { owner_id: Uid },
@@ -140,6 +144,25 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 }
                 if let Err(e) = self.maybe_midnight_reset().await {
                     error!(error = %e, "midnight_reset failed");
+                }
+                if let Some(tx) = ack {
+                    let _ = tx.send(());
+                }
+            }
+            InternalEvent::Shutdown(ack) => {
+                let uids = self.registry.read().await.registered_uids();
+                for &uid in &uids {
+                    self.event_buffer.push(
+                        PlatformEvent::PowerEvent {
+                            kind: PowerEventKind::Shutdown,
+                            uid,
+                        },
+                        self.clock.now(),
+                    );
+                }
+                // Flush so the shutdown events are persisted immediately.
+                if let Err(e) = self.flush_buffer().await {
+                    error!(error = %e, "Shutdown flush failed");
                 }
                 if let Some(tx) = ack {
                     let _ = tx.send(());

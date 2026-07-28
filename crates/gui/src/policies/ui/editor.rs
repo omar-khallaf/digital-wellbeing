@@ -11,7 +11,6 @@ use wellbeing_core::{AppClass, TimeWindow};
 
 use crate::app::{App as GuiApp, RenderMode};
 use crate::components::card;
-use crate::policies::build_policies_viewmodel;
 use crate::theme;
 use crate::theme::{rad, sp};
 
@@ -557,17 +556,10 @@ impl GuiApp {
                                                 };
                                                 if res.is_ok() {
                                                     if let Ok(data) = repo.fetch_all(uid).await {
-                                                        let app_classs: Vec<AppClass> = data
-                                                            .app_list
-                                                            .iter()
-                                                            .map(|ac| ac.app_class.clone())
-                                                            .collect();
-                                                        let vm = build_policies_viewmodel(
-                                                            &data.policies,
-                                                            &data.categories,
-                                                            &app_classs,
-                                                            is_admin,
-                                                        );
+                                                        let mut vm = PoliciesViewModel::default();
+                                                        vm.data = Some(data);
+                                                        vm.is_admin = is_admin;
+                                                        vm.recompute_derived();
                                                         let _ = this2.update(cx3, |this3, cx4| {
                                                             this3.policies_vm = Some(vm);
                                                             this3.policy_edit = None;
@@ -609,17 +601,10 @@ impl GuiApp {
                                             let task = cx2.spawn(async move |this2, cx3| {
                                                 let _ = repo.delete_policy(id).await;
                                                 if let Ok(data) = repo.fetch_all(uid).await {
-                                                    let app_classs: Vec<AppClass> = data
-                                                        .app_list
-                                                        .iter()
-                                                        .map(|ac| ac.app_class.clone())
-                                                        .collect();
-                                                    let vm = build_policies_viewmodel(
-                                                        &data.policies,
-                                                        &data.categories,
-                                                        &app_classs,
-                                                        is_admin,
-                                                    );
+                                                    let mut vm = PoliciesViewModel::default();
+                                                    vm.data = Some(data);
+                                                    vm.is_admin = is_admin;
+                                                    vm.recompute_derived();
                                                     let _ = this2.update(cx3, |this3, cx4| {
                                                         this3.policies_vm = Some(vm);
                                                         this3.policy_edit = None;

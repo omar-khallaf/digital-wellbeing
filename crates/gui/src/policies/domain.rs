@@ -4,9 +4,17 @@ use wellbeing_core::{
     AppClass, Category, DomainPattern, Effect, PolicyData, PolicyInput, TargetType, TimeWindow, Uid,
 };
 
+use super::data::PoliciesData;
+
 /// Pure-data ViewModel for the Policies screen.
+///
+/// Acts like a Compose ViewModel with `StateFlow` — raw data persists in
+/// `self.data` and derived fields are recomputed via `recompute_derived()`.
 #[derive(Debug, Clone)]
 pub struct PoliciesViewModel {
+    /// Raw data bundle (like `MutableStateFlow<PoliciesData?>`).
+    /// `None` before the first successful fetch.
+    pub data: Option<PoliciesData>,
     /// Every app id ever seen in the event log (for the dropdown selector).
     pub app_list: Vec<AppClass>,
     /// Currently-edited policy target + form data, if any.
@@ -17,6 +25,20 @@ pub struct PoliciesViewModel {
     /// Per-field validation error messages shown in the PolicyEditor.
     pub validation_errors: Vec<String>,
     pub is_admin: bool,
+}
+
+impl Default for PoliciesViewModel {
+    fn default() -> Self {
+        Self {
+            data: None,
+            app_list: Vec::new(),
+            selected_policy: None,
+            categories: Vec::new(),
+            policies: Vec::new(),
+            validation_errors: Vec::new(),
+            is_admin: false,
+        }
+    }
 }
 
 /// UI-level target for a policy.

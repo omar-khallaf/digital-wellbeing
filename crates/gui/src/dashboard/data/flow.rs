@@ -1,32 +1,28 @@
 //! DashboardFlow — independent background task that listens for D-Bus signals,
 //! presence events, and manual refresh triggers, fetches fresh data via the
-//! repository, builds a ViewModel, and emits it to the GPUI thread.
+//! repository, patches the ViewModel in-place, and emits it to the GPUI thread.
 //!
-//! Active blocks derive from the `BlockedApps` D-Bus property (source of truth)
-//! and are kept up-to-date via the `BlockedAppsChanged` signal — when the signal
-//! fires, only the blocked-apps property is re-fetched (not the full dashboard),
-//! then the viewmodel is rebuilt from cached data.
+//! Each D-Bus signal triggers a targeted re-fetch:
+//! - `DailyUsageChanged` → full fetch via `fetch_all`
+//! - `BlockedAppsChanged` → blocked apps only, patches `data.blocked`
 //!
-//! Relies on the daemon's `DailyUsageChanged` signal (emitted every minute) to
-//! drive full-data re-fetches — no polling ticker needed.
+//! The `DashboardViewModel` persists across updates (like a Compose ViewModel)
+//! and is patched in-place rather than rebuilt from a cache — no `cached_data`.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::Utc;
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
-use wellbeing_core::{BlockedAppEntry, DateRange};
+use wellbeing_core::DateRange;
 
-use crate::dashboard::domain::{BlockCardInfo, DashboardViewModel};
-use crate::dashboard::timeline::build_day_timeline;
-use crate::dashboard::viewmodel::build_dashboard_viewmodel;
+use crate::dashboard::domain::DashboardViewModel;
 use crate::dbus::DaemonPresenceEvent;
 use crate::dbus::client::DaemonProxy;
 
-use super::repo::{DashboardData, DashboardRepo};
+use super::repo::DashboardRepo;
 
 /// Discriminated flow events forwarded from D-Bus signal subscriptions
 /// to the main loop, so each signal triggers the correct action.
@@ -45,14 +41,10 @@ pub struct FlowState {
 
 /// Spawn the dashboard background flow.
 ///
-/// The flow:
-/// 1. Waits for trigger events (D-Bus signals, presence, manual refresh)
-/// 2. Maintains a local `blocked_entries` cache from the `BlockedApps` property
-///    and keeps it in sync by re-fetching the property on every
-///    `BlockedAppsChanged` signal (without re-fetching the full dashboard)
-/// 3. Fetches full dashboard data via `DashboardRepo` only on
-///    `DailyUsageChanged` / presence / manual refresh
-/// 4. Builds the `DashboardViewModel` and sends it through `vm_tx`
+/// The flow maintains a persistent `DashboardViewModel` that is patched
+/// in-place as D-Bus signals arrive:
+/// - `DailyUsageChanged` / daemon reconnect / manual refresh → full fetch
+/// - `BlockedAppsChanged` → only `get_blocked_apps()`, patches `data.blocked`
 pub fn spawn_dashboard_flow(
     repo: DashboardRepo,
     state: Arc<FlowState>,
@@ -63,21 +55,16 @@ pub fn spawn_dashboard_flow(
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
         let mut proxy_subscribed = false;
-
         let mut daemon_available = true;
 
-        // Local blocked-apps cache — populated from the `BlockedApps` property
-        // and refreshed on every `BlockedAppsChanged` signal.
-        let mut blocked_entries: Vec<BlockedAppEntry> = Vec::new();
-
-        // Full-data cache — used to rebuild the viewmodel when only the blocked
-        // apps state changes, avoiding a full D-Bus re-fetch.
-        let mut cached_data: Option<DashboardData> = None;
+        // Persistent ViewModel — like a Compose ViewModel with StateFlow.
+        // Accumulates data from signal-driven fetches; never rebuilt from cache.
+        let mut current_vm = DashboardViewModel::default();
 
         info!("dashboard flow started");
 
         loop {
-            // (Re-)subscribe to signals on startup and after reconnect
+            // (Re-)subscribe to signals on startup and after reconnect.
             if !proxy_subscribed
                 && daemon_available
                 && let Some(conn) = repo.bus.try_proxy_conn()
@@ -115,9 +102,6 @@ pub fn spawn_dashboard_flow(
                 }
             }
 
-            let mut do_full_refresh = false;
-            let mut do_blocked_refresh = false;
-
             tokio::select! {
                 biased;
                 Ok(event) = presence_rx.recv() => {
@@ -126,8 +110,10 @@ pub fn spawn_dashboard_flow(
                             info!("dashboard: daemon appeared, reconnecting");
                             let ok = repo.bus.re_resolve().await;
                             daemon_available = ok;
-                            proxy_subscribed = false; // re-subscribe
-                            do_full_refresh = ok;
+                            proxy_subscribed = false;
+                            if ok {
+                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                            }
                         }
                         DaemonPresenceEvent::Disappeared => {
                             warn!("dashboard: daemon disappeared");
@@ -138,10 +124,23 @@ pub fn spawn_dashboard_flow(
                 signal = signal_rx.recv() => {
                     match signal {
                         Some(FlowSignal::DailyUsageChanged) => {
-                            do_full_refresh = daemon_available;
+                            if daemon_available {
+                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                            }
                         }
                         Some(FlowSignal::BlockedAppsChanged) => {
-                            do_blocked_refresh = daemon_available;
+                            if daemon_available {
+                                match repo.get_blocked_apps().await {
+                                    Ok(blocked) => {
+                                        if let Some(ref mut data) = current_vm.data {
+                                            data.blocked = blocked;
+                                            current_vm.recompute_blocked();
+                                            let _ = vm_tx.send(Some(current_vm.clone()));
+                                        }
+                                    }
+                                    Err(e) => warn!("dashboard: blocked fetch failed: {e}"),
+                                }
+                            }
                         }
                         Some(FlowSignal::SignalStreamEnded) => {
                             warn!("dashboard flow: signal stream lost — will re-subscribe");
@@ -151,101 +150,42 @@ pub fn spawn_dashboard_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    do_full_refresh = daemon_available;
+                    if daemon_available {
+                        do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                    }
                 }
             };
-
-            // Handle blocked-apps-only refresh — re-fetch property, rebuild
-            // viewmodel from cached full data, and emit.
-            if do_blocked_refresh {
-                if let Ok(entries) = repo.get_blocked_apps().await {
-                    blocked_entries = entries;
-                }
-
-                if let Some(ref data) = cached_data {
-                    let block_cards: Vec<BlockCardInfo> = blocked_entries
-                        .iter()
-                        .map(|b| BlockCardInfo {
-                            app_class: b.app_class.to_string(),
-                            display_name: String::new(),
-                            blocked_since: DateTime::from_timestamp_millis(b.blocked_since as i64)
-                                .unwrap_or(Utc::now()),
-                        })
-                        .collect();
-
-                    let app_names: HashMap<String, String> = data
-                        .app_categories
-                        .iter()
-                        .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
-                        .collect();
-
-                    let today = Utc::now().date_naive();
-                    let day_timeline = Some(build_day_timeline(
-                        &mut data.day_events.clone(),
-                        today,
-                        &app_names,
-                    ));
-
-                    let vm = build_dashboard_viewmodel(
-                        DateRange {
-                            start: Utc::now().date_naive(),
-                            end: Utc::now().date_naive(),
-                        },
-                        data,
-                        block_cards,
-                        day_timeline,
-                    );
-                    let _ = vm_tx.send(Some(vm));
-                }
-
-                // do_full_refresh stays false — skip the full re-fetch below.
-            }
-
-            if !do_full_refresh {
-                // Daemon offline — keep last ViewModel, don't send None.
-                continue;
-            }
-
-            // Full data re-fetch — dashboard always shows today.
-            let today: NaiveDate = chrono::Utc::now().date_naive();
-            let range = DateRange {
-                start: today,
-                end: today,
-            };
-            match repo.fetch_all(state.uid, range).await {
-                Ok(mut data) => {
-                    blocked_entries = data.blocked.clone();
-
-                    let block_cards: Vec<BlockCardInfo> = blocked_entries
-                        .iter()
-                        .map(|b| BlockCardInfo {
-                            app_class: b.app_class.to_string(),
-                            display_name: String::new(),
-                            blocked_since: DateTime::from_timestamp_millis(b.blocked_since as i64)
-                                .unwrap_or(Utc::now()),
-                        })
-                        .collect();
-
-                    let app_names: HashMap<String, String> = data
-                        .app_categories
-                        .iter()
-                        .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
-                        .collect();
-
-                    let day_timeline =
-                        Some(build_day_timeline(&mut data.day_events, today, &app_names));
-
-                    let vm = build_dashboard_viewmodel(range, &data, block_cards, day_timeline);
-
-                    // Cache full data for incremental blocked-apps updates.
-                    cached_data = Some(data);
-
-                    let _ = vm_tx.send(Some(vm));
-                }
-                Err(e) => {
-                    warn!("dashboard: fetch_all failed: {e}");
-                }
-            }
         }
     });
+}
+
+/// Fetch ALL dashboard data and update the ViewModel's raw data + derived state.
+///
+/// Falls back to the last good state on error — the VM is never cleared.
+async fn do_full_fetch(
+    repo: &DashboardRepo,
+    uid: u32,
+    vm: &mut DashboardViewModel,
+    tx: &UnboundedSender<Option<DashboardViewModel>>,
+) {
+    let today = Utc::now().date_naive();
+    match repo
+        .fetch_all(
+            uid,
+            DateRange {
+                start: today,
+                end: today,
+            },
+        )
+        .await
+    {
+        Ok(data) => {
+            vm.data = Some(data);
+            vm.recompute_derived();
+            let _ = tx.send(Some(vm.clone()));
+        }
+        Err(e) => {
+            warn!("dashboard: fetch_all failed: {e}");
+        }
+    }
 }

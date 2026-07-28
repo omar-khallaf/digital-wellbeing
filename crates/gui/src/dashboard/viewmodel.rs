@@ -1,48 +1,116 @@
-//! Dashboard ViewModel builder — transforms D-Bus cache data into UI state.
+//! Dashboard ViewModel — transforms D-Bus data into UI state.
 //!
-//! Pure functions with no gpui or async dependencies.
+//! Pure functions with no gpui or async dependencies.  `DashboardViewModel`
+//! methods mutate the VM in-place, like a Compose ViewModel with StateFlow.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use wellbeing_core::{
-    AppCategoryRow, Category, DailyUsageByAppEntry, DailyUsageByCategoryEntry,
-    DailyUsageByTitleEntry,
+    AppCategoryRow, BlockedAppEntry, Category, DailyUsageByAppEntry, DailyUsageByCategoryEntry,
+    DailyUsageByTitleEntry, DateRange,
 };
 
-use super::data::DashboardData;
-use super::domain::{
-    AppListEntry, BlockCardInfo, DashboardViewModel, DayTimeline, Kpis, TitleListEntry,
-};
+use super::domain::{AppListEntry, BlockCardInfo, DashboardViewModel, Kpis, TitleListEntry};
 use crate::chart::Slice;
+use crate::dashboard::timeline::build_day_timeline;
 
-/// Transform D-Bus cache data into a `DashboardViewModel`.
-pub fn build_dashboard_viewmodel(
-    range: wellbeing_core::DateRange,
-    data: &DashboardData,
-    block_cards: Vec<BlockCardInfo>,
-    day_timeline: Option<DayTimeline>,
-) -> DashboardViewModel {
-    let usage: Vec<DailyUsageByAppEntry> = data
-        .summaries
-        .iter()
-        .flat_map(|s| s.entries.iter().cloned())
-        .collect();
+// ---------------------------------------------------------------------------
+// ViewModel mutation methods (Compose-like StateFlow pattern)
+// ---------------------------------------------------------------------------
 
-    let pie_app = build_app_slices(&usage, &data.app_categories);
-    let pie_category = build_category_slices(&data.category_entries, &data.categories);
-    let top_apps = build_top_apps(&usage, &data.app_categories);
-    let top_titles = build_top_titles(&data.title_entries);
+impl DashboardViewModel {
+    /// Recompute ALL derived fields from the raw data in `self.data`.
+    ///
+    /// Call after a full fetch (DailyUsageChanged / daemon reconnect / manual
+    /// refresh).  Mutates `day_events` in-place (sorts into timeline order).
+    pub fn recompute_derived(&mut self) {
+        let Some(ref mut data) = self.data else {
+            self.clear_derived();
+            return;
+        };
 
-    DashboardViewModel {
-        date_range: range,
-        pie_app,
-        pie_category,
-        top_apps,
-        block_cards,
-        day_timeline,
-        top_titles,
+        let usage: Vec<DailyUsageByAppEntry> = data
+            .summaries
+            .iter()
+            .flat_map(|s| s.entries.iter().cloned())
+            .collect();
+
+        let app_names: HashMap<String, String> = data
+            .app_categories
+            .iter()
+            .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
+            .collect();
+
+        self.pie_app = build_app_slices(&usage, &data.app_categories);
+        self.pie_category = build_category_slices(&data.category_entries, &data.categories);
+        self.top_apps = build_top_apps(&usage, &data.app_categories);
+        self.top_titles = build_top_titles(&data.title_entries);
+        self.block_cards = build_block_cards(&data.blocked, &app_names);
+
+        let today = Utc::now().date_naive();
+        self.day_timeline = Some(build_day_timeline(
+            &mut data.day_events, // sorted in-place — fine, this is VM state
+            today,
+            &app_names,
+        ));
+        self.date_range = DateRange {
+            start: today,
+            end: today,
+        };
+    }
+
+    /// Fast path — only recompute `block_cards` from `data.blocked`.
+    ///
+    /// Call after `BlockedAppsChanged` signal.  Leaves all other derived
+    /// fields untouched (they're still fresh from the last full fetch).
+    pub fn recompute_blocked(&mut self) {
+        let Some(ref data) = self.data else { return };
+
+        let app_names: HashMap<String, String> = data
+            .app_categories
+            .iter()
+            .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
+            .collect();
+
+        self.block_cards = build_block_cards(&data.blocked, &app_names);
+    }
+
+    fn clear_derived(&mut self) {
+        self.pie_app.clear();
+        self.pie_category.clear();
+        self.top_apps.clear();
+        self.top_titles.clear();
+        self.block_cards.clear();
+        self.day_timeline = None;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Block card builder (extracted for use by both recompute paths)
+// ---------------------------------------------------------------------------
+
+pub fn build_block_cards(
+    blocked: &[BlockedAppEntry],
+    app_names: &HashMap<String, String>,
+) -> Vec<BlockCardInfo> {
+    blocked
+        .iter()
+        .map(|b| BlockCardInfo {
+            app_class: b.app_class.to_string(),
+            display_name: app_names
+                .get(b.app_class.as_str())
+                .cloned()
+                .unwrap_or_default(),
+            blocked_since: DateTime::from_timestamp_millis(b.blocked_since as i64)
+                .unwrap_or(Utc::now()),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Pure computation helpers (unchanged)
+// ---------------------------------------------------------------------------
 
 fn build_app_slices(
     usage: &[DailyUsageByAppEntry],

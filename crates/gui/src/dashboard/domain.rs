@@ -6,6 +6,8 @@ use wellbeing_core::{DateRange, EventType};
 
 use crate::chart::Slice;
 
+use super::data::DashboardData;
+
 #[derive(Debug, Clone)]
 pub struct AppListEntry {
     pub rank: usize,
@@ -55,10 +57,14 @@ pub struct DayTimeline {
 
 /// Pure-data ViewModel for the Dashboard screen.
 ///
-/// No gpui types, `Send + 'static`.  Built by `build_dashboard_viewmodel()`
-/// from raw D-Bus cache data and consumed by gpui component constructors.
+/// No gpui types, `Send + 'static`.  Acts like a Compose ViewModel with
+/// `StateFlow` — raw data persists in `self.data` and derived fields
+/// are recomputed in-place via `recompute_derived()` / `recompute_blocked()`.
 #[derive(Debug, Clone)]
 pub struct DashboardViewModel {
+    /// Raw data bundle (like `MutableStateFlow<DashboardData?>` in Kotlin).
+    /// `None` before the first successful fetch.
+    pub data: Option<DashboardData>,
     pub date_range: DateRange,
     pub pie_app: Vec<Slice>,
     pub pie_category: Vec<Slice>,
@@ -67,6 +73,24 @@ pub struct DashboardViewModel {
     /// Day-timeline focus blocks and gaps (optional, loaded on demand).
     pub day_timeline: Option<DayTimeline>,
     pub top_titles: Vec<TitleListEntry>,
+}
+
+impl Default for DashboardViewModel {
+    fn default() -> Self {
+        Self {
+            data: None,
+            date_range: DateRange {
+                start: NaiveDate::default(),
+                end: NaiveDate::default(),
+            },
+            pie_app: Vec::new(),
+            pie_category: Vec::new(),
+            top_apps: Vec::new(),
+            block_cards: Vec::new(),
+            day_timeline: None,
+            top_titles: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

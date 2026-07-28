@@ -1,11 +1,10 @@
 //! ReportsFlow — independent background task with signal-triggered refresh,
 //! presence-aware reconnection, and timeout-guarded D-Bus fetches.
 //!
-//! Relies on the daemon's `DailyUsageChanged` signal (emitted every minute) to
-//! drive re-fetches — no polling ticker needed.
+//! The `ReportsViewModel` persists across updates (like a Compose ViewModel)
+//! and is patched in-place rather than rebuilt from a builder function.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::StreamExt;
 use tokio::sync::RwLock;
@@ -15,9 +14,18 @@ use tracing::{info, warn};
 use wellbeing_core::DateRange;
 
 use crate::dbus::DaemonPresenceEvent;
-use crate::reports::build_reports_viewmodel;
+use crate::reports::ReportsViewModel;
 
 use super::repo::ReportsRepo;
+
+/// Discriminated flow events forwarded from D-Bus signal subscriptions
+/// to the main loop, so each signal triggers the correct action.
+enum FlowSignal {
+    DailyUsageChanged,
+    /// One of the signal forwarding streams ended (transient D-Bus glitch).
+    /// Triggers re-subscription on the next loop iteration.
+    SignalStreamEnded,
+}
 
 pub struct FlowState {
     pub uid: u32,
@@ -27,19 +35,21 @@ pub struct FlowState {
 /// Refreshes on:
 /// - `daily_usage_changed` D-Bus signal
 /// - Daemon presence change (reconnect)
-/// - Manual refresh trigger
+/// - Manual refresh trigger (range change, etc.)
 pub fn spawn_reports_flow(
     repo: ReportsRepo,
     state: Arc<FlowState>,
     mut presence_rx: broadcast::Receiver<DaemonPresenceEvent>,
     mut refresh_rx: broadcast::Receiver<()>,
-    vm_tx: UnboundedSender<Option<super::ReportsViewModel>>,
+    vm_tx: UnboundedSender<Option<ReportsViewModel>>,
 ) {
     tokio::spawn(async move {
-        // bool: true = signal received, false = signal stream ended
-        let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<bool>();
+        let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
         let mut proxy_subscribed = false;
         let mut daemon_available = true;
+
+        // Persistent ViewModel — like a Compose ViewModel with StateFlow.
+        let mut current_vm = ReportsViewModel::default();
 
         info!("reports flow started");
 
@@ -51,22 +61,22 @@ pub fn spawn_reports_flow(
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(true);
+                                    let _ = tx.send(FlowSignal::DailyUsageChanged);
                                 }
                                 warn!("reports flow: daily_usage_changed signal stream ended");
-                                let _ = tx.send(false);
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
                         }
                         proxy_subscribed = true;
                     }
                     Err(e) => {
                         warn!("reports flow: cannot create proxy for signals: {e}");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     }
                 }
             }
 
-            let triggered = tokio::select! {
+            tokio::select! {
                 biased;
                 Ok(event) = presence_rx.recv() => {
                     match event {
@@ -75,47 +85,58 @@ pub fn spawn_reports_flow(
                             let ok = repo.bus.re_resolve().await;
                             daemon_available = ok;
                             proxy_subscribed = false;
-                            ok
+                            if ok {
+                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                            }
                         }
                         DaemonPresenceEvent::Disappeared => {
                             warn!("reports: daemon disappeared");
                             daemon_available = false;
-                            false
                         }
                     }
                 }
-                Some(alive) = signal_rx.recv() => {
-                    if !alive {
-                        warn!("reports flow: signal stream lost — will re-subscribe");
-                        proxy_subscribed = false;
+                signal = signal_rx.recv() => {
+                    match signal {
+                        Some(FlowSignal::DailyUsageChanged) => {
+                            if daemon_available {
+                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                            }
+                        }
+                        Some(FlowSignal::SignalStreamEnded) => {
+                            warn!("reports flow: signal stream lost — will re-subscribe");
+                            proxy_subscribed = false;
+                        }
+                        None => {}
                     }
-                    daemon_available
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    daemon_available
+                    if daemon_available {
+                        do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                    }
                 }
             };
-
-            if !triggered {
-                // Daemon offline — keep last ViewModel, don't send None.
-                continue;
-            }
-
-            let range = *state.selected_range.read().await;
-            match repo.fetch_all(state.uid, range).await {
-                Ok(data) => {
-                    let vm = build_reports_viewmodel(
-                        range,
-                        &data.summaries,
-                        &data.app_categories,
-                        &data.title_entries,
-                    );
-                    let _ = vm_tx.send(Some(vm));
-                }
-                Err(e) => {
-                    warn!("reports: fetch_all failed: {e}");
-                }
-            }
         }
     });
+}
+
+/// Fetch ALL reports data and update the ViewModel's raw data + derived state.
+///
+/// Falls back to the last good state on error — the VM is never cleared.
+async fn do_full_fetch(
+    repo: &ReportsRepo,
+    state: &FlowState,
+    vm: &mut ReportsViewModel,
+    tx: &UnboundedSender<Option<ReportsViewModel>>,
+) {
+    let range = *state.selected_range.read().await;
+    match repo.fetch_all(state.uid, range).await {
+        Ok(data) => {
+            vm.data = Some(data);
+            vm.recompute_derived(range);
+            let _ = tx.send(Some(vm.clone()));
+        }
+        Err(e) => {
+            warn!("reports: fetch_all failed: {e}");
+        }
+    }
 }
