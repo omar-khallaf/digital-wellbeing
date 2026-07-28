@@ -556,9 +556,11 @@ impl GuiApp {
                                                 };
                                                 if res.is_ok() {
                                                     if let Ok(data) = repo.fetch_all(uid).await {
-                                                        let mut vm = PoliciesViewModel::default();
-                                                        vm.data = Some(data);
-                                                        vm.is_admin = is_admin;
+                                                        let mut vm = PoliciesViewModel {
+                                                            data: Some(data),
+                                                            is_admin,
+                                                            ..Default::default()
+                                                        };
                                                         vm.recompute_derived();
                                                         let _ = this2.update(cx3, |this3, cx4| {
                                                             this3.policies_vm = Some(vm);
@@ -601,9 +603,11 @@ impl GuiApp {
                                             let task = cx2.spawn(async move |this2, cx3| {
                                                 let _ = repo.delete_policy(id).await;
                                                 if let Ok(data) = repo.fetch_all(uid).await {
-                                                    let mut vm = PoliciesViewModel::default();
-                                                    vm.data = Some(data);
-                                                    vm.is_admin = is_admin;
+                                                    let mut vm = PoliciesViewModel {
+                                                        data: Some(data),
+                                                        is_admin,
+                                                        ..Default::default()
+                                                    };
                                                     vm.recompute_derived();
                                                     let _ = this2.update(cx3, |this3, cx4| {
                                                         this3.policies_vm = Some(vm);

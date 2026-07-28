@@ -7,27 +7,34 @@ use gpui::px;
 use gpui::*;
 use gpui_component::ActiveTheme;
 use gpui_component::button::Button;
-use gpui_component::input::InputState;
-use gpui_component::scroll::ScrollableElement;
+use gpui_component::list::ListState;
 use gpui_component::{h_flex, v_flex};
-use wellbeing_core::DateRange;
 
 use crate::chart::daily_bar_chart;
 use crate::components::{
-    self as cmp, AppEntryView, TitleEntryView, card, format_duration, time_range_selector,
+    self as cmp, RepAppsDelegate, RepTitlesDelegate, card, format_duration, time_range_selector,
 };
 use crate::theme::{self, rad, sp};
 
 use super::domain::ReportsViewModel;
 
+type PresetHandler = Box<dyn Fn(wellbeing_core::DateRange, &mut gpui::App)>;
+
+/// Bundled options for the date-range selector to keep argument count ≤ 7.
+pub struct DateRangeOptions {
+    pub show_custom: bool,
+    pub custom_start_input: Option<Entity<gpui_component::input::InputState>>,
+    pub custom_end_input: Option<Entity<gpui_component::input::InputState>>,
+    pub on_preset: PresetHandler,
+    pub on_toggle_custom: Box<dyn Fn(&mut gpui::App)>,
+}
+
 pub fn render_reports_view(
     cx: &App,
     vm: &ReportsViewModel,
-    show_custom: bool,
-    custom_start_input: Option<Entity<InputState>>,
-    custom_end_input: Option<Entity<InputState>>,
-    on_preset: impl Fn(DateRange, &mut App) + 'static,
-    on_toggle_custom: impl Fn(&mut App) + 'static,
+    apps_list: &Entity<ListState<RepAppsDelegate>>,
+    titles_list: &Entity<ListState<RepTitlesDelegate>>,
+    date_opts: DateRangeOptions,
 ) -> impl IntoElement {
     v_flex()
         .gap_4()
@@ -38,11 +45,11 @@ pub fn render_reports_view(
                 .child(time_range_selector(
                     cx,
                     vm.date_range,
-                    show_custom,
-                    custom_start_input,
-                    custom_end_input,
-                    on_preset,
-                    on_toggle_custom,
+                    date_opts.show_custom,
+                    date_opts.custom_start_input,
+                    date_opts.custom_end_input,
+                    date_opts.on_preset,
+                    date_opts.on_toggle_custom,
                 ))
                 .child(
                     div()
@@ -74,55 +81,26 @@ pub fn render_reports_view(
             Some("Daily Screen Time"),
             vec![daily_bar_chart(cx, &vm.bar_chart).into_any_element()],
         ))
-        .child({
-            let entries: Vec<AppEntryView> = vm
-                .app_list
-                .iter()
-                .map(|e| AppEntryView {
-                    rank: e.rank,
-                    display_name: e.display_name.clone(),
-                    total_millis: e.total_millis,
-                    percentage: e.percentage,
-                    dot_color: None,
-                    badge: None,
-                })
-                .collect();
-            card(
-                cx,
-                Some("All Apps"),
-                vec![
-                    div()
-                        .h(px(280.0))
-                        .overflow_y_scrollbar()
-                        .child(cmp::app_list_panel(cx, &entries))
-                        .into_any_element(),
-                ],
-            )
-        })
-        .child({
-            let entries: Vec<TitleEntryView> = vm
-                .title_list
-                .iter()
-                .map(|e| TitleEntryView {
-                    rank: e.rank,
-                    app_class: e.app_class.clone(),
-                    title: e.title.clone(),
-                    total_millis: e.total_millis,
-                    percentage: e.percentage,
-                })
-                .collect();
-            card(
-                cx,
-                Some("All Titles"),
-                vec![
-                    div()
-                        .h(px(280.0))
-                        .overflow_y_scrollbar()
-                        .child(cmp::title_list_panel(cx, &entries))
-                        .into_any_element(),
-                ],
-            )
-        })
+        .child(card(
+            cx,
+            Some("All Apps"),
+            vec![
+                div()
+                    .h(px(280.0))
+                    .child(cmp::List::new(apps_list))
+                    .into_any_element(),
+            ],
+        ))
+        .child(card(
+            cx,
+            Some("All Titles"),
+            vec![
+                div()
+                    .h(px(280.0))
+                    .child(cmp::List::new(titles_list))
+                    .into_any_element(),
+            ],
+        ))
         .child(
             h_flex()
                 .gap_2()

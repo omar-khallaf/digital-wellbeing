@@ -56,7 +56,12 @@ impl GuiApp {
                             }),
                     ),
             )
-            .child(self.render_policy_list(cx, vm, entity.clone()))
+            .child(
+                self.pol_list
+                    .as_ref()
+                    .map(|pol_list| self.render_policy_list(cx, vm, pol_list))
+                    .unwrap_or_else(|| empty_hint(&*cx, "Loading...")),
+            )
             .child(self.render_editor(cx, vm, entity.clone()))
             .child(self.render_categories(cx, vm, entity.clone()))
             .into_any_element()

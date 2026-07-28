@@ -114,6 +114,24 @@ impl DbPool {
             .await
             .map_err(|e| anyhow::anyhow!("pool error: {}", e))
     }
+
+    /// Run a WAL checkpoint to flush pending changes and release the shared
+    /// lock. Call this before shutdown to avoid "database is locked" on
+    /// the next startup.
+    pub async fn checkpoint_wal(&self) -> Result<()> {
+        let mut conn = self.get().await?;
+        diesel_async::RunQueryDsl::execute(
+            sql_query("PRAGMA wal_checkpoint(TRUNCATE);"),
+            &mut conn,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Close the pool, rejecting new connections and shutting down idle ones.
+    pub fn close(&self) {
+        self.inner.close();
+    }
 }
 
 pub struct StoreBuilder {

@@ -27,45 +27,18 @@ impl ReportsRepo {
         self.bus.create_proxy().await
     }
 
-    pub async fn get_usage_range(
+    /// Fetch per-date total usage across a range, pre-aggregated by SQL.
+    pub async fn get_daily_bar_totals(
         &self,
         start: &str,
         end: &str,
         uid: u32,
-    ) -> Result<Vec<DailySummary>> {
+    ) -> Result<Vec<DateTotal>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_usage_range(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_daily_bar_totals(start, end, uid))
             .await
-            .map_err(|_| anyhow::anyhow!("timeout: get_usage_range"))?
+            .map_err(|_| anyhow::anyhow!("timeout: get_daily_bar_totals"))?
             .map_err(Into::into)
-    }
-
-    pub async fn get_daily_usage_by_title(
-        &self,
-        date: &str,
-        uid: u32,
-    ) -> Result<Vec<DailyUsageByTitleEntry>> {
-        let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_daily_usage_by_title(date, uid))
-            .await
-            .map_err(|_| anyhow::anyhow!("timeout: get_daily_usage_by_title"))?
-            .map_err(Into::into)
-    }
-
-    pub async fn get_usage_range_by_title(
-        &self,
-        start: &str,
-        end: &str,
-        uid: u32,
-    ) -> Result<Vec<DailyUsageByTitleSummary>> {
-        let proxy = self.proxy().await?;
-        timeout(
-            DBUS_TIMEOUT,
-            proxy.get_usage_range_by_title(start, end, uid),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("timeout: get_usage_range_by_title"))?
-        .map_err(Into::into)
     }
 
     pub async fn get_app_categories(&self) -> Result<Vec<AppCategoryRow>> {
@@ -76,34 +49,64 @@ impl ReportsRepo {
             .map_err(Into::into)
     }
 
-    /// Fetch all data needed to build a `ReportsViewModel`.
+    /// Fetch aggregated per-app totals across a date range, sorted by total_millis DESC.
+    pub async fn get_app_usage_summary(
+        &self,
+        start: &str,
+        end: &str,
+        uid: u32,
+    ) -> Result<Vec<AppUsageSummary>> {
+        let proxy = self.proxy().await?;
+        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end, uid))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout: get_app_usage_summary"))?
+            .map_err(Into::into)
+    }
+
+    /// Fetch aggregated per-title totals across a date range, sorted by total_millis DESC.
+    pub async fn get_title_usage_summary(
+        &self,
+        start: &str,
+        end: &str,
+        uid: u32,
+    ) -> Result<Vec<TitleUsageSummary>> {
+        let proxy = self.proxy().await?;
+        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end, uid))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout: get_title_usage_summary"))?
+            .map_err(Into::into)
+    }
+
+    /// Fetch all data needed for the reports screen.
+    ///
+    /// All summary fields (app, title, daily bar) arrive pre-aggregated by
+    /// SQL — no GUI-side sorting or flattening needed.
     pub async fn fetch_all(&self, uid: u32, range: DateRange) -> Result<ReportsData> {
         let start = range.start_str();
         let end = range.end_str();
 
-        let (usage, title_summaries, app_cats) = tokio::join!(
-            self.get_usage_range(&start, &end, uid),
-            self.get_usage_range_by_title(&start, &end, uid),
+        let (daily_totals, app_cats, app_summary, title_summary) = tokio::join!(
+            self.get_daily_bar_totals(&start, &end, uid),
             self.get_app_categories(),
+            self.get_app_usage_summary(&start, &end, uid),
+            self.get_title_usage_summary(&start, &end, uid),
         );
 
-        let title_entries: Vec<DailyUsageByTitleEntry> = title_summaries
-            .unwrap_or_else(|e| {
-                warn!("reports: get_usage_range_by_title failed: {e}");
-                vec![]
-            })
-            .into_iter()
-            .flat_map(|s| s.entries)
-            .collect();
-
         Ok(ReportsData {
-            summaries: usage.unwrap_or_else(|e| {
-                warn!("reports: get_usage_range failed: {e}");
+            daily_totals: daily_totals.unwrap_or_else(|e| {
+                warn!("reports: get_daily_bar_totals failed: {e}");
                 vec![]
             }),
-            title_entries,
             app_categories: app_cats.unwrap_or_else(|e| {
                 warn!("reports: get_app_categories failed: {e}");
+                vec![]
+            }),
+            app_summary: app_summary.unwrap_or_else(|e| {
+                warn!("reports: get_app_usage_summary failed: {e}");
+                vec![]
+            }),
+            title_summary: title_summary.unwrap_or_else(|e| {
+                warn!("reports: get_title_usage_summary failed: {e}");
                 vec![]
             }),
         })
@@ -113,7 +116,11 @@ impl ReportsRepo {
 /// Raw D-Bus response bundle for the reports screen.
 #[derive(Debug, Clone)]
 pub struct ReportsData {
-    pub summaries: Vec<DailySummary>,
-    pub title_entries: Vec<DailyUsageByTitleEntry>,
+    /// Per-date total usage for the bar chart, pre-aggregated by SQL.
+    pub daily_totals: Vec<DateTotal>,
     pub app_categories: Vec<AppCategoryRow>,
+    /// Pre-aggregated per-app totals, sorted by total_millis DESC from SQL.
+    pub app_summary: Vec<AppUsageSummary>,
+    /// Pre-aggregated per-title totals, sorted by total_millis DESC from SQL.
+    pub title_summary: Vec<TitleUsageSummary>,
 }

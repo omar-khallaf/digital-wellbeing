@@ -10,9 +10,8 @@ mod policy_handlers;
 mod query_handlers;
 
 use wellbeing_core::{
-    AppCategoryRow, AppClass, BlockedAppEntry, Category, DailySummary, DailyUsageByAppEntry,
-    DailyUsageByCategoryEntry, DailyUsageByTitleEntry, DailyUsageByTitleSummary, DayEventRow,
-    PluginInstanceId, PolicyData, PolicyInput, Uid,
+    AppCategoryRow, AppClass, AppUsageSummary, BlockedAppEntry, Category, CategoryUsageSummary,
+    DateTotal, DayEventRow, PluginInstanceId, PolicyData, PolicyInput, TitleUsageSummary, Uid,
 };
 use zbus::fdo;
 use zbus::interface;
@@ -219,80 +218,66 @@ impl DaemonInterface {
         Ok(result)
     }
 
-    async fn get_daily_usage(
-        &self,
-        date: String,
-        user_id: u32,
-        #[zbus(connection)] conn: &zbus::Connection,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailyUsageByAppEntry>> {
-        let caller = authenticate(conn, header).await?;
-        let uid = resolve_uid(caller, user_id);
-        self.reports_repo
-            .get_daily_usage(&date, uid)
-            .await
-            .map_err(|e| query_handlers::map_err(e, "query failed"))
-    }
-
-    async fn get_usage_range(
+    async fn get_app_usage_summary(
         &self,
         start_date: String,
         end_date: String,
         user_id: u32,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailySummary>> {
+    ) -> fdo::Result<Vec<AppUsageSummary>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
         self.reports_repo
-            .get_usage_range(&start_date, &end_date, uid)
+            .get_app_usage_summary(&start_date, &end_date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
 
-    async fn get_daily_usage_by_title(
-        &self,
-        date: String,
-        user_id: u32,
-        #[zbus(connection)] conn: &zbus::Connection,
-        #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailyUsageByTitleEntry>> {
-        let caller = authenticate(conn, header).await?;
-        let uid = resolve_uid(caller, user_id);
-        self.reports_repo
-            .get_daily_usage_by_title(&date, uid)
-            .await
-            .map_err(|e| query_handlers::map_err(e, "query failed"))
-    }
-
-    async fn get_usage_range_by_title(
+    async fn get_title_usage_summary(
         &self,
         start_date: String,
         end_date: String,
         user_id: u32,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailyUsageByTitleSummary>> {
+    ) -> fdo::Result<Vec<TitleUsageSummary>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
         self.reports_repo
-            .get_usage_range_by_title(&start_date, &end_date, uid)
+            .get_title_usage_summary(&start_date, &end_date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }
 
-    async fn get_usage_range_by_category(
+    async fn get_category_usage_summary(
         &self,
         start_date: String,
         end_date: String,
         user_id: u32,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) -> fdo::Result<Vec<DailyUsageByCategoryEntry>> {
+    ) -> fdo::Result<Vec<CategoryUsageSummary>> {
         let caller = authenticate(conn, header).await?;
         let uid = resolve_uid(caller, user_id);
         self.reports_repo
-            .get_usage_range_by_category(&start_date, &end_date, uid)
+            .get_category_usage_summary(&start_date, &end_date, uid)
+            .await
+            .map_err(|e| query_handlers::map_err(e, "query failed"))
+    }
+
+    async fn get_daily_bar_totals(
+        &self,
+        start_date: String,
+        end_date: String,
+        user_id: u32,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> fdo::Result<Vec<DateTotal>> {
+        let caller = authenticate(conn, header).await?;
+        let uid = resolve_uid(caller, user_id);
+        self.reports_repo
+            .get_daily_bar_totals(&start_date, &end_date, uid)
             .await
             .map_err(|e| query_handlers::map_err(e, "query failed"))
     }

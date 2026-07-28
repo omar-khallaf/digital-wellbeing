@@ -8,11 +8,16 @@ use chrono::NaiveDate;
 use gpui::prelude::*;
 use gpui::px;
 use gpui::*;
+use gpui_component::IndexPath;
 use gpui_component::input::{Input, InputState};
+pub use gpui_component::list::{List, ListDelegate, ListItem, ListState};
 use gpui_component::{button::Button, button::ButtonVariants, h_flex, v_flex};
+use std::sync::Arc;
 use wellbeing_core::DateRange;
 
+use crate::app::App as GuiApp;
 use crate::chart::empty_state;
+use crate::policies::{PolicyConfigForm, PolicyTarget};
 use crate::theme;
 use crate::theme::*;
 
@@ -59,7 +64,372 @@ pub fn card(
         .into_any_element()
 }
 
-/// The caller should pass a pre-adjusted dot color from [`theme::primary`],
+// ── List delegates for gpui-component `List` ──────────────────────────────
+
+/// Delegate for the Dashboard Top Apps virtualised list.
+pub struct DashAppsDelegate {
+    pub items: Arc<Vec<AppEntryView>>,
+}
+
+impl DashAppsDelegate {
+    pub fn new(items: Arc<Vec<AppEntryView>>) -> Self {
+        Self { items }
+    }
+}
+
+impl ListDelegate for DashAppsDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &gpui::App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let entry = self.items.get(ix.row)?;
+        Some(ListItem::new(format!("dash-app-{ix}")).child(render_app_entry_row(cx, entry)))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<ListState<Self>>,
+    ) {
+    }
+}
+
+/// Delegate for the Dashboard Top Titles virtualised list.
+pub struct DashTitlesDelegate {
+    pub items: Arc<Vec<TitleEntryView>>,
+}
+
+impl DashTitlesDelegate {
+    pub fn new(items: Arc<Vec<TitleEntryView>>) -> Self {
+        Self { items }
+    }
+}
+
+impl ListDelegate for DashTitlesDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &gpui::App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let entry = self.items.get(ix.row)?;
+        Some(ListItem::new(format!("dash-title-{ix}")).child(render_title_entry_row(cx, entry)))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<ListState<Self>>,
+    ) {
+    }
+}
+
+/// Delegate for the Reports All Apps virtualised list.
+pub struct RepAppsDelegate {
+    pub items: Arc<Vec<AppEntryView>>,
+}
+
+impl RepAppsDelegate {
+    pub fn new(items: Arc<Vec<AppEntryView>>) -> Self {
+        Self { items }
+    }
+}
+
+impl ListDelegate for RepAppsDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &gpui::App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let entry = self.items.get(ix.row)?;
+        Some(ListItem::new(format!("rep-app-{ix}")).child(render_app_entry_row(cx, entry)))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<ListState<Self>>,
+    ) {
+    }
+}
+
+/// Delegate for the Reports All Titles virtualised list.
+pub struct RepTitlesDelegate {
+    pub items: Arc<Vec<TitleEntryView>>,
+}
+
+impl RepTitlesDelegate {
+    pub fn new(items: Arc<Vec<TitleEntryView>>) -> Self {
+        Self { items }
+    }
+}
+
+impl ListDelegate for RepTitlesDelegate {
+    type Item = ListItem;
+
+    fn items_count(&self, _section: usize, _cx: &gpui::App) -> usize {
+        self.items.len()
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let entry = self.items.get(ix.row)?;
+        Some(ListItem::new(format!("rep-title-{ix}")).child(render_title_entry_row(cx, entry)))
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<ListState<Self>>,
+    ) {
+    }
+}
+
+// ── Policies List delegate (sections + click-to-edit) ──────────────────
+
+/// Delegate for the Policies list with sections per target type.
+pub struct PolListDelegate {
+    pub app_entity: Entity<GuiApp>,
+    pub policies: Arc<Vec<wellbeing_core::PolicyData>>,
+    pub selected_id: Option<wellbeing_core::PolicyId>,
+}
+
+impl PolListDelegate {
+    fn distinct_types(&self) -> Vec<wellbeing_core::TargetType> {
+        use wellbeing_core::TargetType;
+        let order = [
+            TargetType::App,
+            TargetType::Category,
+            TargetType::Domain,
+            TargetType::Any,
+        ];
+        order
+            .into_iter()
+            .filter(|t| self.policies.iter().any(|p| p.target_type == *t))
+            .collect()
+    }
+}
+
+impl ListDelegate for PolListDelegate {
+    type Item = ListItem;
+
+    fn sections_count(&self, _cx: &gpui::App) -> usize {
+        self.distinct_types().len()
+    }
+
+    fn items_count(&self, section: usize, _cx: &gpui::App) -> usize {
+        let types = self.distinct_types();
+        let t = match types.get(section) {
+            Some(t) => *t,
+            None => return 0,
+        };
+        self.policies.iter().filter(|p| p.target_type == t).count()
+    }
+
+    fn render_section_header(
+        &mut self,
+        section: usize,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<impl gpui::IntoElement> {
+        let types = self.distinct_types();
+        let t = *types.get(section)?;
+        let label = match t {
+            wellbeing_core::TargetType::App => "App Policies",
+            wellbeing_core::TargetType::Category => "Category Policies",
+            wellbeing_core::TargetType::Domain => "Domain Policies",
+            wellbeing_core::TargetType::Any => "All Targets",
+        };
+        Some(
+            gpui::div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::text_label(cx))
+                .px(sp::MD)
+                .py(sp::XS)
+                .child(label),
+        )
+    }
+
+    fn render_item(
+        &mut self,
+        ix: IndexPath,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let types = self.distinct_types();
+        let t = *types.get(ix.section)?;
+        let global_start = self.policies.iter().position(|p| p.target_type == t)?;
+        let p = self.policies.get(global_start + ix.row)?;
+
+        let kind_display = match p.effect {
+            wellbeing_core::Effect::Allow => "Allow",
+            wellbeing_core::Effect::Block => "Block",
+            wellbeing_core::Effect::TimeLimit => "Time Limit",
+            wellbeing_core::Effect::Notify => "Notify",
+        };
+        let target = match p.target_type {
+            wellbeing_core::TargetType::App => format!("App: {}", p.app_class),
+            wellbeing_core::TargetType::Category => {
+                let name = if p.category_name.is_empty() {
+                    "uncategorized"
+                } else {
+                    p.category_name.as_str()
+                };
+                format!("Category: {}", name)
+            }
+            wellbeing_core::TargetType::Domain => format!("Domain: {}", p.domain_pattern),
+            wellbeing_core::TargetType::Any => "All".to_string(),
+        };
+
+        let is_selected = self.selected_id == Some(p.id);
+        let app_entity = self.app_entity.clone();
+        let pid = p.id;
+        let effect = p.effect;
+        let target_type = p.target_type;
+        let app_class = p.app_class.clone();
+        let cat_name = p.category_name.clone();
+        let domain_pat = p.domain_pattern.clone();
+        let tls = p.time_limit_minutes;
+        let schedule = p.schedule_json.clone();
+        let priority = p.priority;
+
+        let content = gpui_component::v_flex()
+            .gap_1()
+            .flex_1()
+            .child(
+                gpui_component::h_flex()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme::text_primary(cx))
+                            .child(kind_display.to_string()),
+                    )
+                    .child(
+                        gpui::div()
+                            .text_xs()
+                            .text_color(theme::text_primary(cx))
+                            .child(target),
+                    ),
+            )
+            .child(
+                gpui_component::h_flex()
+                    .gap_2()
+                    .child(
+                        gpui::div()
+                            .text_xs()
+                            .text_color(theme::text_muted(cx))
+                            .child(format!("Priority: {}", priority)),
+                    )
+                    .when(
+                        target_type == wellbeing_core::TargetType::App
+                            && !p.category_name.is_empty(),
+                        |el| {
+                            el.child(
+                                gpui::div()
+                                    .text_xs()
+                                    .text_color(theme::text_muted(cx))
+                                    .child(format!("Category: {}", cat_name)),
+                            )
+                        },
+                    ),
+            );
+
+        Some(
+            ListItem::new(format!("policy-{}", pid.0))
+                .selected(is_selected)
+                .child(content)
+                .on_click(move |_, _window, app| {
+                    app_entity.update(app, |this, cx| {
+                        this.policy_edit_id = Some(pid);
+                        let tgt = match target_type {
+                            wellbeing_core::TargetType::Category => {
+                                PolicyTarget::Category(cat_name.clone())
+                            }
+                            wellbeing_core::TargetType::Domain => {
+                                PolicyTarget::Domain(domain_pat.clone())
+                            }
+                            wellbeing_core::TargetType::Any => PolicyTarget::Any,
+                            _ => PolicyTarget::App(app_class.clone()),
+                        };
+                        this.policy_edit = Some((
+                            tgt,
+                            PolicyConfigForm {
+                                kind: match effect {
+                                    wellbeing_core::Effect::Allow => "Allow".into(),
+                                    wellbeing_core::Effect::Block => "Block".into(),
+                                    wellbeing_core::Effect::TimeLimit => "TimeLimit".into(),
+                                    wellbeing_core::Effect::Notify => "Notify".into(),
+                                },
+                                time_limit_minutes: tls,
+                                schedule_json: schedule.clone(),
+                                schedules: serde_json::from_str(&schedule).unwrap_or_default(),
+                                app_class: app_class.clone(),
+                                category_name: cat_name.clone(),
+                                priority,
+                                schedule_new_day_mask: 0x7F,
+                            },
+                        ));
+                        cx.notify();
+                    });
+                }),
+        )
+    }
+
+    fn render_empty(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<ListState<Self>>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+            .text_sm()
+            .text_color(theme::text_muted(cx))
+            .px(sp::MD)
+            .py(sp::LG)
+            .child("No policies configured yet.")
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _ix: Option<IndexPath>,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<ListState<Self>>,
+    ) {
+    }
+}
+
+// ── The caller should pass a pre-adjusted dot color from [`theme::primary`],
 /// [`theme::secondary`], [`theme::danger`], etc.
 pub fn stat_card(cx: &App, value: &str, label: &str, dot: Option<Hsla>) -> AnyElement {
     let dot_el = dot.map(|c| {
@@ -132,6 +502,63 @@ pub struct AppEntryView {
     pub badge: Option<AppBadge>,
 }
 
+/// Render a single app entry row — used by both `app_list_panel` and
+/// `v_virtual_list` closures so the row layout is defined once.
+pub fn render_app_entry_row(cx: &App, entry: &AppEntryView) -> AnyElement {
+    h_flex()
+        .px(sp::MD)
+        .py(sp::SM)
+        .rounded(rad::md())
+        .hover(|s| s.bg(theme::border(cx)))
+        .gap_4()
+        .items_center()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted(cx))
+                .w(px(28.0))
+                .child(format!("#{}", entry.rank)),
+        )
+        .when_some(entry.dot_color, |el, color| {
+            el.child(div().size(px(10.0)).rounded(rad::full()).bg(color))
+        })
+        .child(
+            div()
+                .text_sm()
+                .flex_1()
+                .truncate()
+                .text_color(theme::text_primary(cx))
+                .child(entry.display_name.clone()),
+        )
+        .when_some(entry.badge.as_ref(), |el, badge| {
+            el.child(
+                div()
+                    .text_xs()
+                    .text_color(badge.color)
+                    .child(badge.text.clone()),
+            )
+        })
+        .child(
+            v_flex()
+                .items_end()
+                .gap_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::text_primary(cx))
+                        .child(format_duration(entry.total_millis)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_label(cx))
+                        .child(format!("{:.1}%", entry.percentage)),
+                ),
+        )
+        .into_any_element()
+}
+
 /// Layout per row (mirrors `title_list_panel`):
 /// ```text
 /// [#rank] [●] [display_name] [BADGE] [duration  ]
@@ -144,66 +571,10 @@ pub fn app_list_panel(cx: &App, entries: &[AppEntryView]) -> AnyElement {
     if entries.is_empty() {
         return empty_state(cx, "No usage data yet.").into_any_element();
     }
-
-    let rows: Vec<AnyElement> = entries
-        .iter()
-        .map(|entry| {
-            h_flex()
-                .px(sp::MD)
-                .py(sp::SM)
-                .rounded(rad::md())
-                .hover(|s| s.bg(theme::border(cx)))
-                .gap_4()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted(cx))
-                        .w(px(28.0))
-                        .child(format!("#{}", entry.rank)),
-                )
-                .when_some(entry.dot_color, |el, color| {
-                    el.child(div().size(px(10.0)).rounded(rad::full()).bg(color))
-                })
-                .child(
-                    div()
-                        .text_sm()
-                        .flex_1()
-                        .truncate()
-                        .text_color(theme::text_primary(cx))
-                        .child(entry.display_name.clone()),
-                )
-                .when_some(entry.badge.as_ref(), |el, badge| {
-                    el.child(
-                        div()
-                            .text_xs()
-                            .text_color(badge.color)
-                            .child(badge.text.clone()),
-                    )
-                })
-                .child(
-                    v_flex()
-                        .items_end()
-                        .gap_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme::text_primary(cx))
-                                .child(format_duration(entry.total_millis)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_label(cx))
-                                .child(format!("{:.1}%", entry.percentage)),
-                        ),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    v_flex().gap_1().children(rows).into_any_element()
+    v_flex()
+        .gap_1()
+        .children(entries.iter().map(|e| render_app_entry_row(cx, e)))
+        .into_any_element()
 }
 
 /// Shared data for a single title entry row — used by both the dashboard
@@ -215,6 +586,64 @@ pub struct TitleEntryView {
     pub title: String,
     pub total_millis: i64,
     pub percentage: f64,
+}
+
+/// Render a single title entry row — shared between `title_list_panel` and
+/// `v_virtual_list` closures.
+pub fn render_title_entry_row(cx: &App, entry: &TitleEntryView) -> AnyElement {
+    h_flex()
+        .px(sp::MD)
+        .py(sp::SM)
+        .rounded(rad::md())
+        .hover(|s| s.bg(theme::border(cx)))
+        .gap_4()
+        .items_center()
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::text_muted(cx))
+                .w(px(28.0))
+                .child(format!("#{}", entry.rank)),
+        )
+        .child(
+            v_flex()
+                .flex_1()
+                .gap_0()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_sm()
+                        .truncate()
+                        .text_color(theme::text_primary(cx))
+                        .child(entry.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .truncate()
+                        .text_color(theme::text_muted(cx))
+                        .child(entry.app_class.clone()),
+                ),
+        )
+        .child(
+            v_flex()
+                .items_end()
+                .gap_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::text_primary(cx))
+                        .child(format_duration(entry.total_millis)),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::text_label(cx))
+                        .child(format!("{:.1}%", entry.percentage)),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Layout per row:
@@ -229,67 +658,10 @@ pub fn title_list_panel(cx: &App, entries: &[TitleEntryView]) -> AnyElement {
     if entries.is_empty() {
         return empty_state(cx, "No title usage data yet.").into_any_element();
     }
-
-    let rows: Vec<AnyElement> = entries
-        .iter()
-        .map(|entry| {
-            h_flex()
-                .px(sp::MD)
-                .py(sp::SM)
-                .rounded(rad::md())
-                .hover(|s| s.bg(theme::border(cx)))
-                .gap_4()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted(cx))
-                        .w(px(28.0))
-                        .child(format!("#{}", entry.rank)),
-                )
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .gap_0()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .text_sm()
-                                .truncate()
-                                .text_color(theme::text_primary(cx))
-                                .child(entry.title.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .truncate()
-                                .text_color(theme::text_muted(cx))
-                                .child(entry.app_class.clone()),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .items_end()
-                        .gap_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(theme::text_primary(cx))
-                                .child(format_duration(entry.total_millis)),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme::text_label(cx))
-                                .child(format!("{:.1}%", entry.percentage)),
-                        ),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    v_flex().gap_1().children(rows).into_any_element()
+    v_flex()
+        .gap_1()
+        .children(entries.iter().map(|e| render_title_entry_row(cx, e)))
+        .into_any_element()
 }
 
 pub fn format_duration(total_millis: i64) -> String {

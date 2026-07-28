@@ -41,9 +41,10 @@ pub fn spawn_policies_flow(
         let mut proxy_subscribed = false;
         let mut daemon_available = true;
 
-        // Persistent ViewModel — like a Compose ViewModel with StateFlow.
-        let mut current_vm = PoliciesViewModel::default();
-        current_vm.is_admin = is_admin;
+        let mut current_vm = PoliciesViewModel {
+            is_admin,
+            ..Default::default()
+        };
 
         info!("policies flow started");
 
@@ -104,9 +105,7 @@ pub fn spawn_policies_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    if daemon_available {
-                        do_full_fetch(&repo, uid, &mut current_vm, &vm_tx).await;
-                    }
+                    do_full_fetch(&repo, uid, &mut current_vm, &vm_tx).await;
                 }
             };
         }

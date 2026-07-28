@@ -53,36 +53,42 @@ pub trait Daemon {
     async fn update_policy(&self, id: PolicyId, input: PolicyInput) -> zbus::Result<()>;
     async fn delete_policy(&self, id: PolicyId) -> zbus::Result<()>;
 
-    async fn get_daily_usage(
-        &self,
-        date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByAppEntry>>;
-    async fn get_usage_range(
+    /// Pre-aggregated per-app totals across a date range, sorted by
+    /// total_millis DESC by the SQL query — no GUI-side sorting needed.
+    async fn get_app_usage_summary(
         &self,
         start_date: &str,
         end_date: &str,
         user_id: u32,
-    ) -> zbus::Result<Vec<DailySummary>>;
+    ) -> zbus::Result<Vec<AppUsageSummary>>;
 
-    async fn get_daily_usage_by_title(
-        &self,
-        date: &str,
-        user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByTitleEntry>>;
-    async fn get_usage_range_by_title(
+    /// Pre-aggregated per-title totals across a date range, sorted by
+    /// total_millis DESC by the SQL query — no GUI-side sorting needed.
+    async fn get_title_usage_summary(
         &self,
         start_date: &str,
         end_date: &str,
         user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByTitleSummary>>;
+    ) -> zbus::Result<Vec<TitleUsageSummary>>;
 
-    async fn get_usage_range_by_category(
+    /// Pre-aggregated per-category totals across a date range, sorted by
+    /// total_millis DESC from SQL — no GUI-side aggregation needed.
+    async fn get_category_usage_summary(
         &self,
         start_date: &str,
         end_date: &str,
         user_id: u32,
-    ) -> zbus::Result<Vec<DailyUsageByCategoryEntry>>;
+    ) -> zbus::Result<Vec<CategoryUsageSummary>>;
+
+    /// Per-date total usage across a range, pre-aggregated by SQL.
+    /// One row per date — the bar chart uses this directly instead of
+    /// flattening per-entry data and summing by date in memory.
+    async fn get_daily_bar_totals(
+        &self,
+        start_date: &str,
+        end_date: &str,
+        user_id: u32,
+    ) -> zbus::Result<Vec<DateTotal>>;
 
     async fn get_day_events(
         &self,

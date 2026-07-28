@@ -36,19 +36,6 @@ impl DashboardRepo {
         self.bus.create_proxy().await
     }
 
-    pub async fn get_usage_range(
-        &self,
-        start: &str,
-        end: &str,
-        uid: u32,
-    ) -> Result<Vec<DailySummary>> {
-        let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_usage_range(start, end, uid))
-            .await
-            .map_err(|_| anyhow::anyhow!("timeout: get_usage_range"))?
-            .map_err(Into::into)
-    }
-
     pub async fn get_blocked_apps(&self) -> Result<Vec<BlockedAppEntry>> {
         let proxy = self.proxy().await?;
         let result: BlockedApps = timeout(DBUS_TIMEOUT, proxy.blocked_apps())
@@ -71,18 +58,6 @@ impl DashboardRepo {
             .map_err(Into::into)
     }
 
-    pub async fn get_daily_usage_by_title(
-        &self,
-        date: &str,
-        uid: u32,
-    ) -> Result<Vec<DailyUsageByTitleEntry>> {
-        let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_daily_usage_by_title(date, uid))
-            .await
-            .map_err(|_| anyhow::anyhow!("timeout: get_daily_usage_by_title"))?
-            .map_err(Into::into)
-    }
-
     pub async fn list_categories(&self) -> Result<Vec<Category>> {
         let proxy = self.proxy().await?;
         timeout(DBUS_TIMEOUT, proxy.list_categories())
@@ -99,19 +74,21 @@ impl DashboardRepo {
             .map_err(Into::into)
     }
 
-    pub async fn get_usage_range_by_category(
+    /// Fetch pre-aggregated per-category totals across a date range,
+    /// sorted by total_millis DESC from SQL.
+    async fn get_category_usage_summary(
         &self,
         start: &str,
         end: &str,
         uid: u32,
-    ) -> Result<Vec<DailyUsageByCategoryEntry>> {
+    ) -> Result<Vec<CategoryUsageSummary>> {
         let proxy = self.proxy().await?;
         timeout(
             DBUS_TIMEOUT,
-            proxy.get_usage_range_by_category(start, end, uid),
+            proxy.get_category_usage_summary(start, end, uid),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("timeout: get_usage_range_by_category"))?
+        .map_err(|_| anyhow::anyhow!("timeout: get_category_usage_summary"))?
         .map_err(Into::into)
     }
 
@@ -120,6 +97,10 @@ impl DashboardRepo {
     /// Each D-Bus call has an independent 10s timeout so one hung call
     /// degrades gracefully — the caller sees a partial-error log and can
     /// decide to retry on the next tick.
+    ///
+    /// App/title/category summary fields arrive pre-sorted by total_millis DESC
+    /// (GROUP BY + ORDER BY in SQL via the generated `total_millis`
+    /// column) — no GUI-side sorting or aggregation needed.
     pub async fn fetch_all(&self, uid: u32, range: DateRange) -> Result<DashboardData> {
         let start = range.start_str();
         let end = range.end_str();
@@ -136,21 +117,17 @@ impl DashboardRepo {
             .and_utc()
             .timestamp_millis();
 
-        let (usage, blocks, day_events, title, cat_usage, cats, app_cats) = tokio::join!(
-            self.get_usage_range(&start, &end, uid),
+        let (blocks, day_events, cat_summary, cats, app_cats, app_sum, title_sum) = tokio::join!(
             self.get_blocked_apps(),
             self.get_day_events(uid, day_start_ms, day_end_ms),
-            self.get_daily_usage_by_title(&start, uid),
-            self.get_usage_range_by_category(&start, &end, uid),
+            self.get_category_usage_summary(&start, &end, uid),
             self.list_categories(),
             self.get_app_categories(),
+            self.get_app_usage_summary(&start, &end, uid),
+            self.get_title_usage_summary(&start, &end, uid),
         );
 
         Ok(DashboardData {
-            summaries: usage.unwrap_or_else(|e| {
-                warn!("dashboard: get_usage_range failed: {e}");
-                vec![]
-            }),
             blocked: blocks.unwrap_or_else(|e| {
                 warn!("dashboard: blocked_apps failed: {e}");
                 vec![]
@@ -159,12 +136,8 @@ impl DashboardRepo {
                 warn!("dashboard: get_day_events failed: {e}");
                 vec![]
             }),
-            title_entries: title.unwrap_or_else(|e| {
-                warn!("dashboard: get_daily_usage_by_title failed: {e}");
-                vec![]
-            }),
-            category_entries: cat_usage.unwrap_or_else(|e| {
-                warn!("dashboard: get_usage_range_by_category failed: {e}");
+            category_summary: cat_summary.unwrap_or_else(|e| {
+                warn!("dashboard: get_category_usage_summary failed: {e}");
                 vec![]
             }),
             categories: cats.unwrap_or_else(|e| {
@@ -175,18 +148,57 @@ impl DashboardRepo {
                 warn!("dashboard: get_app_categories failed: {e}");
                 vec![]
             }),
+            app_summary: app_sum.unwrap_or_else(|e| {
+                warn!("dashboard: get_app_usage_summary failed: {e}");
+                vec![]
+            }),
+            title_summary: title_sum.unwrap_or_else(|e| {
+                warn!("dashboard: get_title_usage_summary failed: {e}");
+                vec![]
+            }),
         })
+    }
+
+    /// Fetch aggregated per-app totals across a date range, sorted by total_millis DESC.
+    async fn get_app_usage_summary(
+        &self,
+        start: &str,
+        end: &str,
+        uid: u32,
+    ) -> Result<Vec<AppUsageSummary>> {
+        let proxy = self.proxy().await?;
+        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end, uid))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout: get_app_usage_summary"))?
+            .map_err(Into::into)
+    }
+
+    /// Fetch aggregated per-title totals across a date range, sorted by total_millis DESC.
+    async fn get_title_usage_summary(
+        &self,
+        start: &str,
+        end: &str,
+        uid: u32,
+    ) -> Result<Vec<TitleUsageSummary>> {
+        let proxy = self.proxy().await?;
+        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end, uid))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout: get_title_usage_summary"))?
+            .map_err(Into::into)
     }
 }
 
 /// Raw D-Bus response bundle for the dashboard screen.
 #[derive(Debug, Clone)]
 pub struct DashboardData {
-    pub summaries: Vec<DailySummary>,
     pub blocked: Vec<BlockedAppEntry>,
     pub day_events: Vec<DayEventRow>,
-    pub title_entries: Vec<DailyUsageByTitleEntry>,
-    pub category_entries: Vec<DailyUsageByCategoryEntry>,
+    /// Pre-aggregated per-category totals, sorted by total_millis DESC from SQL.
+    pub category_summary: Vec<CategoryUsageSummary>,
     pub categories: Vec<Category>,
     pub app_categories: Vec<AppCategoryRow>,
+    /// Pre-aggregated per-app totals, sorted by total_millis DESC from SQL.
+    pub app_summary: Vec<AppUsageSummary>,
+    /// Pre-aggregated per-title totals, sorted by total_millis DESC from SQL.
+    pub title_summary: Vec<TitleUsageSummary>,
 }

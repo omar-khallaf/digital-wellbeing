@@ -69,12 +69,20 @@ fn fill_time_gaps(blocks: &mut Vec<TimelineBlock>) {
 /// Only Focus(0) and termination events (CLOSE_EVENT_TYPES: 1,4,5,6,7)
 /// are used to build focus intervals. Idle(2), Resumed(3), and other event types
 /// are ignored — time gaps between focus blocks are filled by `fill_time_gaps`.
+///
+/// Note: the daemon already returns events sorted by `timestamp ASC` (the SQL
+/// query has `ORDER BY timestamp ASC`) so no re-sort is needed here.
 pub fn build_day_timeline(
     events: &mut [DayEventRow],
     date: NaiveDate,
     app_names: &HashMap<String, String>,
 ) -> DayTimeline {
-    events.sort_by_key(|e| e.timestamp);
+    // Events are already sorted by timestamp ASC from the daemon SQL query.
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        events.windows(2).all(|w| w[0].timestamp <= w[1].timestamp),
+        "day_events must be pre-sorted by timestamp ASC"
+    );
 
     let mut blocks: Vec<TimelineBlock> = Vec::new();
     let mut pending_focus: Option<(i64, String)> = None;

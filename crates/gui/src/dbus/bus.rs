@@ -188,7 +188,7 @@ impl BusManager {
             } else {
                 &inner.sess_conn
             };
-            match DaemonProxy::new(conn).await {
+            match create_daemon_proxy(conn).await {
                 Ok(p) => return Ok(p),
                 Err(e) => {
                     warn!(%e, "proxy creation failed on active connection, trying fallback");
@@ -198,7 +198,7 @@ impl BusManager {
                     } else {
                         &inner.sys_conn
                     };
-                    if let Ok(p) = DaemonProxy::new(fallback).await {
+                    if let Ok(p) = create_daemon_proxy(fallback).await {
                         return Ok(p);
                     }
                 }
@@ -208,7 +208,7 @@ impl BusManager {
         let (conn, bt) = select_daemon_bus(&inner.sys_conn, &inner.sess_conn)
             .await
             .ok_or_else(|| anyhow::anyhow!("daemon unreachable"))?;
-        let proxy = DaemonProxy::new(&conn).await?;
+        let proxy = create_daemon_proxy(&conn).await?;
         drop(inner);
         let mut inner = self.inner.lock().await;
         inner.status = ConnectionStatus::Connected(bt);
@@ -273,6 +273,17 @@ impl BusManager {
             .expect("BusManager lock")
             .sess_conn
             .clone()
+    }
+}
+
+/// Wraps `DaemonProxy::new` with a 5-second timeout to avoid blocking the flow
+/// loop for ~25s when D-Bus activation is triggered for an unregistered name.
+async fn create_daemon_proxy(conn: &Connection) -> Result<DaemonProxy<'static>, anyhow::Error> {
+    const PROXY_TIMEOUT: Duration = Duration::from_secs(5);
+    match tokio::time::timeout(PROXY_TIMEOUT, DaemonProxy::new(conn)).await {
+        Ok(Ok(p)) => Ok(p),
+        Ok(Err(e)) => Err(anyhow::anyhow!("{e}")),
+        Err(_) => Err(anyhow::anyhow!("daemon proxy timed out")),
     }
 }
 

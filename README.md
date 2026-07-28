@@ -32,15 +32,14 @@ compositor and browser plugins for overlay enforcement and state tracking:
 - **Compositor plugin** (`org.wellbeing.v1.Manager`) — renders app-level block
   overlays via OpenGL and emits the unified `Event` signal (with `EventTag`
   enum). Runs in the user's compositor session and resolves the daemon's bus
-  using the **identical 4-step algorithm** as the GUI, so it always lands on
-  the same daemon instance.
+  using the **identical 4-step algorithm** as the GUI, so it always lands on the
+  same daemon instance.
 - **Native bridge** (`org.wellbeing.v1.Bridge`) + **browser extension** —
-  renders per-tab domain block overlays in the browser. The bridge is a
-  per-user D-Bus client that registers with the daemon (reverse discovery) and
-  exposes a `DomainEvent` signal. The browser extension communicates with the
-  bridge via native messaging and tracks tab/window focus (chrome.tabs,
-  chrome.windows). Domain-level and app-level enforcement are independent and
-  run in parallel.
+  renders per-tab domain block overlays in the browser. The bridge is a per-user
+  D-Bus client that registers with the daemon (reverse discovery) and exposes a
+  `DomainEvent` signal. The browser extension communicates with the bridge via
+  native messaging and tracks tab/window focus (chrome.tabs, chrome.windows).
+  Domain-level and app-level enforcement are independent and run in parallel.
 
 ```text
                      ┌──────────────────────────────────────────┐
@@ -177,15 +176,15 @@ cargo clippy -- -D warnings
 
 ## Documentation
 
-| Document                                                   | Audience   | Contents                                                                                                              |
-| ---------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
-| [README.md](docs/architecture/README.md)                   | Developers | System design index: two-binary split, D-Bus interfaces, platform trait, event model, modules, state flow, deployment |
-| [01-blocking.md](docs/features/01-blocking.md)             | Developers | Enforcement priorities and overlay design                                                                             |
-| [02-categorization.md](docs/features/02-categorization.md) | Developers | DB-first category system, AI classification, browser tab detection                                                    |
-| [03-ui-design.md](docs/features/03-ui-design.md)           | Developers | gpui-component screen layout, view models, queries                                                                    |
-| [01-performance.md](docs/quality/01-performance.md)        | Developers | Zero-alloc hot path, CPU budget, async discipline                                                                     |
-| [02-testing.md](docs/quality/02-testing.md)                | Developers | Given-When-Then, domain events, sociable tests                                                                        |
-| [01-database.md](docs/persistence/01-database.md)          | Developers | Schema, migration policy, batch write strategy                                                                        |
+| Document                                                   | Audience   | Contents                                                                                                                      |
+| ---------------------------------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| [README.md](docs/architecture/README.md)                   | Developers | System design index: two-binary split, D-Bus interfaces, platform trait, event model, modules, state flow, deployment         |
+| [01-blocking.md](docs/features/01-blocking.md)             | Developers | Enforcement priorities and overlay design                                                                                     |
+| [02-categorization.md](docs/features/02-categorization.md) | Developers | DB-first category system, AI classification, browser tab detection                                                            |
+| [03-ui-design.md](docs/features/03-ui-design.md)           | Developers | gpui-component screen layout, view models, queries                                                                            |
+| [01-performance.md](docs/quality/01-performance.md)        | Developers | Zero-alloc hot path, CPU budget, async discipline                                                                             |
+| [02-testing.md](docs/quality/02-testing.md)                | Developers | Given-When-Then, domain events, sociable tests                                                                                |
+| [01-database.md](docs/persistence/01-database.md)          | Developers | Schema, migration policy, batch write strategy                                                                                |
 | [01-roadmap.md](docs/planning/01-roadmap.md)               | Developers | Phased build plan: D-Bus revamp → browser extension domain blocking → allow-only + DND → preset blocklists → enhanced reports |
 
 ## Roadmap

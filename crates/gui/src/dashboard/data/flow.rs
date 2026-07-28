@@ -10,6 +10,7 @@
 //! and is patched in-place rather than rebuilt from a cache — no `cached_data`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use futures::StreamExt;
@@ -64,14 +65,13 @@ pub fn spawn_dashboard_flow(
         info!("dashboard flow started");
 
         loop {
-            // (Re-)subscribe to signals on startup and after reconnect.
             if !proxy_subscribed
                 && daemon_available
                 && let Some(conn) = repo.bus.try_proxy_conn()
             {
                 let mut subscribed = false;
-                match DaemonProxy::new(&conn).await {
-                    Ok(p) => {
+                match tokio::time::timeout(Duration::from_secs(5), DaemonProxy::new(&conn)).await {
+                    Ok(Ok(p)) => {
                         if let Ok(mut stream) = p.receive_daily_usage_changed().await {
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
@@ -96,8 +96,11 @@ pub fn spawn_dashboard_flow(
                         }
                         proxy_subscribed = subscribed;
                     }
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         warn!("dashboard flow: proxy for signals failed: {e}");
+                    }
+                    Err(_) => {
+                        warn!("dashboard flow: proxy for signals timed out");
                     }
                 }
             }
@@ -150,9 +153,7 @@ pub fn spawn_dashboard_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    if daemon_available {
-                        do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
-                    }
+                    do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
                 }
             };
         }

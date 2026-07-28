@@ -5,11 +5,16 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::*;
+
 use gpui_component::input::{InputEvent, InputState, NumberInputEvent, StepAction};
+use gpui_component::list::ListState;
 
 use wellbeing_core::AppClass;
 
 use super::domain::{AppState, AppViewModels, Tab};
+use crate::components::{
+    DashAppsDelegate, DashTitlesDelegate, PolListDelegate, RepAppsDelegate, RepTitlesDelegate,
+};
 use crate::dashboard;
 use crate::policies;
 use crate::reports;
@@ -49,6 +54,20 @@ pub struct App {
     pub(crate) reports_refresh_tx: Option<tokio::sync::broadcast::Sender<()>>,
     /// Broadcast sender to trigger the policies background flow refresh.
     pub(crate) pol_refresh_tx: Option<tokio::sync::broadcast::Sender<()>>,
+
+    // ── gpui-component `List` state entities ────────────────────────────
+    // Lazily initialised during the first `render()` pass, then reused.
+
+    // Dashboard
+    pub(crate) dash_apps_list: Option<Entity<ListState<DashAppsDelegate>>>,
+    pub(crate) dash_titles_list: Option<Entity<ListState<DashTitlesDelegate>>>,
+
+    // Reports
+    pub(crate) rep_apps_list: Option<Entity<ListState<RepAppsDelegate>>>,
+    pub(crate) rep_titles_list: Option<Entity<ListState<RepTitlesDelegate>>>,
+
+    // Policies
+    pub(crate) pol_list: Option<Entity<ListState<PolListDelegate>>>,
 }
 
 impl App {
@@ -77,6 +96,12 @@ impl App {
             policies_repo: None,
             reports_refresh_tx: None,
             pol_refresh_tx: None,
+
+            dash_apps_list: None,
+            dash_titles_list: None,
+            rep_apps_list: None,
+            rep_titles_list: None,
+            pol_list: None,
         }
     }
 
@@ -108,14 +133,14 @@ impl App {
     }
 
     pub fn apply_viewmodels(&mut self, vms: AppViewModels) {
-        if let Some(vm) = vms.dashboard {
-            self.dashboard_vm = Some(vm);
+        if let Some(vm) = &vms.dashboard {
+            self.dashboard_vm = Some(vm.clone());
         }
-        if let Some(vm) = vms.policies {
-            self.policies_vm = Some(vm);
+        if let Some(vm) = &vms.policies {
+            self.policies_vm = Some(vm.clone());
         }
-        if let Some(vm) = vms.reports {
-            self.reports_vm = Some(vm);
+        if let Some(vm) = &vms.reports {
+            self.reports_vm = Some(vm.clone());
         }
     }
 

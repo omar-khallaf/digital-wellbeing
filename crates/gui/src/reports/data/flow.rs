@@ -110,9 +110,7 @@ pub fn spawn_reports_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    if daemon_available {
-                        do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
-                    }
+                    do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
                 }
             };
         }

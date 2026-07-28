@@ -34,6 +34,7 @@ CREATE TABLE daily_usage_by_app (
     app_id        INTEGER NOT NULL REFERENCES apps(id),
     closed_millis INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
     open_millis   INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
+    total_millis  INTEGER GENERATED ALWAYS AS (closed_millis + open_millis) VIRTUAL,
     PRIMARY KEY (date, user_id, app_id)
 );
 
@@ -47,6 +48,7 @@ CREATE TABLE daily_usage_by_title (
     title         TEXT NOT NULL CHECK(length(title) <= 1024),
     closed_millis INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
     open_millis   INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
+    total_millis  INTEGER GENERATED ALWAYS AS (closed_millis + open_millis) VIRTUAL,
     PRIMARY KEY (date, user_id, app_id, title)
 );
 
@@ -61,6 +63,7 @@ CREATE TABLE daily_usage_by_category (
     category_id    INTEGER NOT NULL REFERENCES categories(id),
     closed_millis  INTEGER NOT NULL DEFAULT 0 CHECK(closed_millis >= 0),
     open_millis    INTEGER NOT NULL DEFAULT 0 CHECK(open_millis >= 0),
+    total_millis   INTEGER GENERATED ALWAYS AS (closed_millis + open_millis) VIRTUAL,
     PRIMARY KEY (date, user_id, category_id)
 );
 

@@ -2,51 +2,36 @@ use crate::valuetypes::*;
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-/// Per-app daily usage projection.
-///
-/// Fields use validated domain types where the D-Bus signature is preserved
-/// (`AppClass` has the same `s` signature as `String`; `Uid` has the same `u`
-/// signature as `u32`).
+/// Aggregated per-app usage across a date range — one row per app.
+/// Returned pre-sorted by `total_millis` DESC from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailyUsageByAppEntry {
-    pub date: String,
-    pub user_id: Uid,
+pub struct AppUsageSummary {
     pub app_class: AppClass,
     pub total_millis: i64,
 }
 
-/// Per-title usage projection — one row per (date, user_id, app_class, title).
+/// Aggregated per-title usage across a date range — one row per (app, title).
+/// Returned pre-sorted by `total_millis` DESC from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailyUsageByTitleEntry {
-    pub date: String,
-    pub user_id: Uid,
+pub struct TitleUsageSummary {
     pub app_class: AppClass,
     pub title: String,
     pub total_millis: i64,
 }
 
-/// Per-title usage summary for a date range — groups entries by date.
+/// Aggregated per-category usage across a date range — one row per category.
+/// Returned pre-sorted by `total_millis` DESC from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailyUsageByTitleSummary {
-    pub date: String,
-    pub user_id: Uid,
-    pub entries: Vec<DailyUsageByTitleEntry>,
-}
-
-/// Per-category usage projection — one row per (date, user_id, category_name).
-/// `category_name` is resolved at query time (the raw DB `category_id` is
-/// internal plumbing and must never leak into the D-Bus interface).
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailyUsageByCategoryEntry {
-    pub date: String,
-    pub user_id: Uid,
+pub struct CategoryUsageSummary {
     pub category_name: String,
     pub total_millis: i64,
 }
 
+/// Per-date total usage across a date range — one row per date.
+/// Pre-sorted by date ASC from SQL. Used for the bar chart so the GUI
+/// doesn't need to flatten per-entry data and aggregate by date in memory.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
-pub struct DailySummary {
+pub struct DateTotal {
     pub date: String,
-    pub user_id: Uid,
-    pub entries: Vec<DailyUsageByAppEntry>,
+    pub total_millis: i64,
 }

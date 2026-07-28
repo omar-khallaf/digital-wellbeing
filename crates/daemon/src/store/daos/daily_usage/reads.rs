@@ -1,57 +1,28 @@
-//! Read queries for the daily_usage materialized tables.
+//! Aggregated read queries for the daily_usage materialized tables.
 //!
-//! DAO functions only — return raw tuples, no domain type conversion.
-//! Feature repositories apply `TryFrom`/`TryInto` to map to domain types.
+//! DAO functions only — return raw tuples via GROUP BY, no domain type
+//! conversion.  Feature repositories map results to domain types.
+//!
+//! All queries are aggregate-only — per-row, per-date queries were removed
+//! when the GUI switched to pre-aggregated summaries over D-Bus.
 
 use diesel::{ExpressionMethods, QueryDsl};
 use diesel_async::RunQueryDsl;
-use wellbeing_core::Uid;
 
 use crate::store::connection::DbConn;
 use crate::store::schema;
 
-// ── Raw row types (public so feature repos can impl TryFrom) ───────────
+/// (app_class, total_millis) — aggregated per-app total across a date range.
+pub type AppSummaryRow = (String, i64);
 
-/// (date, user_id, app_class, closed_millis, open_millis) — from daily_usage_by_app ⋈ apps.
-pub type UsageAppRow = (String, i32, String, i64, i64);
-
-/// (date, user_id, app_class, title, closed_millis, open_millis) — from daily_usage_by_title ⋈ apps.
-pub type UsageTitleRow = (String, i32, String, String, i64, i64);
-
-/// (date, user_id, category_name, closed_millis, open_millis) — from daily_usage_by_category ⋈ categories.
-pub type UsageCategoryRow = (String, i32, String, i64, i64);
-
-// ── Per-app reads ───────────────────────────────────────────────────────
-
-/// Get per-app usage for a single date.
-pub(crate) async fn daily_usage_by_app(
-    conn: &mut DbConn,
-    date: &str,
-    uid: u32,
-) -> anyhow::Result<Vec<UsageAppRow>> {
-    use schema::apps;
-    use schema::daily_usage_by_app::columns as d;
-
-    Ok(schema::daily_usage_by_app::table
-        .inner_join(apps::table)
-        .filter(d::date.eq(date))
-        .filter(d::user_id.eq(uid as i32))
-        .select((
-            d::date,
-            d::user_id,
-            apps::app_class,
-            d::closed_millis,
-            d::open_millis,
-        ))
-        .load(conn)
-        .await?)
-}
+/// (app_class, title, total_millis) — aggregated per-title total across a date range.
+pub type TitleSummaryRow = (String, String, i64);
 
 /// Get today's total usage (closed + open) for a specific app.
 pub(crate) async fn get_today_app_usage(
     conn: &mut DbConn,
     app_id: i32,
-    uid: Uid,
+    uid: wellbeing_core::Uid,
     today: &str,
 ) -> anyhow::Result<i64> {
     use schema::daily_usage_by_app::columns as c;
@@ -67,13 +38,18 @@ pub(crate) async fn get_today_app_usage(
     Ok(closed + open)
 }
 
-/// Get per-app usage for a date range.
-pub(crate) async fn usage_range_by_app(
+/// Get per-app usage aggregated across a date range, sorted by total_millis DESC.
+///
+/// Returns one row per app with the sum of (closed_millis + open_millis) across
+/// all dates.  The daemon's `ReportsRepo` maps these to `AppUsageSummary`.
+pub(crate) async fn app_usage_summary(
     conn: &mut DbConn,
     start_date: &str,
     end_date: &str,
     uid: u32,
-) -> anyhow::Result<Vec<UsageAppRow>> {
+) -> anyhow::Result<Vec<AppSummaryRow>> {
+    use diesel::dsl::sql;
+    use diesel::sql_types::BigInt;
     use schema::apps;
     use schema::daily_usage_by_app::columns as d;
 
@@ -82,51 +58,25 @@ pub(crate) async fn usage_range_by_app(
         .filter(d::date.ge(start_date))
         .filter(d::date.le(end_date))
         .filter(d::user_id.eq(uid as i32))
-        .select((
-            d::date,
-            d::user_id,
-            apps::app_class,
-            d::closed_millis,
-            d::open_millis,
-        ))
+        .group_by(apps::app_class)
+        .select((apps::app_class, sql::<BigInt>("SUM(total_millis)")))
+        .order(sql::<BigInt>("SUM(total_millis)").desc())
         .load(conn)
         .await?)
 }
 
-// ── Per-title reads ────────────────────────────────────────────────────
-
-/// Get per-title usage for a single date.
-pub(crate) async fn daily_usage_by_title(
-    conn: &mut DbConn,
-    date: &str,
-    uid: u32,
-) -> anyhow::Result<Vec<UsageTitleRow>> {
-    use schema::apps;
-    use schema::daily_usage_by_title::columns as d;
-
-    Ok(schema::daily_usage_by_title::table
-        .inner_join(apps::table)
-        .filter(d::date.eq(date))
-        .filter(d::user_id.eq(uid as i32))
-        .select((
-            d::date,
-            d::user_id,
-            apps::app_class,
-            d::title,
-            d::closed_millis,
-            d::open_millis,
-        ))
-        .load(conn)
-        .await?)
-}
-
-/// Get per-title usage for a date range (raw entries, not grouped).
-pub(crate) async fn usage_range_by_title(
+/// Get per-title usage aggregated across a date range, sorted by total_millis DESC.
+///
+/// Returns one row per (app_class, title) with the sum of
+/// (closed_millis + open_millis) across all dates.
+pub(crate) async fn title_usage_summary(
     conn: &mut DbConn,
     start_date: &str,
     end_date: &str,
     uid: u32,
-) -> anyhow::Result<Vec<UsageTitleRow>> {
+) -> anyhow::Result<Vec<TitleSummaryRow>> {
+    use diesel::dsl::sql;
+    use diesel::sql_types::BigInt;
     use schema::apps;
     use schema::daily_usage_by_title::columns as d;
 
@@ -135,27 +85,29 @@ pub(crate) async fn usage_range_by_title(
         .filter(d::date.ge(start_date))
         .filter(d::date.le(end_date))
         .filter(d::user_id.eq(uid as i32))
+        .group_by((apps::app_class, d::title))
         .select((
-            d::date,
-            d::user_id,
             apps::app_class,
             d::title,
-            d::closed_millis,
-            d::open_millis,
+            sql::<BigInt>("SUM(total_millis)"),
         ))
+        .order(sql::<BigInt>("SUM(total_millis)").desc())
         .load(conn)
         .await?)
 }
 
-// ── Per-category reads ─────────────────────────────────────────────────
-
-/// Get per-category usage for a date range.
-pub(crate) async fn usage_range_by_category(
+/// Get per-category usage aggregated across a date range, sorted by total_millis DESC.
+///
+/// Returns one row per category with the sum of (closed_millis + open_millis)
+/// across all dates.
+pub(crate) async fn category_usage_summary(
     conn: &mut DbConn,
     start_date: &str,
     end_date: &str,
     uid: u32,
-) -> anyhow::Result<Vec<UsageCategoryRow>> {
+) -> anyhow::Result<Vec<(String, i64)>> {
+    use diesel::dsl::sql;
+    use diesel::sql_types::BigInt;
     use schema::categories;
     use schema::daily_usage_by_category::columns as d;
 
@@ -164,13 +116,35 @@ pub(crate) async fn usage_range_by_category(
         .filter(d::date.ge(start_date))
         .filter(d::date.le(end_date))
         .filter(d::user_id.eq(uid as i32))
-        .select((
-            d::date,
-            d::user_id,
-            categories::name,
-            d::closed_millis,
-            d::open_millis,
-        ))
+        .group_by(categories::name)
+        .select((categories::name, sql::<BigInt>("SUM(total_millis)")))
+        .order(sql::<BigInt>("SUM(total_millis)").desc())
+        .load(conn)
+        .await?)
+}
+
+/// Get total usage per date across a range, sorted by date ASC.
+///
+/// Returns one row per date with the sum of total_millis across all apps.
+/// The GUI bar chart uses this directly — no more flattening and summing
+/// per-entry data in memory.
+pub(crate) async fn daily_bar_totals(
+    conn: &mut DbConn,
+    start_date: &str,
+    end_date: &str,
+    uid: u32,
+) -> anyhow::Result<Vec<(String, i64)>> {
+    use diesel::dsl::sql;
+    use diesel::sql_types::BigInt;
+    use schema::daily_usage_by_app::columns as d;
+
+    Ok(schema::daily_usage_by_app::table
+        .filter(d::date.ge(start_date))
+        .filter(d::date.le(end_date))
+        .filter(d::user_id.eq(uid as i32))
+        .group_by(d::date)
+        .select((d::date, sql::<BigInt>("SUM(total_millis)")))
+        .order(d::date.asc())
         .load(conn)
         .await?)
 }

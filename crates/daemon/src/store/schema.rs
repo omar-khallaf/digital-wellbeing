@@ -28,6 +28,7 @@ diesel::table! {
         app_id -> Integer,
         closed_millis -> BigInt,
         open_millis -> BigInt,
+        total_millis -> BigInt,
     }
 }
 
@@ -38,6 +39,7 @@ diesel::table! {
         category_id -> Integer,
         closed_millis -> BigInt,
         open_millis -> BigInt,
+        total_millis -> BigInt,
     }
 }
 
@@ -49,6 +51,7 @@ diesel::table! {
         title -> Text,
         closed_millis -> BigInt,
         open_millis -> BigInt,
+        total_millis -> BigInt,
     }
 }
 
@@ -101,8 +104,6 @@ diesel::table! {
     }
 }
 
-// ── Allow joins between tables ───────────────────────────────────────────────
-
 diesel::joinable!(daily_usage_by_app -> apps (app_id));
 diesel::joinable!(daily_usage_by_title -> apps (app_id));
 diesel::joinable!(daily_usage_by_category -> categories (category_id));
@@ -110,6 +111,11 @@ diesel::joinable!(policy_schedules -> policies (policy_id));
 diesel::joinable!(policies -> apps (app_id));
 diesel::joinable!(policies -> categories (category_id));
 diesel::joinable!(app_categories -> apps (app_id));
+
+diesel::allow_columns_to_appear_in_same_group_by_clause!(
+    apps::app_class,
+    daily_usage_by_title::title,
+);
 
 diesel::allow_tables_to_appear_in_same_query!(
     events,

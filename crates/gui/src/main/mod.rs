@@ -49,16 +49,17 @@ async fn main() {
     let uid = nix::unistd::Uid::current().as_raw();
     info!(mode = ?mode, uid, "GUI starting");
 
-    // 1. BusManager — dual-bus connections with daemon resolution
+    // BusManager — dual-bus connections with daemon resolution
     let bus = BusManager::connect().await;
-    let daemon_available = Arc::new(RwLock::new(bus.status().await.is_connected()));
-    let connection_status = Arc::new(RwLock::new(bus.status().await));
+    let initial_status = bus.status().await;
+    let daemon_available = Arc::new(RwLock::new(initial_status.is_connected()));
+    let connection_status = Arc::new(RwLock::new(initial_status));
 
-    // 2. Daemon presence broadcast — instant (dis)appearance detection
+    // Daemon presence broadcast — instant (dis)appearance detection
     let presence_rx =
         dbus::spawn_daemon_presence_broadcast(&bus.system_connection(), &bus.session_connection());
 
-    // 3. Repositories (timeout-guarded D-Bus access)
+    // Repositories (timeout-guarded D-Bus access)
     let dash_repo = DashboardRepo::new(bus.clone());
     let policies_repo = PoliciesRepo::new(bus.clone());
     let reports_repo = ReportsRepo::new(bus);
@@ -73,7 +74,7 @@ async fn main() {
         connection_status: connection_status.clone(),
     });
 
-    // 5. Daemon presence → AppState connection status
+    // Daemon presence → AppState connection status
     {
         let daemon_available = daemon_available.clone();
         let connection_status = connection_status.clone();
@@ -97,14 +98,14 @@ async fn main() {
         });
     }
 
-    // 6. Broadcast channels for per-flow manual refresh triggers
+    // Broadcast channels for per-flow manual refresh triggers
     let (dash_refresh_tx, dash_refresh_rx) = broadcast::channel::<()>(16);
     let (pol_refresh_tx, pol_refresh_rx) = broadcast::channel::<()>(16);
     let (rep_refresh_tx, rep_refresh_rx) = broadcast::channel::<()>(16);
 
-    // 6. Per-flow ViewModel channels + merge task
-    //    Each flow pushes its own ViewModel type; a merge task combines
-    //    them into AppViewModels bundles for the GPUI entity.
+    //  Per-flow ViewModel channels + merge task
+    //  Each flow pushes its own ViewModel type; a merge task combines
+    //  them into AppViewModels bundles for the GPUI entity.
     let (dash_vm_tx, mut dash_vm_rx) = mpsc::unbounded_channel();
     let (pol_vm_tx, mut pol_vm_rx) = mpsc::unbounded_channel();
     let (rep_vm_tx, mut rep_vm_rx) = mpsc::unbounded_channel();
@@ -127,7 +128,7 @@ async fn main() {
         }
     });
 
-    // 7. Spawn background flows (one per screen)
+    // Spawn background flows (one per screen)
     let presence_rx1 = presence_rx.resubscribe();
     let presence_rx2 = presence_rx.resubscribe();
     let presence_rx3 = presence_rx.resubscribe();
@@ -201,11 +202,23 @@ async fn main() {
 
             // Wire up the ViewModel receiver — each AppViewModels bundle
             // updates the entity and triggers a re-render.
+            //
+            // Coalesce rapid VM bursts (e.g. all three flows firing at once)
+            // into a single notify by draining any buffered updates before
+            // requesting a repaint.
             let entity = app_view.clone();
             let task = cx.spawn(async move |cx| {
                 while let Some(vms) = vm_rx.recv().await {
-                    entity.update(cx, |app, cx| {
+                    entity.update(cx, |app, _| {
                         app.apply_viewmodels(vms);
+                    });
+                    // Coalesce: absorb any VMs that arrived while processing.
+                    while let Ok(more) = vm_rx.try_recv() {
+                        entity.update(cx, |app, _| {
+                            app.apply_viewmodels(more);
+                        });
+                    }
+                    entity.update(cx, |_, cx| {
                         cx.notify();
                     });
                 }

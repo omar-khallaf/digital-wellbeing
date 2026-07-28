@@ -9,7 +9,7 @@ pub use repo::{ReportsData, ReportsRepo};
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{NaiveDate, Utc};
-use wellbeing_core::{DailyUsageByAppEntry, DateRange};
+use wellbeing_core::DateRange;
 
 use crate::chart::HasBarData;
 
@@ -25,6 +25,11 @@ impl ReportsViewModel {
     /// Call after a full fetch (DailyUsageChanged / daemon reconnect / manual
     /// refresh).  The `range` parameter comes from the user's selected date
     /// range (unlike the dashboard which always shows today).
+    ///
+    /// App and title lists now use the pre-aggregated, pre-sorted
+    /// `app_summary` / `title_summary` fields from the daemon (GROUP BY +
+    /// ORDER BY total_millis DESC in SQL via the generated `total_millis`
+    /// column) — no GUI-side sorting or aggregation needed.
     pub fn recompute_derived(&mut self, range: DateRange) {
         let Some(ref data) = self.data else {
             self.bar_chart.clear();
@@ -35,21 +40,13 @@ impl ReportsViewModel {
             return;
         };
 
-        let usage: Vec<DailyUsageByAppEntry> = data
-            .summaries
-            .iter()
-            .flat_map(|s| s.entries.iter().cloned())
-            .collect();
-
-        // ── Bar chart: aggregate by date ──────────────────────────────────────
+        // ── Bar chart: pre-aggregated per-date totals from SQL ────────────────
         let mut by_date: BTreeMap<String, f64> = BTreeMap::new();
-        let mut by_app: BTreeMap<String, i64> = BTreeMap::new();
         let mut total: f64 = 0.0;
-        for entry in &usage {
-            let ms = entry.total_millis as f64;
-            *by_date.entry(entry.date.clone()).or_insert(0.0) += ms;
-            *by_app.entry(entry.app_class.to_string()).or_insert(0) += entry.total_millis;
-            total += ms;
+        for dt in &data.daily_totals {
+            let day_ms = dt.total_millis as f64;
+            by_date.insert(dt.date.clone(), day_ms);
+            total += day_ms;
         }
 
         let today = Utc::now().date_naive();
@@ -67,16 +64,19 @@ impl ReportsViewModel {
             cursor = cursor + chrono::Days::new(1);
         }
 
-        // ── App list ──────────────────────────────────────────────────────────
+        // ── App list (pre-sorted by total_millis DESC from SQL) ───────────────
         let meta: HashMap<&str, &str> = data
             .app_categories
             .iter()
             .map(|ac| (ac.app_class.as_str(), ac.display_name.as_str()))
             .collect();
 
-        let mut app_list: Vec<ReportAppEntry> = by_app
-            .into_iter()
-            .map(|(app_class, total_millis)| {
+        let total_millis_all = data.app_summary.iter().map(|a| a.total_millis).sum::<i64>() as f64;
+        let mut app_list: Vec<ReportAppEntry> = data
+            .app_summary
+            .iter()
+            .map(|s| {
+                let app_class = s.app_class.as_ref().to_string();
                 let display_name = meta
                     .get(app_class.as_str())
                     .copied()
@@ -84,9 +84,9 @@ impl ReportsViewModel {
                     .to_string();
                 ReportAppEntry {
                     rank: 0,
-                    total_millis,
-                    percentage: if total > 0.0 {
-                        (total_millis as f64 / total) * 100.0
+                    total_millis: s.total_millis,
+                    percentage: if total_millis_all > 0.0 {
+                        (s.total_millis as f64 / total_millis_all) * 100.0
                     } else {
                         0.0
                     },
@@ -96,23 +96,22 @@ impl ReportsViewModel {
             })
             .collect();
 
-        app_list.sort_by_key(|a| std::cmp::Reverse(a.total_millis));
+        // Data is already sorted by SQL, just assign ranks.
         for (i, entry) in app_list.iter_mut().enumerate() {
             entry.rank = i + 1;
         }
 
-        // ── Title list ────────────────────────────────────────────────────────
-        let mut by_title: BTreeMap<(String, String), i64> = BTreeMap::new();
-        let mut title_total: f64 = 0.0;
-        for entry in &data.title_entries {
-            let key = (entry.app_class.to_string(), entry.title.clone());
-            *by_title.entry(key).or_insert(0) += entry.total_millis;
-            title_total += entry.total_millis as f64;
-        }
-
-        let mut title_list: Vec<ReportTitleEntry> = by_title
-            .into_iter()
-            .map(|((app_class, title), total_millis)| {
+        // ── Title list (pre-sorted by total_millis DESC from SQL) ─────────────
+        let title_total: f64 = data
+            .title_summary
+            .iter()
+            .map(|t| t.total_millis)
+            .sum::<i64>() as f64;
+        let mut title_list: Vec<ReportTitleEntry> = data
+            .title_summary
+            .iter()
+            .map(|s| {
+                let app_class = s.app_class.as_ref().to_string();
                 let display_name = meta
                     .get(app_class.as_str())
                     .copied()
@@ -121,10 +120,10 @@ impl ReportsViewModel {
                 ReportTitleEntry {
                     rank: 0,
                     app_class: display_name,
-                    title,
-                    total_millis,
+                    title: s.title.clone(),
+                    total_millis: s.total_millis,
                     percentage: if title_total > 0.0 {
-                        (total_millis as f64 / title_total) * 100.0
+                        (s.total_millis as f64 / title_total) * 100.0
                     } else {
                         0.0
                     },
@@ -132,13 +131,12 @@ impl ReportsViewModel {
             })
             .collect();
 
-        title_list.sort_by_key(|a| std::cmp::Reverse(a.total_millis));
+        // Data is already sorted by SQL, just assign ranks.
         for (i, entry) in title_list.iter_mut().enumerate() {
             entry.rank = i + 1;
         }
 
         // ── Top-level KPIs ────────────────────────────────────────────────────
-        let total_millis = total as i64;
         let top_app = app_list
             .first()
             .map(|s| s.display_name.clone())
@@ -147,7 +145,7 @@ impl ReportsViewModel {
         self.bar_chart = bar_chart;
         self.app_list = app_list;
         self.title_list = title_list;
-        self.total_millis = total_millis;
+        self.total_millis = total as i64;
         self.top_app = top_app;
         self.date_range = range;
     }
