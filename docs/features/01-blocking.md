@@ -149,9 +149,9 @@ The plugin determines which tag to send based on `BlockedApps`:
 on_focus(window_handle):
     app_class = resolve_app_class(window_handle)
     if app_class in daemon.BlockedApps:
-        send Event(tag=2=Block, app_class, title, pid, power_tag)
+        send Event(tag=2=Block, app_class, title, power_tag)
     else:
-        send Event(tag=0=Focus, app_class, title, pid, power_tag)
+        send Event(tag=0=Focus, app_class, title, power_tag)
 ```
 
 After the initial block (first Focus event that triggered the Block verdict),
@@ -259,7 +259,7 @@ Signals (plugin -> daemon):
 
 | Signal | Payload                                                                                                            |
 | ------ | ------------------------------------------------------------------------------------------------------------------ |
-| Event  | (u32, String, String, u32, u32) — (tag, app_class, title, pid, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block |
+| Event  | (u32, String, String, u32) — (tag, app_class, title, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block |
 
 Property:
 

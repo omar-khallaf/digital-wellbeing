@@ -6,10 +6,10 @@
 //! responsibility.
 //!
 //! On every `Focus`/`Block` event, the event's own payload is used directly
-//! for evaluation instead of re-querying the plugin's `CurrentFocus` D-Bus
-//! property. This avoids a timing race where the compositor could switch
-//! focus between signal receipt and property query. The periodic minute-ticker
-//! (`evaluate_and_enforce`) still re-queries `CurrentFocus` as it has no
+//! for evaluation instead of re-querying the plugin's `GetFocusState` D-Bus
+//! method. This avoids a timing race where the compositor could switch
+//! focus between signal receipt and method call. The periodic minute-ticker
+//! (`evaluate_and_enforce`) still re-queries `GetFocusState` as it has no
 //! event payload to work from.
 
 use tracing::{error, warn};
@@ -32,12 +32,12 @@ impl<P: crate::platform::Platform, C: wellbeing_core::Clock> EnforcerActor<P, C>
 
         if should_evaluate
             && let Some(ref app_class) = app_class
-                && let Err(e) = self
-                    .evaluate_and_apply(uid, app_class, self.clock.now())
-                    .await
-                {
-                    warn!(error = %e, "Per-event evaluation failed");
-                }
+            && let Err(e) = self
+                .evaluate_and_apply(uid, app_class, self.clock.now())
+                .await
+        {
+            warn!(error = %e, "Per-event evaluation failed");
+        }
         if self.event_buffer.len() >= 100
             && let Err(e) = self.flush_buffer().await
         {
@@ -60,7 +60,6 @@ mod tests {
         let event = PlatformEvent::Focus {
             app_class: app_class.clone(),
             title: wellbeing_core::WindowTitle::new("test"),
-            pid: wellbeing_core::Pid(0),
             uid,
         };
         actor.handle_event(event).await;

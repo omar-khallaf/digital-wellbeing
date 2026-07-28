@@ -6,7 +6,7 @@
 pub mod linux;
 
 use futures::Stream;
-use wellbeing_core::{AppClass, EventType, Pid, Uid, WindowTitle};
+use wellbeing_core::{AppClass, EventType, Uid, WindowTitle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerEventKind {
@@ -20,7 +20,6 @@ pub enum PlatformEvent {
     Focus {
         app_class: AppClass,
         title: WindowTitle,
-        pid: Pid,
         uid: Uid,
     },
     Unfocus {

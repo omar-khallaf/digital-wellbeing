@@ -82,6 +82,7 @@ pub fn spawn_dashboard_flow(
                 && daemon_available
                 && let Some(conn) = repo.bus.try_proxy_conn()
             {
+                let mut subscribed = false;
                 match DaemonProxy::new(&conn).await {
                     Ok(p) => {
                         if let Ok(mut stream) = p.receive_daily_usage_changed().await {
@@ -93,6 +94,7 @@ pub fn spawn_dashboard_flow(
                                 warn!("dashboard flow: daily_usage_changed signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
+                            subscribed = true;
                         }
                         if let Ok(mut stream) = p.receive_on_blocked_apps_changed().await {
                             let tx = signal_tx.clone();
@@ -103,8 +105,9 @@ pub fn spawn_dashboard_flow(
                                 warn!("dashboard flow: blocked_apps_changed signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
+                            subscribed = true;
                         }
-                        proxy_subscribed = true;
+                        proxy_subscribed = subscribed;
                     }
                     Err(e) => {
                         warn!("dashboard flow: proxy for signals failed: {e}");
@@ -165,10 +168,23 @@ pub fn spawn_dashboard_flow(
                         .map(|b| BlockCardInfo {
                             app_class: b.app_class.to_string(),
                             display_name: String::new(),
-                            blocked_since: DateTime::from_timestamp(b.blocked_since as i64, 0)
+                            blocked_since: DateTime::from_timestamp_millis(b.blocked_since as i64)
                                 .unwrap_or(Utc::now()),
                         })
                         .collect();
+
+                    let app_names: HashMap<String, String> = data
+                        .app_categories
+                        .iter()
+                        .map(|ac| (ac.app_class.to_string(), ac.display_name.clone()))
+                        .collect();
+
+                    let today = Utc::now().date_naive();
+                    let day_timeline = Some(build_day_timeline(
+                        &mut data.day_events.clone(),
+                        today,
+                        &app_names,
+                    ));
 
                     let vm = build_dashboard_viewmodel(
                         DateRange {
@@ -177,7 +193,7 @@ pub fn spawn_dashboard_flow(
                         },
                         data,
                         block_cards,
-                        None,
+                        day_timeline,
                     );
                     let _ = vm_tx.send(Some(vm));
                 }
@@ -205,7 +221,7 @@ pub fn spawn_dashboard_flow(
                         .map(|b| BlockCardInfo {
                             app_class: b.app_class.to_string(),
                             display_name: String::new(),
-                            blocked_since: DateTime::from_timestamp(b.blocked_since as i64, 0)
+                            blocked_since: DateTime::from_timestamp_millis(b.blocked_since as i64)
                                 .unwrap_or(Utc::now()),
                         })
                         .collect();

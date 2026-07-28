@@ -54,13 +54,13 @@ responsible for syncing focus state after power-state changes. The plugin tracks
 screen lock state internally (`m_screenLocked` in `system_watcher.cpp`):
 
 - **Resume while screen unlocked** — `handlePrepareForSleep(false)` emits the
-  current focus state via `emitFocusEvent()` if the screen is already unlocked,
+  current focus state via `emitCurrentFocusEvent()` if the screen is already unlocked,
   resuming the focus interval.
 - **Resume while screen locked** — plugin defers and waits for the unlock
   handler.
 - **Screen unlock** — `handleScreenSaverActive(false)` sets
   `m_screenLocked = false` and emits the current focus state via
-  `emitFocusEvent()`.
+  `emitCurrentFocusEvent()`.
 
 In all cases the plugin emits a standard `Event` signal — either `Focus`,
 `Block`, or `Unfocus` depending on what window was focused — and the daemon

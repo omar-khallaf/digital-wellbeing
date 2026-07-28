@@ -9,8 +9,8 @@
 //!
 //! - Daemon stores `event_type` as `i32` (SQLite INTEGER).
 //! - GUI deserializes from D-Bus as `u8`.
-//! - The `Event` D-Bus signal carries a **separate** 5-field struct
-//!   (`(ussuu)`) whose first field is a `u32` **tag** (see
+//! - The `Event` D-Bus signal carries a **separate** 4-field struct
+//!   (`(ussu)`) whose first field is a `u32` **tag** (see
 //!   [`dbus_constants`]).  That tag is *not* `EventType` — it is a
 //!   higher-level discriminator that covers power-events and is handled by
 //!   the platform layer.

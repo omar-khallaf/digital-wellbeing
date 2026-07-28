@@ -52,7 +52,7 @@ knowledge leaks beyond PlatformEvent.
 
 | Event                 | Fields                       | Source                                 | Consumer                                             |
 | --------------------- | ---------------------------- | -------------------------------------- | ---------------------------------------------------- |
-| Focus                 | {app_class, title, pid, uid} | Plugin Event signal (tag=0)            | EnforcerActor (policy evaluation, interval tracking) |
+| Focus                 | {app_class, title, uid}      | Plugin Event signal (tag=0)            | EnforcerActor (policy evaluation, interval tracking) |
 | Block                 | {app_class, title, uid}      | Plugin Event signal (tag=2)            | EnforcerActor (close interval, blocked state)        |
 | Unfocus               | —                            | Plugin Event signal (Desktop variant)  | EnforcerActor (close interval)                       |
 | Idle                  | —                            | Plugin Event signal (EventTag::Idle)   | EnforcerActor (pause interval)                       |

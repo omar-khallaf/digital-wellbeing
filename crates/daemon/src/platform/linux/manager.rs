@@ -8,10 +8,10 @@ use crate::platform::{PlatformEvent, PowerEventKind};
 use wellbeing_core::{
     PluginInstanceId, Uid,
     dbus_constants::{
-        EVENT_FIELD_APP_ID, EVENT_FIELD_PID, EVENT_FIELD_POWER_TAG, EVENT_FIELD_TAG,
-        EVENT_FIELD_TITLE, EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN, EVENT_POWER_SUSPEND,
-        EVENT_STRUCT_FIELD_COUNT, EVENT_TAG_BLOCK, EVENT_TAG_FOCUS, EVENT_TAG_IDLE,
-        EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT, EVENT_TAG_POWER, EVENT_TAG_RESUME, EVENT_TAG_UNFOCUS,
+        EVENT_FIELD_APP_ID, EVENT_FIELD_POWER_TAG, EVENT_FIELD_TAG, EVENT_FIELD_TITLE,
+        EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN, EVENT_POWER_SUSPEND, EVENT_STRUCT_FIELD_COUNT,
+        EVENT_TAG_BLOCK, EVENT_TAG_FOCUS, EVENT_TAG_IDLE, EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT,
+        EVENT_TAG_POWER, EVENT_TAG_RESUME, EVENT_TAG_UNFOCUS,
     },
 };
 use zbus::proxy;
@@ -20,29 +20,27 @@ use zvariant::OwnedValue;
 /// The `org.wellbeing.v1.Manager` D-Bus interface exposed by the compositor plugin.
 ///
 /// Signals:
-///   - `Event(payload: OwnedValue)` — unified event carrying a `(ussuu)` struct.
+///   - `Event(payload: OwnedValue)` — unified event carrying a `(ussu)` struct.
 #[proxy(
     interface = "org.wellbeing.v1.Manager",
     default_path = "/org/wellbeing/Manager"
 )]
 pub trait Manager {
-    /// Unified event signal — `payload` is a D-Bus struct with signature `(ussuu)`:
+    /// Unified event signal — `payload` is a D-Bus struct with signature `(ussu)`:
     ///
     ///   field | type   | contents
     ///   ------+--------+-----------------------------------------------
     ///   0     | u32    | event tag (EVENT_TAG_FOCUS / _UNFOCUS / …)
     ///   1     | string | app_class (Focus, Block)
     ///   2     | string | title  (Focus, Block)
-    ///   3     | u32    | pid    (Focus)
-    ///   4     | u32    | power_tag  (PowerEvent: Suspend / Hibernate / Shutdown)
+    ///   3     | u32    | power_tag  (PowerEvent: Suspend / Hibernate / Shutdown)
     #[zbus(signal)]
     fn event(&self, payload: OwnedValue) -> zbus::Result<()>;
 
-    /// Read-only property returning the current focus state in the same
-    /// `(uussuu)` struct format as the `Event` signal.  The client should
-    /// use [`parse_event_payload`] to decode the value.
-    #[zbus(property)]
-    fn current_focus(&self) -> zbus::Result<OwnedValue>;
+    /// Method returning the current focus state in the same `(ussu)` struct
+    /// format as the `Event` signal.  The client should use
+    /// [`parse_event_payload`] to decode the value.
+    fn get_focus_state(&self) -> zbus::Result<OwnedValue>;
 }
 
 pub struct ManagerClient {
@@ -55,12 +53,12 @@ impl ManagerClient {
         Self { uid, proxy }
     }
 
-    /// Query the plugin's CurrentFocus D-Bus property.
+    /// Query the plugin's current focus state via `GetFocusState` D-Bus method.
     /// Returns the parsed [`PlatformEvent`] — including `Unfocus` when
     /// no app window is focused (the plugin sends [`EVENT_TAG_UNFOCUS`]
     /// with the uid).
     pub async fn current_focus(&self) -> Option<PlatformEvent> {
-        let val = self.proxy.current_focus().await;
+        let val = self.proxy.get_focus_state().await;
         match val {
             Ok(v) => {
                 let parsed = parse_event_payload(v, self.uid);
@@ -117,9 +115,9 @@ impl PluginRegistry {
         self.by_uid.keys().copied().collect()
     }
 
-    /// Query the CurrentFocus property for the plugin registered to `uid`.
-    /// Returns None if no plugin is registered for that uid, or if the
-    /// property query fails.
+    /// Query the current focus state via `GetFocusState` for the plugin
+    /// registered to `uid`.  Returns None if no plugin is registered for
+    /// that uid, or if the method call fails.
     pub async fn current_focus_for_uid(&self, uid: Uid) -> Option<PlatformEvent> {
         let instance_id = self.by_uid.get(&uid)?;
         let client = self.clients.get(instance_id)?;
@@ -191,15 +189,14 @@ impl Default for PluginRegistry {
     }
 }
 
-/// Parse a unified `Event` signal / `CurrentFocus` property payload into a
+/// Parse a unified `Event` signal / `GetFocusState` reply payload into a
 /// [`PlatformEvent`].
 ///
-/// The payload is a D-Bus struct with signature `(ussuu)`:
+/// The payload is a D-Bus struct with signature `(ussu)`:
 ///
 ///   [`EVENT_FIELD_TAG`]       = u32 tag  (EVENT_TAG_FOCUS / …)
 ///   [`EVENT_FIELD_APP_ID`]    = string app_class
 ///   [`EVENT_FIELD_TITLE`]     = string title
-///   [`EVENT_FIELD_PID`]       = u32 pid
 ///   [`EVENT_FIELD_POWER_TAG`] = u32 power_tag
 ///
 /// Returns `None` on malformed input (invalid tag, bad struct shape, or
@@ -243,13 +240,6 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
                     return None;
                 }
             };
-            let pid_val = match &f[EVENT_FIELD_PID] {
-                Value::U32(p) => wellbeing_core::Pid(*p),
-                other => {
-                    warn!(?uid, tag = "Focus", field = "pid", value_debug = ?other, "parse_event_payload: expected u32 for pid");
-                    return None;
-                }
-            };
             let aid = match wellbeing_core::AppClass::new(app_class_str) {
                 Ok(a) => a,
                 Err(e) => {
@@ -260,7 +250,6 @@ pub fn parse_event_payload(val: OwnedValue, uid: Uid) -> Option<PlatformEvent> {
             Some(PlatformEvent::Focus {
                 app_class: aid,
                 title: wellbeing_core::WindowTitle::new(title_str),
-                pid: pid_val,
                 uid,
             })
         }

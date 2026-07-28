@@ -216,7 +216,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     /// Evaluate a specific app for a uid and apply the result to blocked_apps.
     /// Emits BlockedAppsChanged signals as needed.
     /// Used by handle_event (with event payload data) and evaluate_and_enforce
-    /// (with re-queried CurrentFocus data).
+    /// (with re-queried GetFocusState data).
     async fn evaluate_and_apply(
         &mut self,
         uid: Uid,

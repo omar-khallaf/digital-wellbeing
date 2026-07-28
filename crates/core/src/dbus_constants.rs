@@ -41,15 +41,15 @@ pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 // ═════════════════════════════════════════════════════════════════════════════
 // Unified event signal — replaces FocusChanged, ActivityChanged, and power_event.
 //
-// The `event` signal carries a D-Bus struct with 5 fields:
-//   (u:tag, s:app_class, s:title, u:pid, u:power_tag)
+// The `event` signal carries a D-Bus struct with 4 fields:
+//   (u:tag, s:app_class, s:title, u:power_tag)
 //
-// Signature: `(ussuu)`
+// Signature: `(ussu)`
 
-pub const EVENT_STRUCT_SIGNATURE: &str = "(ussuu)";
+pub const EVENT_STRUCT_SIGNATURE: &str = "(ussu)";
 
 /// Event tag for Focus — a window received focus. Applies to `uid`.
-/// Relevant fields: app_class, title, pid
+/// Relevant fields: app_class, title
 pub const EVENT_TAG_FOCUS: u32 = 0;
 
 /// Event tag for Unfocus — all windows for `uid` lost focus (desktop shown).
@@ -99,13 +99,10 @@ pub const EVENT_FIELD_APP_ID: usize = 1;
 /// Index: title (string) — window title (Focus, Block).
 pub const EVENT_FIELD_TITLE: usize = 2;
 
-/// Index: pid (u32) — process ID (Focus).
-pub const EVENT_FIELD_PID: usize = 3;
-
 /// Index: power_tag (u32) — inner discriminator for PowerEvent (Suspend/Hibernate/Shutdown).
-pub const EVENT_FIELD_POWER_TAG: usize = 4;
+pub const EVENT_FIELD_POWER_TAG: usize = 3;
 
-pub const EVENT_STRUCT_FIELD_COUNT: usize = 5;
+pub const EVENT_STRUCT_FIELD_COUNT: usize = 4;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // D-Bus type signatures (cross-language contract)

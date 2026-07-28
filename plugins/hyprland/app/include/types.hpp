@@ -26,33 +26,31 @@ inline constexpr auto START_SERVICE_BY_NAME_METHOD = "StartServiceByName";
 
 // Validated non-empty identifier for an application (e.g. "firefox").
 // Validated at the D-Bus boundary; LockManager never sees an unvalidated value.
-class AppClass {
+class WindowClass {
   public:
-    /// Empty id acts as the "no overlay" sentinel (default for LockManager /
-    /// WindowInfo members).
-    AppClass() = default;
+    /// Empty id acts as the "no overlay" sentinel.
+    WindowClass() = default;
 
     /// Factory: validates non-empty and no embedded null bytes.
     /// Returns std::nullopt on invalid input (zero-trust boundary gate).
-    static auto from_raw(const std::string &raw) -> std::optional<AppClass> {
+    static auto from_raw(const std::string &raw) -> std::optional<WindowClass> {
         if (raw.empty() || raw.find('\0') != std::string::npos) {
             return std::nullopt;
         }
-        return AppClass(raw);
+        return WindowClass(raw);
     }
 
     /// For known-valid values only (test constants, internal recovery).
-    static auto from_unchecked(std::string raw) -> AppClass { return AppClass(std::move(raw)); }
+    static auto from_unchecked(std::string raw) -> WindowClass { return WindowClass(std::move(raw)); }
 
     [[nodiscard]] auto value() const -> const std::string & { return m_value; }
     [[nodiscard]] auto empty() const -> bool { return m_value.empty(); }
 
-    auto operator==(const AppClass &o) const -> bool { return m_value == o.m_value; }
-    auto operator!=(const AppClass &o) const -> bool { return m_value != o.m_value; }
-    auto operator<(const AppClass &o) const -> bool { return m_value < o.m_value; }
+    auto operator==(const WindowClass &o) const -> bool { return m_value == o.m_value; }
+    auto operator!=(const WindowClass &o) const -> bool { return m_value != o.m_value; }
+    auto operator<(const WindowClass &o) const -> bool { return m_value < o.m_value; }
 
-  private:
-    explicit AppClass(std::string raw) : m_value(std::move(raw)) {}
+    explicit WindowClass(std::string raw) : m_value(std::move(raw)) {}
     std::string m_value;
 };
 
@@ -112,16 +110,15 @@ enum class PowerTag : uint8_t {
     Shutdown = 2,
 };
 
-// The Event signal and CurrentFocus property carry a D-Bus struct `(ussuu)`.
+// The Event signal and CurrentFocus property carry a D-Bus struct `(ussu)`.
 // Cross-reference: Rust EVENT_FIELD_TAG … EVENT_FIELD_POWER_TAG in
 // crates/core/src/dbus_constants.rs.
 
 inline constexpr size_t EVENT_FIELD_TAG = 0;
 inline constexpr size_t EVENT_FIELD_APP_CLASS = 1;
 inline constexpr size_t EVENT_FIELD_APP_TITLE = 2;
-inline constexpr size_t EVENT_FIELD_PID = 3;
-inline constexpr size_t EVENT_FIELD_POWER_TAG = 4;
-inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 5;
+inline constexpr size_t EVENT_FIELD_POWER_TAG = 3;
+inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 4;
 
 // These strings pin the D-Bus wire signatures that both Rust (zvariant) and C++
 // (sdbus-c++) must agree on. Change with extreme care — mismatches cause
@@ -133,7 +130,7 @@ inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 5;
 /// Cross-reference: Rust BLOCKED_APP_SIGNATURE in crates/core/src/dbus_constants.rs.
 inline constexpr auto BLOCKED_APP_SIGNATURE = "(sxut)";
 
-/// (uint32, string, string, uint32, uint32).
-inline constexpr auto EVENT_STRUCT_SIGNATURE = "(ussuu)";
+/// (uint32, string, string, uint32).
+inline constexpr auto EVENT_STRUCT_SIGNATURE = "(ussu)";
 
 } // namespace wellbeing

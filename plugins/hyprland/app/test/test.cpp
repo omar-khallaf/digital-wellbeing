@@ -4,106 +4,114 @@
 // =============================================================================
 
 #include "lockdown.hpp"
+#include "messages.hpp"
+#include "types.hpp"
 #include <gtest/gtest.h>
 
-using wellbeing::ActionType;
-using wellbeing::AppClass;
+using wellbeing::BlockCmd;
 using wellbeing::BlockReason;
+using wellbeing::UnblockCmd;
+using wellbeing::SyncAllCmd;
+using wellbeing::WindowClass;
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
 
 class LockManagerTest : public ::testing::Test {
   protected:
-    void SetUp() override { lm = LockManager(); }
+    void SetUp() override {
+        lm = std::make_unique<wellbeing::LockManager>();
+    }
 
-    LockManager lm;
-    const AppClass kAppClass = AppClass::from_unchecked("firefox");
-    const AppClass kOther = AppClass::from_unchecked("other-app");
-    const uint64_t kPolicy = 42;
-    const BlockReason kReason = BlockReason::AppTimeLimit;
-    const uint64_t kBlockedSince = 1700000000000ULL;
-    const std::vector<ActionType> kActions = {ActionType::Close};
+    std::unique_ptr<wellbeing::LockManager> lm;
+    const WindowClass kFirefox = WindowClass::from_unchecked("firefox");
+    const WindowClass kCode    = WindowClass::from_unchecked("code");
+    const BlockReason kReason  = BlockReason::AppTimeLimit;
 };
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-TEST_F(LockManagerTest, InitiallyUnlocked) { EXPECT_FALSE(lm.isOverlayShown(kAppClass)); }
-
-TEST_F(LockManagerTest, ShowOverlayThenIsLocked) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    EXPECT_TRUE(lm.isOverlayShown(kAppClass));
-    EXPECT_FALSE(lm.isOverlayShown(kOther));
+TEST_F(LockManagerTest, InitiallyNothingBlocked) {
+    EXPECT_FALSE(lm->isBlocked(kFirefox.value()));
+    EXPECT_FALSE(lm->isBlocked(kCode.value()));
+    EXPECT_TRUE(lm->allBlocked().empty());
 }
 
-TEST_F(LockManagerTest, HideOverlayClearsState) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    EXPECT_EQ(lm.hideOverlay(kAppClass), LockManagerError::None);
-    EXPECT_FALSE(lm.isOverlayShown(kAppClass));
+TEST_F(LockManagerTest, BlockCmdThenIsBlocked) {
+    lm->apply(BlockCmd{kFirefox.value(), kReason});
+    EXPECT_TRUE(lm->isBlocked(kFirefox.value()));
+    EXPECT_FALSE(lm->isBlocked(kCode.value()));
 }
 
-TEST_F(LockManagerTest, HideOverlayWrongAppClassNoEffect) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    EXPECT_EQ(lm.hideOverlay(kOther), LockManagerError::AppClassMismatch);
-    EXPECT_TRUE(lm.isOverlayShown(kAppClass));
+TEST_F(LockManagerTest, UnblockCmdClearsState) {
+    lm->apply(BlockCmd{kFirefox.value(), kReason});
+    ASSERT_TRUE(lm->isBlocked(kFirefox.value()));
+
+    lm->apply(UnblockCmd{kFirefox.value()});
+    EXPECT_FALSE(lm->isBlocked(kFirefox.value()));
 }
 
-TEST_F(LockManagerTest, IsTargetReturnsFalseByDefault) {
-    // Without captured compositor window handles, isTarget returns false.
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    EXPECT_FALSE(lm.isTarget(0));
-    EXPECT_FALSE(lm.isTarget(12345));
+TEST_F(LockManagerTest, UnblockCmdOnNonBlockedIsNoop) {
+    lm->apply(UnblockCmd{kFirefox.value()}); // not blocked — no crash
+    EXPECT_FALSE(lm->isBlocked(kFirefox.value()));
 }
 
-TEST_F(LockManagerTest, ShowHideShowRoundtrip) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    lm.hideOverlay(kAppClass);
+TEST_F(LockManagerTest, SyncAllCmdReplacesState) {
+    lm->apply(BlockCmd{kFirefox.value(), kReason});
+    ASSERT_TRUE(lm->isBlocked(kFirefox.value()));
 
-    const AppClass appClass2 = AppClass::from_unchecked("code");
-    const uint64_t policy2 = 99;
-    lm.showOverlay(appClass2, policy2, kReason, kBlockedSince, {ActionType::Close});
+    SyncAllCmd sync;
+    sync.entries.push_back({kCode.value(), kReason});
+    lm->apply(sync);
 
-    EXPECT_TRUE(lm.isOverlayShown(appClass2));
-    EXPECT_FALSE(lm.isOverlayShown(kAppClass));
+    EXPECT_FALSE(lm->isBlocked(kFirefox.value()));
+    EXPECT_TRUE(lm->isBlocked(kCode.value()));
+}
+
+TEST_F(LockManagerTest, SyncAllCmdEmptyClearsAll) {
+    lm->apply(BlockCmd{kFirefox.value(), kReason});
+    lm->apply(BlockCmd{kCode.value(), kReason});
+
+    SyncAllCmd empty{};
+    lm->apply(empty);
+
+    EXPECT_TRUE(lm->allBlocked().empty());
 }
 
 TEST_F(LockManagerTest, MultipleAppsSimultaneously) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    const AppClass appClass2 = AppClass::from_unchecked("code");
-    const uint64_t policy2 = 99;
-    lm.showOverlay(appClass2, policy2, kReason, kBlockedSince, {ActionType::Close});
+    lm->apply(BlockCmd{kFirefox.value(), kReason});
+    lm->apply(BlockCmd{kCode.value(), BlockReason::CategoryBlock});
 
-    EXPECT_TRUE(lm.isOverlayShown(kAppClass));
-    EXPECT_TRUE(lm.isOverlayShown(appClass2));
+    EXPECT_TRUE(lm->isBlocked(kFirefox.value()));
+    EXPECT_TRUE(lm->isBlocked(kCode.value()));
 
-    // Hide one app; the other remains.
-    lm.hideOverlay(kAppClass);
-    EXPECT_FALSE(lm.isOverlayShown(kAppClass));
-    EXPECT_TRUE(lm.isOverlayShown(appClass2));
+    lm->apply(UnblockCmd{kFirefox.value()});
+    EXPECT_FALSE(lm->isBlocked(kFirefox.value()));
+    EXPECT_TRUE(lm->isBlocked(kCode.value()));
 }
 
-TEST_F(LockManagerTest, OverlayActionsListStored) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    // The buttons built from actions should be available for hit-testing.
-    lm.onMouseClick(0.0, 0.0); // no crash on empty callback (no focused app set)
+TEST_F(LockManagerTest, BlockReasonReturnsCorrectReason) {
+    lm->apply(BlockCmd{kFirefox.value(), BlockReason::AppTimeLimit});
+
+    auto *reason = lm->blockReason(kFirefox.value());
+    ASSERT_NE(reason, nullptr);
+    EXPECT_EQ(*reason, BlockReason::AppTimeLimit);
 }
 
-TEST_F(LockManagerTest, ClickWithoutFocusedAppReturnsFalse) {
-    lm.showOverlay(kAppClass, kPolicy, kReason, kBlockedSince, kActions);
-    EXPECT_FALSE(lm.onMouseClick(270.0, 370.0));
+TEST_F(LockManagerTest, BlockReasonNonBlockedReturnsNull) {
+    EXPECT_EQ(lm->blockReason(kFirefox.value()), nullptr);
 }
 
-TEST_F(LockManagerTest, GetFocusedAppInitiallyNone) { EXPECT_FALSE(lm.getFocusedApp().has_value()); }
+TEST_F(LockManagerTest, RepeatedBlockCmdUpdatesState) {
+    lm->apply(BlockCmd{kFirefox.value(), BlockReason::AppTimeLimit});
+    auto *r1 = lm->blockReason(kFirefox.value());
+    ASSERT_NE(r1, nullptr);
+    EXPECT_EQ(*r1, BlockReason::AppTimeLimit);
 
-TEST_F(LockManagerTest, SetFocusedAppThenGetReturnsIt) {
-    lm.setFocusedApp(std::optional<AppClass>(kAppClass));
-    EXPECT_TRUE(lm.getFocusedApp().has_value());
-    EXPECT_EQ(*lm.getFocusedApp(), kAppClass);
-}
-
-TEST_F(LockManagerTest, SetFocusedAppNoneClears) {
-    lm.setFocusedApp(std::optional<AppClass>(kAppClass));
-    lm.setFocusedApp(std::nullopt);
-    EXPECT_FALSE(lm.getFocusedApp().has_value());
+    // Re-issue block with different reason
+    lm->apply(BlockCmd{kFirefox.value(), BlockReason::CategoryBlock});
+    auto *r2 = lm->blockReason(kFirefox.value());
+    ASSERT_NE(r2, nullptr);
+    EXPECT_EQ(*r2, BlockReason::CategoryBlock);
 }
 
 // =============================================================================

@@ -71,33 +71,28 @@ if(hl_headers_FOUND)
     message(STATUS "wellbeing-lockdown: transitive Hyprland header include dirs: ${hl_headers_INCLUDE_DIRS}")
 endif()
 
-target_link_libraries(wellbeing-lockdown PRIVATE PkgConfig::deps rt)
+# libsystemd (sd-bus + sd-event) replaces sdbus-c++ in the new architecture.
+pkg_check_modules(libsystemd REQUIRED IMPORTED_TARGET libsystemd)
 
-# ── sdbus-c++: built from source and linked STATICALLY ─────────────────────
-# The plugin is loaded into the compositor address space; we want the deployed
-# .so to be self-contained, so our first-party D-Bus dependency is compiled in.
-# System libs (hyprland, libdrm, pixman, …) stay dynamic — they are always
-# present on a Hyprland host. libsystemd (sd-bus, pulled in by sdbus-c++) also
-# remains a shared system lib; only the sdbus-c++ *objects* are statically
-# embedded into wellbeing-lockdown.so.
+target_link_libraries(wellbeing-lockdown PRIVATE PkgConfig::deps PkgConfig::libsystemd rt)
+
+# ── LockFreeSpscQueue: header-only, fetched from source ─────────────────────
+# Single-header lock-free SPSC queue for zero-alloc event transfer between
+# the compositor event receiver and the worker thread. Header-only INTERFACE
+# library — the target name is `spsc_queue` (not the FetchContent name).
 include(FetchContent)
+set(SPSC_QUEUE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SPSC_QUEUE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SPSC_QUEUE_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 fetchcontent_declare(
-    sdbus-cpp
-    GIT_REPOSITORY https://github.com/Kistler-Group/sdbus-cpp.git
-    GIT_TAG v2.3.1
+    LockFreeSpscQueue
+    GIT_REPOSITORY https://github.com/joz-k/LockFreeSpscQueue.git
+    GIT_TAG v1.0.3
     GIT_SHALLOW True
     GIT_PROGRESS True
-    CMAKE_ARGS
-        -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
-        -DBUILD_SHARED_LIBS:BOOL=OFF
-        -DSDBUSCPP_BUILD_DOCS:BOOL=OFF
-        -DSDBUSCPP_BUILD_CODEGEN:BOOL=OFF
-        -DSDBUSCPP_BUILD_TESTS:BOOL=OFF
-        -DSDBUSCPP_BUILD_LIBSYSTEMD:BOOL=OFF
 )
-fetchcontent_makeavailable(sdbus-cpp)
-# sdbus-c++ v2.x exposes a single target (static when BUILD_SHARED_LIBS=OFF).
-target_link_libraries(wellbeing-lockdown PRIVATE sdbus-c++)
+fetchcontent_makeavailable(LockFreeSpscQueue)
+target_link_libraries(wellbeing-lockdown PRIVATE spsc_queue)
 
 # ── Warning flags ────────────────────────────────────────────────────────────
 # Flags from the project template, excluding any that break Hyprland headers.

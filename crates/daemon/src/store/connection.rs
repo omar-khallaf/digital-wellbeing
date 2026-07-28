@@ -1,5 +1,8 @@
 use std::error::Error;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
@@ -36,13 +39,8 @@ impl SpawnBlocking for StoredHandle {
         R: Send + 'static,
     {
         let handle = self.0.clone();
-        async move {
-            handle
-                .spawn_blocking(task)
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync + 'static>)
-        }
-        .boxed()
+        let join = handle.spawn_blocking(task);
+        WaitOnDrop { handle, join }.boxed()
     }
 
     /// Panics — use [`SyncConnectionWrapper::with_runtime`] instead.
@@ -51,6 +49,53 @@ impl SpawnBlocking for StoredHandle {
             "StoredHandle::get_runtime() should not be called. \
              Use SyncConnectionWrapper::with_runtime() with an explicit handle instead."
         )
+    }
+}
+
+// ── WaitOnDrop future wrapper ─────────────────────────────────────────────
+//
+// diesel-async's SyncConnectionWrapper::spawn_blocking (line 379 of mod.rs)
+// CLONES the `Arc<Mutex<C>>` and sends the clone into the blocking task.
+// If the returned future is dropped before the blocking task completes
+// (e.g., the D-Bus handler gets cancelled), the Clone keeps the Arc refcount
+// elevated for the task's duration.
+//
+// When the connection is later returned to the pool, deadpool calls
+// `is_broken()` → `exclusive_connection()` → `Arc::get_mut()` which requires
+// refcount == 1. If the blocking task is still running with its clone,
+// `Arc::get_mut` returns None and **panics** with "Cannot access shared
+// transaction state".
+//
+// This wrapper waits for the spawned blocking task to complete on Drop,
+// mirroring diesel-async's own `CancelWrapper` for its built-in `Tokio`
+// spawn-blocking type. Without this, query cancellation from zbus executor
+// threads causes a cascading panic + task cancellation storm.
+
+struct WaitOnDrop<R: Send + 'static> {
+    handle: tokio::runtime::Handle,
+    join: tokio::task::JoinHandle<R>,
+}
+
+impl<R: Send + 'static> Future for WaitOnDrop<R> {
+    type Output = Result<R, Box<dyn Error + Send + Sync + 'static>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        Pin::new(&mut this.join)
+            .poll(cx)
+            .map(|r| r.map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync + 'static>))
+    }
+}
+
+impl<R: Send + 'static> Drop for WaitOnDrop<R> {
+    fn drop(&mut self) {
+        if !self.join.is_finished() {
+            // The blocking task is still running with a clone of the Arc.
+            // Wait for it to complete before the connection is recycled.
+            tokio::task::block_in_place(|| {
+                let _ = self.handle.block_on(&mut self.join);
+            });
+        }
     }
 }
 

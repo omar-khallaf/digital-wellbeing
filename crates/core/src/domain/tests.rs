@@ -1,10 +1,10 @@
 use super::*;
 use crate::dbus_constants::{
-    BLOCKED_APP_SIGNATURE, EVENT_FIELD_APP_ID, EVENT_FIELD_PID, EVENT_FIELD_POWER_TAG,
-    EVENT_FIELD_TAG, EVENT_FIELD_TITLE, EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN,
-    EVENT_POWER_SUSPEND, EVENT_STRUCT_FIELD_COUNT, EVENT_STRUCT_SIGNATURE, EVENT_TAG_BLOCK,
-    EVENT_TAG_FOCUS, EVENT_TAG_IDLE, EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT, EVENT_TAG_POWER,
-    EVENT_TAG_RESUME, EVENT_TAG_UNFOCUS,
+    BLOCKED_APP_SIGNATURE, EVENT_FIELD_APP_ID, EVENT_FIELD_POWER_TAG, EVENT_FIELD_TAG,
+    EVENT_FIELD_TITLE, EVENT_POWER_HIBERNATE, EVENT_POWER_SHUTDOWN, EVENT_POWER_SUSPEND,
+    EVENT_STRUCT_FIELD_COUNT, EVENT_STRUCT_SIGNATURE, EVENT_TAG_BLOCK, EVENT_TAG_FOCUS,
+    EVENT_TAG_IDLE, EVENT_TAG_LOCKED, EVENT_TAG_LOGOUT, EVENT_TAG_POWER, EVENT_TAG_RESUME,
+    EVENT_TAG_UNFOCUS,
 };
 use crate::valuetypes::*;
 use chrono::Utc;
@@ -153,15 +153,14 @@ fn blocked_app_entry_value_roundtrip() {
 // ═════════════════════════════════════════════════════════════════════════════
 // Unified event struct tests  (replaces old FocusChanged + ActivityChanged)
 //
-// The `Event` D-Bus signal carries a struct with signature `(ussuu)`:
+// The `Event` D-Bus signal carries a struct with signature `(ussu)`:
 //
 //   field | type   | contents
 //   ------+--------+-----------------------------------------------
 //   0     | u32    | event tag (EVENT_TAG_FOCUS / …)
 //   1     | string | app_class
 //   2     | string | title
-//   3     | u32    | pid
-//   4     | u32    | power_tag
+//   3     | u32    | power_tag
 // ═════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -170,8 +169,7 @@ fn event_struct_raw_signature() {
         EVENT_TAG_FOCUS,
         "code",
         "main.rs",
-        9999u32, // pid
-        0u32,    // power_tag (unused for Focus)
+        0u32, // power_tag (unused for Focus)
     ));
     assert_eq!(
         s.signature().to_string(),
@@ -188,7 +186,6 @@ fn event_struct_focus_encoding() {
         EVENT_TAG_FOCUS,
         "firefox",
         "Mozilla Firefox",
-        12345u32,
         0u32,
     )));
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
@@ -217,11 +214,10 @@ fn event_struct_focus_encoding() {
                 Value::Str("Mozilla Firefox".into()),
                 "field 2 = title"
             );
-            assert_eq!(f[EVENT_FIELD_PID], Value::U32(12345u32), "field 3 = pid");
             assert_eq!(
                 f[EVENT_FIELD_POWER_TAG],
                 Value::U32(0),
-                "field 4 = power_tag (unused for Focus)"
+                "field 3 = power_tag (unused for Focus)"
             );
         }
         _ => panic!("expected Value::Structure variant"),
@@ -230,7 +226,7 @@ fn event_struct_focus_encoding() {
 
 #[test]
 fn event_struct_unfocus_encoding() {
-    let val = Value::Structure(Structure::from((EVENT_TAG_UNFOCUS, "", "", 0u32, 0u32)));
+    let val = Value::Structure(Structure::from((EVENT_TAG_UNFOCUS, "", "", 0u32)));
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
     let bytes = to_bytes(ctxt, &val).expect("serialize Unfocus event");
     let (decoded, _): (Value, _) = bytes.deserialize().expect("deserialize Unfocus event");
@@ -253,7 +249,6 @@ fn event_struct_power_encoding() {
         EVENT_TAG_POWER,
         "",
         "",
-        0u32,
         EVENT_POWER_HIBERNATE,
     )));
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
@@ -272,7 +267,7 @@ fn event_struct_power_encoding() {
             assert_eq!(
                 f[EVENT_FIELD_POWER_TAG],
                 Value::U32(EVENT_POWER_HIBERNATE),
-                "field 4 = Hibernate"
+                "field 3 = Hibernate"
             );
         }
         _ => panic!("expected Value::Structure variant"),
@@ -293,7 +288,7 @@ fn event_struct_all_tags_have_correct_field_count() {
     ];
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
     for (tag, name) in &tags {
-        let val = Value::Structure(Structure::from((tag, "", "", 0u32, 0u32)));
+        let val = Value::Structure(Structure::from((tag, "", "", 0u32)));
         let bytes = to_bytes(ctxt, &val).unwrap_or_else(|e| panic!("serialize {name} event: {e}"));
         let (decoded, _): (Value, _) = bytes
             .deserialize()
@@ -320,7 +315,7 @@ fn event_struct_encode_decode_roundtrip_all_power_kinds() {
     ];
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
     for (power_tag, name) in &power_kinds {
-        let val = Value::Structure(Structure::from((EVENT_TAG_POWER, "", "", 0u32, power_tag)));
+        let val = Value::Structure(Structure::from((EVENT_TAG_POWER, "", "", power_tag)));
         let bytes =
             to_bytes(ctxt, &val).unwrap_or_else(|e| panic!("serialize Power/{name} event: {e}"));
         let (decoded, _): (Value, _) = bytes

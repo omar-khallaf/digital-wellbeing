@@ -114,7 +114,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("firefox"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
             },
             dt(1_000_000),
@@ -123,7 +122,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("code"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(2),
                 uid: Uid(1000),
             },
             dt(1_000_100),
@@ -132,7 +130,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("terminal"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(3),
                 uid: Uid(1000),
             },
             dt(1_000_200),
@@ -171,7 +168,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("firefox"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
             },
             dt(1_000_000),
@@ -180,7 +176,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("code"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(2),
                 uid: Uid(1000),
             },
             dt(1_000_100),
@@ -204,7 +199,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("firefox"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
             },
             dt(1_000_000),
@@ -239,7 +233,6 @@ mod tests {
                 PlatformEvent::Focus {
                     app_class: app("firefox"),
                     title: WindowTitle::new("test"),
-                    pid: wellbeing_core::Pid(i as u32),
                     uid: Uid(1000),
                 },
                 dt(i as i64),
@@ -252,7 +245,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("overflow"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(99),
                 uid: Uid(1000),
             },
             dt(99),
@@ -277,7 +269,6 @@ mod tests {
             PlatformEvent::Focus {
                 app_class: app("firefox"),
                 title: WindowTitle::new("test"),
-                pid: wellbeing_core::Pid(1),
                 uid: Uid(1000),
             },
             dt(1),

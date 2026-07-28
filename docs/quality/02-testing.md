@@ -35,8 +35,8 @@ events are ephemeral (they exit the actor boundary), while the DB is the
 canonical record for reports and crash recovery.
 
 A test might construct a TrackerState, feed it a Focus event for an Alacritty
-window with a zsh title, pid 1234, and uid 1000, and then assert that the
-resulting domain events include FocusChanged. It then queries the database and
+window with a zsh title and uid 1000, and then assert that the resulting domain
+events include FocusChanged. It then queries the database and
 asserts that exactly one event row exists for Alacritty with event type Focus.
 
 Assert both the decision path (events) and the persistence path (DB rows); a
