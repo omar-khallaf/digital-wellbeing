@@ -11,7 +11,7 @@ use gpui_component::list::ListState;
 
 use wellbeing_core::AppClass;
 
-use super::domain::{AppState, AppViewModels, Tab};
+use super::domain::{AppState, Tab};
 use crate::components::{
     DashAppsDelegate, DashTitlesDelegate, PolListDelegate, RepAppsDelegate, RepTitlesDelegate,
 };
@@ -45,9 +45,7 @@ pub struct App {
     /// Held gpui Task for in-flight policy save/delete operations.
     /// Kept alive until the D-Bus call completes — dropping it would cancel.
     pub(crate) policy_task: Option<gpui::Task<()>>,
-    /// Long-lived ViewModel receiver task that reads from vm_rx and applies
-    /// AppViewModels bundles.
-    pub(crate) viewmodel_task: Option<gpui::Task<()>>,
+
     /// Repository for policy CRUD operations (injected from main).
     pub(crate) policies_repo: Option<crate::policies::data::PoliciesRepo>,
     /// Broadcast sender to trigger the reports background flow refresh.
@@ -92,7 +90,6 @@ impl App {
             custom_start_input: None,
             custom_end_input: None,
             policy_task: None,
-            viewmodel_task: None,
             policies_repo: None,
             reports_refresh_tx: None,
             pol_refresh_tx: None,
@@ -114,12 +111,6 @@ impl App {
         self.policy_task = Some(task);
     }
 
-    /// Store the ViewModel receiver task so it stays alive for the entity's
-    /// lifetime. Dropping the task would cancel the receiver.
-    pub fn set_viewmodel_task(&mut self, task: gpui::Task<()>) {
-        self.viewmodel_task = Some(task);
-    }
-
     pub fn set_policies_repo(&mut self, repo: crate::policies::data::PoliciesRepo) {
         self.policies_repo = Some(repo);
     }
@@ -132,16 +123,16 @@ impl App {
         self.pol_refresh_tx = Some(tx);
     }
 
-    pub fn apply_viewmodels(&mut self, vms: AppViewModels) {
-        if let Some(vm) = &vms.dashboard {
-            self.dashboard_vm = Some(vm.clone());
-        }
-        if let Some(vm) = &vms.policies {
-            self.policies_vm = Some(vm.clone());
-        }
-        if let Some(vm) = &vms.reports {
-            self.reports_vm = Some(vm.clone());
-        }
+    pub fn set_dashboard_vm(&mut self, vm: Option<crate::dashboard::DashboardViewModel>) {
+        self.dashboard_vm = vm;
+    }
+
+    pub fn set_policies_vm(&mut self, vm: Option<crate::policies::PoliciesViewModel>) {
+        self.policies_vm = vm;
+    }
+
+    pub fn set_reports_vm(&mut self, vm: Option<crate::reports::ReportsViewModel>) {
+        self.reports_vm = vm;
     }
 
     pub(crate) fn mode_label(&self) -> &'static str {

@@ -15,7 +15,7 @@ use std::time::Duration;
 use chrono::Utc;
 use futures::StreamExt;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 use tracing::{info, warn};
 use wellbeing_core::DateRange;
 
@@ -51,7 +51,7 @@ pub fn spawn_dashboard_flow(
     state: Arc<FlowState>,
     mut presence_rx: broadcast::Receiver<DaemonPresenceEvent>,
     mut refresh_rx: broadcast::Receiver<()>,
-    vm_tx: UnboundedSender<Option<DashboardViewModel>>,
+    vm_tx: watch::Sender<Option<DashboardViewModel>>,
 ) {
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
@@ -61,6 +61,7 @@ pub fn spawn_dashboard_flow(
         // Persistent ViewModel — like a Compose ViewModel with StateFlow.
         // Accumulates data from signal-driven fetches; never rebuilt from cache.
         let mut current_vm = DashboardViewModel::default();
+        let mut gen_cnt: u64 = 0;
 
         info!("dashboard flow started");
 
@@ -115,7 +116,9 @@ pub fn spawn_dashboard_flow(
                             daemon_available = ok;
                             proxy_subscribed = false;
                             if ok {
-                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                                gen_cnt += 1;
+                                let my_gen = gen_cnt;
+                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                             }
                         }
                         DaemonPresenceEvent::Disappeared => {
@@ -128,7 +131,9 @@ pub fn spawn_dashboard_flow(
                     match signal {
                         Some(FlowSignal::DailyUsageChanged) => {
                             if daemon_available {
-                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                                gen_cnt += 1;
+                                let my_gen = gen_cnt;
+                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                             }
                         }
                         Some(FlowSignal::BlockedAppsChanged) => {
@@ -153,7 +158,9 @@ pub fn spawn_dashboard_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx).await;
+                                gen_cnt += 1;
+                                let my_gen = gen_cnt;
+                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                 }
             };
         }
@@ -167,7 +174,9 @@ async fn do_full_fetch(
     repo: &DashboardRepo,
     uid: u32,
     vm: &mut DashboardViewModel,
-    tx: &UnboundedSender<Option<DashboardViewModel>>,
+    tx: &watch::Sender<Option<DashboardViewModel>>,
+    fetch_gen: u64,
+    gen_cnt: &mut u64,
 ) {
     let today = Utc::now().date_naive();
     match repo
@@ -181,6 +190,10 @@ async fn do_full_fetch(
         .await
     {
         Ok(data) => {
+            // STALENESS CHECK: if a newer signal arrived, discard this result
+            if fetch_gen != *gen_cnt {
+                return;
+            }
             vm.data = Some(data);
             vm.recompute_derived();
             let _ = tx.send(Some(vm.clone()));

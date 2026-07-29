@@ -3,7 +3,7 @@
 //! This module is now a thin re-export of `appshell/` which follows the
 //! feature-per-directory / DDD pattern matching other screens:
 //!
-//! - `appshell/domain.rs` — `RenderMode`, `Tab`, `AppViewModels`, `AppState`
+//! - `appshell/domain.rs` — `RenderMode`, `Tab`, `AppState`
 //! - `appshell/data.rs`   — `App` entity struct + data methods
 //! - `appshell/ui.rs`     — `Render` impl + sidebar/header/content helpers
 //!

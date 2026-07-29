@@ -10,7 +10,7 @@
 //! 7. Spawn three background flows (dashboard, policies, reports) with
 //!    independent D-Bus signal subscriptions and periodic refresh.
 //! 8. Start gpui application loop — the flows push ViewModel updates
-//!    through mpsc channels, merged into `AppViewModels` bundles.
+//!    through watch channels directly to independent gpui receivers.
 //! 9. On daemon unavailable → each flow emits `None` → warning banner.
 
 use std::sync::Arc;
@@ -20,18 +20,21 @@ use gpui::*;
 use gpui_component::{ActiveTheme, Root, theme::Theme};
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tracing::info;
 use wellbeing_core::DateRange;
 
-use wellbeing_gui::app::{App, AppState, AppViewModels, RenderMode};
+use wellbeing_gui::app::{App, AppState, RenderMode};
+use wellbeing_gui::dashboard::DashboardViewModel;
 use wellbeing_gui::dashboard::data::{
     DashboardRepo, FlowState as DashFlowState, spawn_dashboard_flow,
 };
 use wellbeing_gui::dbus;
 use wellbeing_gui::dbus::BusManager;
 use wellbeing_gui::dbus::DaemonPresenceEvent;
+use wellbeing_gui::policies::PoliciesViewModel;
 use wellbeing_gui::policies::data::{PoliciesRepo, spawn_policies_flow};
+use wellbeing_gui::reports::ReportsViewModel;
 use wellbeing_gui::reports::data::{FlowState as RepFlowState, ReportsRepo, spawn_reports_flow};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -103,30 +106,10 @@ async fn main() {
     let (pol_refresh_tx, pol_refresh_rx) = broadcast::channel::<()>(16);
     let (rep_refresh_tx, rep_refresh_rx) = broadcast::channel::<()>(16);
 
-    //  Per-flow ViewModel channels + merge task
-    //  Each flow pushes its own ViewModel type; a merge task combines
-    //  them into AppViewModels bundles for the GPUI entity.
-    let (dash_vm_tx, mut dash_vm_rx) = mpsc::unbounded_channel();
-    let (pol_vm_tx, mut pol_vm_rx) = mpsc::unbounded_channel();
-    let (rep_vm_tx, mut rep_vm_rx) = mpsc::unbounded_channel();
-    let (vm_tx, mut vm_rx) = mpsc::unbounded_channel();
-
-    tokio::spawn(async move {
-        let (mut dashboard, mut policies, mut reports) = (None, None, None);
-        loop {
-            tokio::select! {
-                Some(vm) = dash_vm_rx.recv() => { dashboard = vm; }
-                Some(vm) = pol_vm_rx.recv() => { policies = vm; }
-                Some(vm) = rep_vm_rx.recv() => { reports = vm; }
-                else => break,
-            }
-            let _ = vm_tx.send(AppViewModels {
-                dashboard: dashboard.clone(),
-                policies: policies.clone(),
-                reports: reports.clone(),
-            });
-        }
-    });
+    // 3 watch channels — latest-value, 1 slot each, never block
+    let (dash_vm_tx, dash_vm_rx) = watch::channel(None::<DashboardViewModel>);
+    let (pol_vm_tx, pol_vm_rx) = watch::channel(None::<PoliciesViewModel>);
+    let (rep_vm_tx, rep_vm_rx) = watch::channel(None::<ReportsViewModel>);
 
     // Spawn background flows (one per screen)
     let presence_rx1 = presence_rx.resubscribe();
@@ -163,13 +146,6 @@ async fn main() {
         rep_vm_tx,
     );
 
-    // Kick all three flows with an initial refresh signal so the UI
-    // populates immediately instead of waiting for the first D-Bus
-    // signal or periodic ticker to fire.
-    let _ = dash_refresh_tx.send(());
-    let _ = pol_refresh_tx.send(());
-    let _ = rep_refresh_tx.send(());
-
     Application::new_inaccessible(gpui_platform::current_platform(false)).run(move |app| {
         gpui_component::init(app);
         Theme::sync_system_appearance(None, app);
@@ -196,36 +172,64 @@ async fn main() {
                 let mut a = App::new(state.clone());
                 a.set_policies_repo(policies_repo);
                 a.set_reports_refresh_tx(reports_refresh_tx);
-                a.set_pol_refresh_tx(pol_refresh_tx);
+                a.set_pol_refresh_tx(pol_refresh_tx.clone());
                 a
             });
 
-            // Wire up the ViewModel receiver — each AppViewModels bundle
-            // updates the entity and triggers a re-render.
-            //
-            // Coalesce rapid VM bursts (e.g. all three flows firing at once)
-            // into a single notify by draining any buffered updates before
-            // requesting a repaint.
+            // ── 3 independent per-screen ViewModel receivers ──────────────
+            // Each watches its own watch::channel and applies the latest VM
+            // directly to the App entity.  No merge task, no bundling.
+            // .detach() means the tasks self-clean when the window closes.
+
+            // Dashboard receiver
             let entity = app_view.clone();
-            let task = cx.spawn(async move |cx| {
-                while let Some(vms) = vm_rx.recv().await {
-                    entity.update(cx, |app, _| {
-                        app.apply_viewmodels(vms);
-                    });
-                    // Coalesce: absorb any VMs that arrived while processing.
-                    while let Ok(more) = vm_rx.try_recv() {
-                        entity.update(cx, |app, _| {
-                            app.apply_viewmodels(more);
-                        });
-                    }
-                    entity.update(cx, |_, cx| {
+            let mut rx = dash_vm_rx.clone();
+            cx.spawn(async move |cx| {
+                while rx.changed().await.is_ok() {
+                    let vm = rx.borrow_and_update().clone();
+                    entity.update(cx, |app, cx| {
+                        app.set_dashboard_vm(vm);
                         cx.notify();
                     });
                 }
-            });
-            app_view.update(cx, |app, _cx| {
-                app.set_viewmodel_task(task);
-            });
+            })
+            .detach();
+
+            // Policies receiver
+            let entity = app_view.clone();
+            let mut rx = pol_vm_rx.clone();
+            cx.spawn(async move |cx| {
+                while rx.changed().await.is_ok() {
+                    let vm = rx.borrow_and_update().clone();
+                    entity.update(cx, |app, cx| {
+                        app.set_policies_vm(vm);
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+
+            // Reports receiver
+            let entity = app_view.clone();
+            let mut rx = rep_vm_rx.clone();
+            cx.spawn(async move |cx| {
+                while rx.changed().await.is_ok() {
+                    let vm = rx.borrow_and_update().clone();
+                    entity.update(cx, |app, cx| {
+                        app.set_reports_vm(vm);
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+
+            // ── Initial refresh triggers (AFTER receivers registered) ──
+            // Send AFTER receivers are spawned so the initial VM is not missed.
+            // watch receivers catch up via borrow() if the flow sends before
+            // this point, but sending after ensures no race.
+            let _ = dash_refresh_tx.send(());
+            let _ = pol_refresh_tx.send(());
+            let _ = rep_refresh_tx.send(());
 
             cx.new(|cx| Root::new(app_view, window, cx).bg(cx.theme().background))
         })

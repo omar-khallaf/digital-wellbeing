@@ -7,13 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::dbus;
 use tokio::sync::RwLock;
 use wellbeing_core::DateRange;
-
-use crate::dashboard;
-use crate::dbus;
-use crate::policies;
-use crate::reports;
 
 /// Runtime mode determined by getuid().
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,18 +60,6 @@ impl Tab {
             Tab::Reports => "\u{1f4ca}",
         }
     }
-}
-
-/// Bundle of ViewModels sent from the background flows to the GPUI entity
-/// on each data change — keeps the foreground render path single-pass.
-///
-/// Each field is `Option` so a flow can signal "data unavailable" (daemon
-/// disconnected) without blocking the other screens.
-#[derive(Debug, Clone)]
-pub struct AppViewModels {
-    pub dashboard: Option<dashboard::DashboardViewModel>,
-    pub policies: Option<policies::PoliciesViewModel>,
-    pub reports: Option<reports::ReportsViewModel>,
 }
 
 /// Minimal shared state between the GPUI entity and background flows.

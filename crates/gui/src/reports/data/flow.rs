@@ -9,7 +9,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 use tracing::{info, warn};
 use wellbeing_core::DateRange;
 
@@ -41,7 +41,7 @@ pub fn spawn_reports_flow(
     state: Arc<FlowState>,
     mut presence_rx: broadcast::Receiver<DaemonPresenceEvent>,
     mut refresh_rx: broadcast::Receiver<()>,
-    vm_tx: UnboundedSender<Option<ReportsViewModel>>,
+    vm_tx: watch::Sender<Option<ReportsViewModel>>,
 ) {
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
@@ -50,6 +50,7 @@ pub fn spawn_reports_flow(
 
         // Persistent ViewModel — like a Compose ViewModel with StateFlow.
         let mut current_vm = ReportsViewModel::default();
+        let mut generation: u64 = 0;
 
         info!("reports flow started");
 
@@ -86,7 +87,9 @@ pub fn spawn_reports_flow(
                             daemon_available = ok;
                             proxy_subscribed = false;
                             if ok {
-                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                                generation += 1;
+                                let my_gen = generation;
+                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                             }
                         }
                         DaemonPresenceEvent::Disappeared => {
@@ -99,7 +102,9 @@ pub fn spawn_reports_flow(
                     match signal {
                         Some(FlowSignal::DailyUsageChanged) => {
                             if daemon_available {
-                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                                generation += 1;
+                                let my_gen = generation;
+                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                             }
                         }
                         Some(FlowSignal::SignalStreamEnded) => {
@@ -110,7 +115,9 @@ pub fn spawn_reports_flow(
                     }
                 }
                 Ok(_) = refresh_rx.recv() => {
-                    do_full_fetch(&repo, &state, &mut current_vm, &vm_tx).await;
+                                generation += 1;
+                                let my_gen = generation;
+                                do_full_fetch(&repo, &state, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                 }
             };
         }
@@ -124,11 +131,16 @@ async fn do_full_fetch(
     repo: &ReportsRepo,
     state: &FlowState,
     vm: &mut ReportsViewModel,
-    tx: &UnboundedSender<Option<ReportsViewModel>>,
+    tx: &watch::Sender<Option<ReportsViewModel>>,
+    fetch_gen: u64,
+    generation: &mut u64,
 ) {
     let range = *state.selected_range.read().await;
     match repo.fetch_all(state.uid, range).await {
         Ok(data) => {
+            if fetch_gen != *generation {
+                return;
+            }
             vm.data = Some(data);
             vm.recompute_derived(range);
             let _ = tx.send(Some(vm.clone()));

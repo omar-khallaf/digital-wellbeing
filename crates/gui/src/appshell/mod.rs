@@ -3,7 +3,7 @@
 //! Organized following the feature-per-directory / DDD pattern established in
 //! `dashboard/`, `policies/`, and `reports/`:
 //!
-//! - `domain.rs` — pure data types (`RenderMode`, `Tab`, `AppViewModels`, `AppState`)
+//! - `domain.rs` — pure data types (`RenderMode`, `Tab`, `AppState`)
 //! - `data.rs`   — `App` entity struct + all data methods (construction, refresh, inputs)
 //! - `ui/`       — rendering helpers as a module directory (`sidebar`, `header`, `content_area`, `loading_state`)
 //!   plus `impl Render for App`
@@ -16,4 +16,4 @@ mod domain;
 mod ui;
 
 pub use data::App;
-pub use domain::{AppState, AppViewModels, RenderMode, Tab};
+pub use domain::{AppState, RenderMode, Tab};
