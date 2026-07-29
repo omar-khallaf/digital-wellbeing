@@ -395,11 +395,17 @@ void registerWindowHooks() {
                     return;
                 }
 
+                auto prevFocus = g_focusedWindow.lock();
                 g_focusedWindow = w;
 
                 // Emit unfocus when window class is empty (scratchpads,
                 // hidden windows, special workspaces with no meaningful class).
+                // Suppress if we were already unfocused — back-to-back
+                // empty-class transitions produce no signal change.
                 if (w->m_initialClass.empty()) {
+                    if (!prevFocus || prevFocus->m_initialClass.empty()) {
+                        return;
+                    }
                     pushToDbus(wellbeing::FocusUpdate{
                         .wclass = std::nullopt,
                         .wTitle = w->m_title,
