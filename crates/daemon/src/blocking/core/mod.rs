@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use chrono::{Datelike, Timelike};
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info};
@@ -60,6 +61,10 @@ pub struct EnforcerActor<P: Platform, C: Clock> {
     pub(crate) event_buffer: EventBuffer,
     internal_tx: mpsc::Sender<InternalEvent>,
     last_midnight_reset: Option<chrono::NaiveDate>,
+    /// Per-tick app-id cache shared across delta processing and policy
+    /// evaluation, eliminating redundant `SELECT id FROM apps` round-trips
+    /// for `AppClass` values that were already ensured during the flush phase.
+    app_cache: tokio::sync::Mutex<HashMap<AppClass, i32>>,
 }
 
 impl<P: Platform, C: Clock> EnforcerActor<P, C> {
@@ -85,6 +90,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 event_buffer: EventBuffer::default(),
                 internal_tx,
                 last_midnight_reset: None,
+                app_cache: tokio::sync::Mutex::new(HashMap::new()),
             },
             internal_rx,
         )
@@ -181,17 +187,20 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
 
     pub async fn flush_buffer(&mut self) -> anyhow::Result<()> {
         let now = self.clock.now();
-        let event_uids = self.event_buffer.uids();
         let all_uids = {
-            let mut set: std::collections::HashSet<Uid> = event_uids.iter().copied().collect();
+            let mut set: std::collections::HashSet<Uid> =
+                self.event_buffer.uids().into_iter().collect();
             set.extend(self.registry.read().await.registered_uids());
             set.into_iter().collect::<Vec<_>>()
         };
 
         let events = self.event_buffer.drain();
-        self.blocking_repo
-            .flush_with_deltas(&events, &event_uids, &all_uids, now)
-            .await?;
+        {
+            let mut cache = self.app_cache.lock().await;
+            self.blocking_repo
+                .flush_with_deltas(&events, &all_uids, now, &mut cache)
+                .await?;
+        }
 
         self.emit_daily_usage_changed(&all_uids);
         Ok(())
@@ -203,50 +212,63 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         }
     }
 
-    async fn evaluate_and_enforce(
-        &mut self,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> anyhow::Result<()> {
+    async fn evaluate_and_enforce(&self, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
         let uids = self.registry.read().await.registered_uids();
 
-        for uid in uids {
-            let proxy = {
-                let reg = self.registry.read().await;
-                reg.focus_proxy_for_uid(uid)
-            };
+        // Parallel per-UID evaluation so plugin RTTs overlap.
+        let mut futures: FuturesUnordered<_> = uids
+            .into_iter()
+            .map(|uid| self.evaluate_single_uid(uid, now))
+            .collect();
 
-            let Some((uid, proxy)) = proxy else {
-                debug!(
-                    ?uid,
-                    "evaluate_and_enforce: no plugin registered — skipping"
-                );
-                continue;
-            };
-
-            let client = ManagerClient::new(uid, proxy);
-            let focused = client.current_focus().await;
-
-            let Some(event) = focused else {
-                debug!(
-                    ?uid,
-                    "evaluate_and_enforce: plugin unreachable — cleaning up stale registration"
-                );
-                self.registry.write().await.unregister_by_uid(uid);
-                continue;
-            };
-            let Some(app_class) = event.app_class() else {
-                debug!(
-                    ?uid,
-                    "evaluate_and_enforce: current focus has no app_class — skipping"
-                );
-                continue;
-            };
-
-            debug!(?uid, %app_class, "evaluate_and_enforce: evaluating focused app");
-
-            self.evaluate_and_apply(uid, app_class, now).await?;
+        while let Some(result) = futures.next().await {
+            result?;
         }
         Ok(())
+    }
+
+    /// Query one UID's current focus and enforce policies. Used by
+    /// [`evaluate_and_enforce`] to parallelise per-UID plugin RTTs.
+    async fn evaluate_single_uid(
+        &self,
+        uid: Uid,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        let proxy = {
+            let reg = self.registry.read().await;
+            reg.focus_proxy_for_uid(uid)
+        };
+
+        let Some((uid, proxy)) = proxy else {
+            debug!(
+                ?uid,
+                "evaluate_and_enforce: no plugin registered — skipping"
+            );
+            return Ok(());
+        };
+
+        let client = ManagerClient::new(uid, proxy);
+        let focused = client.current_focus().await;
+
+        let Some(event) = focused else {
+            debug!(
+                ?uid,
+                "evaluate_and_enforce: plugin unreachable — cleaning up stale registration"
+            );
+            self.registry.write().await.unregister_by_uid(uid);
+            return Ok(());
+        };
+        let Some(app_class) = event.app_class() else {
+            debug!(
+                ?uid,
+                "evaluate_and_enforce: current focus has no app_class — skipping"
+            );
+            return Ok(());
+        };
+
+        debug!(?uid, %app_class, "evaluate_and_enforce: evaluating focused app");
+
+        self.evaluate_and_apply(uid, app_class, now).await
     }
 
     /// Evaluate a specific app for a uid and apply the result to blocked_apps.
@@ -254,7 +276,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     /// Used by handle_event (with event payload data) and evaluate_and_enforce
     /// (with re-queried GetFocusState data).
     async fn evaluate_and_apply(
-        &mut self,
+        &self,
         uid: Uid,
         app_class: &AppClass,
         now: chrono::DateTime<chrono::Utc>,
@@ -315,16 +337,28 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     }
 
     async fn evaluate_single_app(
-        &mut self,
+        &self,
         uid: Uid,
         app_class: &AppClass,
         now: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<Option<BlockedAppEntry>> {
-        let app_id = match self.blocking_repo.ensure_app(app_class).await {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(%app_class, error = %e, "Failed to upsert app");
-                return Ok(None);
+        let app_id = {
+            let cache = self.app_cache.lock().await;
+            if let Some(&id) = cache.get(app_class) {
+                id
+            } else {
+                // Cache miss — drop lock to avoid holding across ensure_app await.
+                drop(cache);
+                match self.blocking_repo.ensure_app(app_class).await {
+                    Ok(id) => {
+                        self.app_cache.lock().await.insert(app_class.clone(), id);
+                        id
+                    }
+                    Err(e) => {
+                        tracing::warn!(%app_class, error = %e, "Failed to upsert app");
+                        return Ok(None);
+                    }
+                }
             }
         };
 

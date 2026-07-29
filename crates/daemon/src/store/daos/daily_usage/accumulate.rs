@@ -37,6 +37,7 @@ pub(crate) fn accumulate_closed(
                 AggKeyTitle {
                     date,
                     app_class: prev.app_class.to_string(),
+                    app_id: prev.app_id,
                     title: prev.title.clone(),
                 },
             ))
@@ -61,6 +62,7 @@ pub(crate) fn accumulate_closed(
                 AggKeyTitle {
                     date: date1,
                     app_class: prev.app_class.to_string(),
+                    app_id: prev.app_id,
                     title: prev.title.clone(),
                 },
             ))
@@ -81,6 +83,7 @@ pub(crate) fn accumulate_closed(
                 AggKeyTitle {
                     date: date2,
                     app_class: prev.app_class.to_string(),
+                    app_id: prev.app_id,
                     title: prev.title.clone(),
                 },
             ))
@@ -118,6 +121,7 @@ pub(crate) fn accumulate_open(
                 AggKeyTitle {
                     date,
                     app_class: focus.app_class.to_string(),
+                    app_id: focus.app_id,
                     title: focus.title.clone(),
                 },
             ))
@@ -142,6 +146,7 @@ pub(crate) fn accumulate_open(
                 AggKeyTitle {
                     date: date1,
                     app_class: focus.app_class.to_string(),
+                    app_id: focus.app_id,
                     title: focus.title.clone(),
                 },
             ))
@@ -162,6 +167,7 @@ pub(crate) fn accumulate_open(
                 AggKeyTitle {
                     date: date2,
                     app_class: focus.app_class.to_string(),
+                    app_id: focus.app_id,
                     title: focus.title.clone(),
                 },
             ))

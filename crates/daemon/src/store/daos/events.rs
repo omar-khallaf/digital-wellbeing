@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use turso::params_from_iter;
+use turso::{Value, params_from_iter};
 use wellbeing_core::{AppClass, DayEventRow, EventType, Uid, WindowTitle};
 
 use crate::blocking::domain::TimedEvent;
@@ -25,36 +25,60 @@ pub struct EventRow {
 pub(crate) struct EventDao;
 
 impl EventDao {
-    pub(crate) async fn flush_events(conn: &DbConn, events: &[TimedEvent]) -> anyhow::Result<()> {
+    /// Insert all events in a single multi-row INSERT statement.
+    /// Replaces N individual INSERTs with one round-trip.
+    pub(crate) async fn batch_insert_events(
+        conn: &DbConn,
+        events: &[TimedEvent],
+    ) -> anyhow::Result<()> {
         if events.is_empty() {
             return Ok(());
         }
 
-        // Insert one row at a time. Each call is async-native (no spawn_blocking).
-        for timed in events {
-            let event = &timed.event;
-            let sql = format!(
-                "INSERT INTO {} ({}, {}, {}, {}, {}) VALUES (?1, ?2, ?3, ?4, ?5)",
-                events::TABLE,
-                events::EVENT_TYPE,
-                events::USER_ID,
-                events::TIMESTAMP,
-                events::APP_CLASS,
-                events::TITLE,
-            );
-            conn.execute(
-                &sql,
-                (
-                    i32::from(event.event_type()),
-                    event.uid().0 as i32,
-                    timed.timestamp.timestamp_millis(),
-                    event.app_class().map(|s| s.as_ref()),
-                    event.title().map(|t| t.as_str()),
-                ),
-            )
-            .await?;
+        let n = events.len();
+        let cols = format!(
+            "{}, {}, {}, {}, {}",
+            events::EVENT_TYPE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::APP_CLASS,
+            events::TITLE,
+        );
+
+        // Build VALUES (?, ?, ?, ?, ?), ..., (?, ?, ?, ?, ?) for N rows
+        let row_placeholder = "(?, ?, ?, ?, ?)";
+        let mut values = String::with_capacity(n * (row_placeholder.len() + 2));
+        for i in 0..n {
+            if i > 0 {
+                values.push_str(", ");
+            }
+            values.push_str(row_placeholder);
         }
 
+        let sql = format!("INSERT INTO {} ({}) VALUES {}", events::TABLE, cols, values,);
+
+        let mut params: Vec<Value> = Vec::with_capacity(n * 5);
+        for timed in events {
+            let event = &timed.event;
+            params.push(i32::from(event.event_type()).into());
+            params.push((event.uid().0 as i32).into());
+            params.push(timed.timestamp.timestamp_millis().into());
+            // SQLite TEXT columns accept empty string for NULL app_class/title
+            params.push(
+                event
+                    .app_class()
+                    .map(|s| Value::Text(s.as_ref().to_string()))
+                    .unwrap_or(Value::Null),
+            );
+            params.push(
+                event
+                    .title()
+                    .map(|t| Value::Text(t.as_str().to_string()))
+                    .unwrap_or(Value::Null),
+            );
+        }
+
+        conn.execute(&sql, params_from_iter(params)).await?;
         Ok(())
     }
 

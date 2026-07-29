@@ -3,6 +3,8 @@
 //! Wraps store DAO calls and provides coarse-grained methods for the
 //! [`EnforcerActor`](super::super::core::EnforcerActor).
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use wellbeing_core::{AppClass, Uid};
 
@@ -51,24 +53,34 @@ impl BlockingRepo {
 
     /// Flush buffered events with delta computation in a single transaction.
     ///
-    /// 1. Applies closed-interval deltas from the buffer.
-    /// 2. Writes events to the append-only events table.
-    /// 3. Refreshes open-interval deltas for all registered uids.
+    /// 1. Fetches `last_events` for all registered UIDs (one round-trip).
+    /// 2. Merged pass: closed intervals from buffered events + open intervals
+    ///    for all UIDs — in one go.
+    /// 3. Batch-inserts buffered events.
+    /// 4. Commits.
+    ///
+    /// `app_cache` is populated during processing and can be reused by the
+    /// caller for policy evaluation, saving redundant `ensure_app` calls.
     pub async fn flush_with_deltas(
         &self,
         events: &[TimedEvent],
-        event_uids: &[Uid],
         all_uids: &[Uid],
         now: DateTime<Utc>,
+        app_cache: &mut HashMap<AppClass, i32>,
     ) -> anyhow::Result<()> {
         let mut conn = self.pool.client().await?;
         let tx = conn.transaction().await?;
 
+        // Single fetch for the entire tick.
+        let last_events = EventDao::get_last_events_for_uids(&tx, all_uids).await?;
+
+        // Merged pass: closed (from buffer) + open (all UIDs).
+        deltas::process_all_deltas(&tx, events, all_uids, &last_events, now, app_cache).await?;
+
         if !events.is_empty() {
-            deltas::apply_closed_deltas_from_buffer(&tx, events, event_uids, now).await?;
-            EventDao::flush_events(&tx, events).await?;
+            EventDao::batch_insert_events(&tx, events).await?;
         }
-        deltas::refresh_open_intervals_inner(&tx, all_uids, now).await?;
+
         tx.commit().await?;
         Ok(())
     }

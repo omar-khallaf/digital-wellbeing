@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_app_ts ON events(app_class, timestamp) WHERE app_class IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_events_user_ts ON events(user_id, timestamp);
 
 -- ── `apps` registry ───────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_usage_by_title_user_date ON daily_usage_by_
 
 -- ── `daily_usage_by_category` ─────────────────────────────────────────────────
 -- category is stored as an INTEGER matching the Category enum discriminant
--- (0=Productivity … 6=Uncategorized). No FK to a categories table.
+-- (0=Productivity … 6=Uncategorized).
 
 CREATE TABLE IF NOT EXISTS daily_usage_by_category (
     date           TEXT NOT NULL,
@@ -103,8 +103,7 @@ CREATE TABLE IF NOT EXISTS policies (
     CHECK (effect NOT IN (0,1) OR time_limit_minutes IS NULL)
 );
 
-CREATE INDEX IF NOT EXISTS idx_policies_user_id ON policies(user_id);
-CREATE INDEX IF NOT EXISTS idx_policies_priority ON policies(priority);
+CREATE INDEX IF NOT EXISTS idx_policies_user_target_priority ON policies(user_id, target_type, priority);
 
 -- ── `policy_schedules` — normalized, one row per time window ──────────────────
 
@@ -129,6 +128,8 @@ CREATE TABLE IF NOT EXISTS app_categories (
     ignore         INTEGER NOT NULL DEFAULT 0 CHECK(ignore IN (0, 1)),
     PRIMARY KEY (app_id, user_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_app_categories_user_id ON app_categories(user_id);
 
 -- Seed apps so app_categories can reference them by integer FK.
 INSERT OR IGNORE INTO apps (app_class) VALUES
