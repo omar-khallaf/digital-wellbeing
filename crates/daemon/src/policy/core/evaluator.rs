@@ -95,17 +95,17 @@ pub fn evaluate(
 mod tests {
     use super::*;
     use crate::policy::domain::{Effect, Policy, PolicyTarget};
-    use wellbeing_core::{AppClass, PolicyId, TimeWindow};
+    use wellbeing_core::{AppClass, Category, PolicyId, TimeWindow};
 
     fn target_matches(
         target: &PolicyTarget,
         app_class: &AppClass,
-        category_names: &[String],
+        category_names: &[Category],
     ) -> bool {
         match target {
             PolicyTarget::Any => true,
             PolicyTarget::App(t) => t == app_class,
-            PolicyTarget::Category(cat_name) => category_names.contains(cat_name),
+            PolicyTarget::Category(cat) => category_names.contains(cat),
             PolicyTarget::Domain(_) => false, // DNS-level — excluded from app evaluation
         }
     }
@@ -126,8 +126,6 @@ mod tests {
             },
             user_id: 1000,
             created_by: 1000,
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
         }
     }
 
@@ -227,8 +225,8 @@ mod tests {
     #[test]
     fn test_target_matches_app() {
         let app = AppClass::new("firefox").unwrap();
-        let cat_a = "Social".to_string();
-        let cat_b = "Entertainment".to_string();
+        let cat_a = Category::Social;
+        let cat_b = Category::Entertainment;
 
         assert!(target_matches(
             &PolicyTarget::App(app.clone()),
@@ -241,12 +239,12 @@ mod tests {
             std::slice::from_ref(&cat_a)
         ));
         assert!(target_matches(
-            &PolicyTarget::Category(cat_a.clone()),
+            &PolicyTarget::Category(cat_a),
             &app,
-            &[cat_a.clone(), cat_b.clone()]
+            &[cat_a, cat_b]
         ));
         assert!(!target_matches(
-            &PolicyTarget::Category("Productivity".to_string()),
+            &PolicyTarget::Category(Category::Productivity),
             &app,
             &[cat_a, cat_b]
         ));

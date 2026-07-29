@@ -67,7 +67,7 @@ enum class ActionType : uint8_t {
     return std::nullopt;
 }
 
-// Serialized over D-Bus as uint32_t — validated at the boundary.
+// Serialized over D-Bus as uint8_t — validated at the boundary.
 enum class BlockReason : uint8_t {
     AppTimeLimit = 0,
     CategoryTimeLimit = 1,
@@ -75,7 +75,7 @@ enum class BlockReason : uint8_t {
     CategoryBlock = 3,
 };
 
-[[nodiscard]] inline auto raw_to_block_reason(uint32_t raw) -> std::optional<BlockReason> {
+[[nodiscard]] inline auto raw_to_block_reason(uint8_t raw) -> std::optional<BlockReason> {
     switch (static_cast<BlockReason>(raw)) {
     case BlockReason::AppTimeLimit:
     case BlockReason::CategoryTimeLimit:
@@ -126,9 +126,9 @@ inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 4;
 // Cross-reference: Rust BLOCKED_APP_SIGNATURE / EVENT_STRUCT_SIGNATURE in
 // crates/core/src/dbus_constants.rs.
 
-/// (string, int64, uint32, uint64) — PolicyId is int64 (`x`) on the wire.
+/// (string, int64, uint8, uint64) — BlockReason is uint8 (`y`) on the wire.
 /// Cross-reference: Rust BLOCKED_APP_SIGNATURE in crates/core/src/dbus_constants.rs.
-inline constexpr auto BLOCKED_APP_SIGNATURE = "(sxut)";
+inline constexpr auto BLOCKED_APP_SIGNATURE = "(sxyt)";
 
 /// (uint32, string, string, uint32).
 inline constexpr auto EVENT_STRUCT_SIGNATURE = "(ussu)";

@@ -315,14 +315,14 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             }
         };
 
-        let category_names = match self
+        let category_discriminants = match self
             .blocking_repo
-            .resolve_category_names(app_class, uid)
+            .resolve_category_discriminants(app_class, uid)
             .await
         {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(%app_class, error = %e, "Failed to fetch category names");
+                tracing::warn!(%app_class, error = %e, "Failed to fetch category discriminants");
                 Vec::new()
             }
         };
@@ -334,7 +334,13 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         let day_mask = 1i32 << now_local.weekday().num_days_from_sunday();
         let policies: Vec<Policy> = match self
             .policy_repo
-            .resolve_for_app(app_id, &category_names, uid, day_mask, minute_of_day)
+            .resolve_for_app(
+                app_id,
+                &category_discriminants,
+                uid,
+                day_mask,
+                minute_of_day,
+            )
             .await
         {
             Ok(p) => {

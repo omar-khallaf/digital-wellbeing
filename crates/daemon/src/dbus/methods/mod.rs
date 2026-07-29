@@ -51,10 +51,9 @@ impl DaemonInterface {
         if caller != 0 && input.user_id != caller_uid {
             return Err(fdo::Error::AccessDenied("access denied".into()));
         }
-        let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
         let id = self
             .policy_repo
-            .create(input, caller, &now)
+            .create(input, caller)
             .await
             .map_err(|e| query_handlers::map_err(e, "insert failed"))?;
         let _ = signals::policy_mutated(conn, caller_uid).await;
@@ -78,10 +77,9 @@ impl DaemonInterface {
         let policy_id = id.0 as i32;
         let owner_id =
             policy_handlers::verify_policy_owner(&self.policy_repo, policy_id, caller).await?;
-        let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
         let updated = self
             .policy_repo
-            .update(id, input, &now)
+            .update(id, input)
             .await
             .map_err(|e| query_handlers::map_err(e, "update failed"))?;
         if !updated {
@@ -323,7 +321,7 @@ impl DaemonInterface {
     async fn set_app_category(
         &self,
         app_class: String,
-        category_id: wellbeing_core::CategoryId,
+        category: wellbeing_core::Category,
         #[zbus(connection)] conn: &zbus::Connection,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> fdo::Result<()> {
@@ -333,7 +331,7 @@ impl DaemonInterface {
             .map_err(|_| fdo::Error::InvalidArgs("invalid app_class (empty)".into()))?;
         let now = self.clock.now().format("%Y-%m-%d %H:%M:%S").to_string();
         self.categorization_repo
-            .set_app_category(&app_class, category_id, caller, &now)
+            .set_app_category(&app_class, category, caller, &now)
             .await
             .map_err(|e| query_handlers::map_err(e, "update failed"))?;
         let _ = signals::policy_mutated(conn, caller).await;

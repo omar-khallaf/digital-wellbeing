@@ -32,8 +32,8 @@ pub struct PoliciesViewModel {
 pub enum PolicyTarget {
     /// Target an individual app by its `AppClass`.
     App(AppClass),
-    /// Target every app in a category by the category's name.
-    Category(String),
+    /// Target every app in a category.
+    Category(Category),
     /// Target a domain pattern.
     Domain(DomainPattern),
     /// Wildcard — matches everything.
@@ -52,8 +52,8 @@ pub struct PolicyConfigForm {
     /// Parsed schedule rules from `schedule_json` — UI state, not serialized.
     pub schedules: Vec<TimeWindow>,
     pub app_class: AppClass,
-    /// Target category name — valid when target_type is Category.
-    pub category_name: String,
+    /// Target category — valid when target_type is Category.
+    pub category: Category,
     /// Priority (lower = evaluated first). Default 100.
     pub priority: i64,
     /// Working day-mask for the "add new window" controls. 7-bit bitmask (0x7F = all days).
@@ -68,7 +68,7 @@ impl Default for PolicyConfigForm {
             schedule_json: "[]".into(),
             schedules: vec![],
             app_class: AppClass::new("_").expect("static sentinel is non-empty"),
-            category_name: String::new(),
+            category: Category::Uncategorized,
             priority: 100,
             schedule_new_day_mask: 0x7F,
         }
@@ -90,6 +90,10 @@ pub fn policy_input_from(
         || AppClass::new("_").expect("static sentinel '_' is a valid non-empty AppClass");
     let placeholder_domain =
         || DomainPattern::new("_").expect("static sentinel '_' is a valid non-empty DomainPattern");
+    let category = match target {
+        PolicyTarget::Category(cat) => cat,
+        _ => form.category,
+    };
     let (target_type, app_class, category_name, domain_pattern) = match target {
         PolicyTarget::App(_) => (
             TargetType::App,
@@ -100,7 +104,7 @@ pub fn policy_input_from(
         PolicyTarget::Category(_) => (
             TargetType::Category,
             placeholder_app_class(),
-            form.category_name.clone(),
+            category.name().to_owned(),
             placeholder_domain(),
         ),
         PolicyTarget::Domain(d) => (

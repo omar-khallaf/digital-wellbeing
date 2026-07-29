@@ -23,7 +23,7 @@ pub struct TitleUsageSummary {
 /// Returned pre-sorted by `total_millis` DESC from the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct CategoryUsageSummary {
-    pub category_name: String,
+    pub category: Category,
     pub total_millis: i64,
 }
 

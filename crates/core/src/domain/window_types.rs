@@ -6,11 +6,12 @@ use crate::valuetypes::*;
 
 /// Reason why an app was blocked.
 ///
-/// Serializes as [`u32`] on the D-Bus wire (`#[repr(u32)]`).  Domain code
+/// Serializes as [`u8`] on the D-Bus wire (`#[repr(u8)]`).  Domain code
 /// matches on this enum; the integer conversion lives only at the D-Bus
 /// boundary via [`From`]/[`TryFrom`].
-#[repr(u32)]
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr, Type, Value)]
+#[zvariant(signature = "y")]
 pub enum BlockReason {
     AppTimeLimit = 0,
     CategoryTimeLimit = 1,
@@ -18,16 +19,16 @@ pub enum BlockReason {
     CategoryBlock = 3,
 }
 
-impl From<BlockReason> for u32 {
+impl From<BlockReason> for u8 {
     fn from(r: BlockReason) -> Self {
-        r as u32
+        r as u8
     }
 }
 
-impl TryFrom<u32> for BlockReason {
+impl TryFrom<u8> for BlockReason {
     type Error = &'static str;
 
-    fn try_from(v: u32) -> Result<Self, Self::Error> {
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
             0 => Ok(BlockReason::AppTimeLimit),
             1 => Ok(BlockReason::CategoryTimeLimit),
@@ -53,7 +54,7 @@ pub struct BlockedAppEntry {
 /// Payload for the `BlockedAppsChanged` D-Bus signal.
 ///
 /// Emitted when a block is added or removed for a user.  The D-Bus wire
-/// signature is `(usbu)` — matching the field order below.
+/// signature is `(usby)` — matching the field order below.
 ///
 /// `blocked` is `true` when the app is now blocked and `false` when unblocked.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Value)]

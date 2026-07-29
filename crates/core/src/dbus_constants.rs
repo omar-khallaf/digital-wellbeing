@@ -113,11 +113,11 @@ pub const EVENT_STRUCT_FIELD_COUNT: usize = 4;
 // serialization errors if these diverge.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// D-Bus struct signature for BlockedAppEntry: (string, int64, uint32, uint64).
-/// `s` = AppClass (string), `x` = PolicyId (int64), `u` = BlockReason (uint32),
+/// D-Bus struct signature for BlockedAppEntry: (string, int64, uint8, uint64).
+/// `s` = AppClass (string), `x` = PolicyId (int64), `y` = BlockReason (uint8),
 /// `t` = blocked_since (uint64).
 /// Must match C++ tuple type in wellbeing_manager.cpp readBlockedApps.
-pub const BLOCKED_APP_SIGNATURE: &str = "(sxut)";
+pub const BLOCKED_APP_SIGNATURE: &str = "(sxyt)";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Legacy FocusChanged constants — retained during migration, no longer emitted by the plugin.

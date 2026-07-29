@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use wellbeing_core::Uid;
-
 /// Which D-Bus bus to connect to.
 #[derive(Debug, Clone, Copy)]
 pub enum BusMode {
@@ -15,7 +13,7 @@ pub enum BusMode {
 #[derive(Debug, Clone)]
 pub enum DaemonMode {
     System { db_path: PathBuf },
-    Session { db_path: PathBuf, _uid: Uid },
+    Session { db_path: PathBuf },
 }
 
 /// Resolve the daemon mode based on effective UID.
@@ -32,7 +30,6 @@ pub fn resolve_daemon_mode() -> DaemonMode {
         });
         DaemonMode::Session {
             db_path: PathBuf::from(xdg_data).join("digital-wellbeing/db.sqlite"),
-            _uid: Uid(euid.as_raw()),
         }
     }
 }

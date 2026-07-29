@@ -9,7 +9,7 @@ use crate::store::daos::events::{EventDao, EventRow};
 
 /// Returns exactly 24 rows (hours 0-23), missing hours filled with 0.
 pub async fn get_hourly_usage(
-    conn: &mut DbConn,
+    conn: &DbConn,
     user_id: Uid,
     date: NaiveDate,
 ) -> anyhow::Result<Vec<HourlyUsageRow>> {
@@ -86,21 +86,37 @@ fn add_interval_to_hourly(
 /// Check if we need to open an interval at startup (crashed with active focus).
 /// Returns `(app_class, timestamp_millis, is_paused)`.
 pub async fn open_interval_at_startup(
-    conn: &mut DbConn,
+    conn: &DbConn,
 ) -> anyhow::Result<Option<(String, i64, bool)>> {
-    use crate::store::schema::events;
-    use diesel::{ExpressionMethods, QueryDsl, SelectableHelper};
-    use diesel_async::RunQueryDsl;
+    use crate::store::schema_constants::events;
 
-    // DAO only returns 1 event, but we need 2 for pause detection.
-    let last = events::table
-        .order(events::timestamp.desc())
-        .select(EventRow::as_select())
-        .limit(2)
-        .load::<EventRow>(conn)
-        .await?;
+    // Get the last 2 events to check for pause detection
+    let sql = format!(
+        "SELECT {}, {}, {}, {}, {}, {} FROM {} ORDER BY {} DESC LIMIT 2",
+        events::ID,
+        events::EVENT_TYPE,
+        events::USER_ID,
+        events::TIMESTAMP,
+        events::APP_CLASS,
+        events::TITLE,
+        events::TABLE,
+        events::TIMESTAMP,
+    );
 
-    let mut iter = last.into_iter();
+    let mut result = conn.query(&sql, ()).await?;
+    let mut last_events = Vec::new();
+    while let Some(row) = result.next().await? {
+        last_events.push(EventRow {
+            id: row.get(0)?,
+            event_type: row.get(1)?,
+            user_id: row.get(2)?,
+            timestamp: row.get(3)?,
+            app_class: row.get(4)?,
+            title: row.get(5)?,
+        });
+    }
+
+    let mut iter = last_events.into_iter();
     match iter.next() {
         Some(ev) if ev.event_type == i32::from(EventType::Focus) => {
             let app = ev.app_class.unwrap_or_default();

@@ -1,120 +1,60 @@
-//! Policies gpui rendering — all render logic, no D-Bus/data access.
+//! Policies gpui rendering — composes reusable components from
+//! `crate::components::*` and keeps policy-specific editor logic here.
 //!
-//! Implements `GuiApp` methods directly so callbacks can mutate the view's
-//! editing state and persist via the daemon client.
+//! Follows the free-function pattern: `render_policies_view(this, cx, vm)`
+//! is the single entry point, composing `policy_header`, `policy_list_card`,
+//! `categories_section`, and the policy-internal `render_editor`.
 
 mod editor;
-mod list;
 
 use gpui::prelude::*;
-use gpui::px;
 use gpui::*;
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::{h_flex, v_flex};
+use gpui_component::v_flex;
 
 use crate::app::App as GuiApp;
-use crate::components::card;
-use crate::theme::{self, rad, sp};
+use crate::components::{categories_section, policy_header, policy_list_card};
+use crate::theme::{self, sp};
 
-use super::domain::{PoliciesViewModel, PolicyConfigForm, PolicyTarget};
+use super::domain::PoliciesViewModel;
 
 #[cfg(feature = "gui-gpui")]
 impl GuiApp {
+    /// Render the full policies screen composing reusable components.
+    /// The editor is kept as a method because it reads 7+ `self.*` input
+    /// entities and the live `policy_edit` state.
     pub fn render_policies(
         &mut self,
         cx: &mut Context<Self>,
         vm: &PoliciesViewModel,
     ) -> AnyElement {
         let entity = cx.entity();
+        let loaded = self.pol_list.is_some();
 
         v_flex()
             .gap_4()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_label(&*cx))
-                            .child(format!("{} policies configured", vm.policies.len())),
-                    )
-                    .child(
-                        Button::new("new-policy")
-                            .label("New Policy")
-                            .primary()
-                            .on_click({
-                                let entity = entity.clone();
-                                move |_, _window, app| {
-                                    entity.update(app, |this, cx2| {
-                                        this.policy_edit_id = None;
-                                        this.policy_edit =
-                                            Some((PolicyTarget::Any, PolicyConfigForm::default()));
-                                        cx2.notify();
-                                    });
-                                }
-                            }),
-                    ),
-            )
+            .child(policy_header(&*cx, vm.policies.len(), entity.clone()))
             .child(
                 self.pol_list
                     .as_ref()
-                    .map(|pol_list| self.render_policy_list(cx, vm, pol_list))
-                    .unwrap_or_else(|| empty_hint(&*cx, "Loading...")),
+                    .map(|pol_list| policy_list_card(&*cx, pol_list))
+                    .unwrap_or_else(|| {
+                        div()
+                            .py(sp::MD)
+                            .text_sm()
+                            .text_color(theme::text_muted(&*cx))
+                            .child(if loaded { "Loading..." } else { "" })
+                            .into_any_element()
+                    }),
             )
             .child(self.render_editor(cx, vm, entity.clone()))
-            .child(self.render_categories(cx, vm, entity.clone()))
+            .child(categories_section(&*cx, &vm.categories))
             .into_any_element()
-    }
-
-    fn render_categories(
-        &self,
-        cx: &mut Context<Self>,
-        vm: &PoliciesViewModel,
-        _entity: Entity<Self>,
-    ) -> AnyElement {
-        let rows: Vec<AnyElement> = vm
-            .categories
-            .iter()
-            .map(|cat| {
-                let color =
-                    crate::theme::parse_hex(&cat.color).unwrap_or_else(|| theme::text_muted(&*cx));
-                h_flex()
-                    .gap_2()
-                    .px(sp::MD)
-                    .py(sp::SM)
-                    .rounded(rad::md())
-                    .child(div().size(px(12.0)).rounded(px(2.0)).bg(color))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme::text_primary(&*cx))
-                            .child(cat.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::text_muted(&*cx))
-                            .child(cat.icon.clone()),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        card(
-            &*cx,
-            Some("Categories"),
-            if rows.is_empty() {
-                vec![empty_hint(&*cx, "No categories configured.")]
-            } else {
-                rows
-            },
-        )
     }
 }
 
+/// Small hint text used by the editor when no policy is selected.
 #[cfg(feature = "gui-gpui")]
-fn empty_hint(cx: &App, message: &str) -> AnyElement {
+pub(crate) fn empty_hint(cx: &App, message: &str) -> AnyElement {
     div()
         .py(sp::MD)
         .text_sm()
@@ -123,8 +63,20 @@ fn empty_hint(cx: &App, message: &str) -> AnyElement {
         .into_any_element()
 }
 
-/// Stub returned when gpui is not enabled.
+/// Render the complete policies view.
+/// Takes `this: &mut Self` to avoid re-entrant `entity.update()` during
+/// `Render::render()` — callbacks use `cx.entity()` for deferred mutations.
+#[cfg(feature = "gui-gpui")]
+pub fn render_policies_view(
+    this: &mut GuiApp,
+    cx: &mut Context<GuiApp>,
+    vm: &PoliciesViewModel,
+) -> AnyElement {
+    this.render_policies(cx, vm)
+}
+
+/// Stub — gpui types unavailable without feature.
 #[cfg(not(feature = "gui-gpui"))]
-pub fn render_policies_view(_: &PoliciesViewModel) -> ! {
+pub fn render_policies_view(_: &mut (), _: &mut (), _: &PoliciesViewModel) -> ! {
     panic!("gpui not enabled (feature gui-gpui is off)")
 }

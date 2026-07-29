@@ -5,7 +5,8 @@
 //! queries — no per-row, per-date queries remain.
 
 use wellbeing_core::{
-    AppClass, AppUsageSummary, CategoryUsageSummary, DateTotal, DayEventRow, TitleUsageSummary, Uid,
+    AppClass, AppUsageSummary, Category, CategoryUsageSummary, DateTotal, DayEventRow,
+    TitleUsageSummary, Uid,
 };
 
 use crate::store::DbPool;
@@ -33,8 +34,8 @@ impl ReportsRepo {
         end_date: &str,
         uid: u32,
     ) -> anyhow::Result<Vec<AppUsageSummary>> {
-        let mut conn = self.pool.get().await?;
-        let rows = reads::app_usage_summary(&mut conn, start_date, end_date, uid).await?;
+        let conn = self.pool.client().await?;
+        let rows = reads::app_usage_summary(&conn, start_date, end_date, uid).await?;
         Ok(rows
             .into_iter()
             .map(|r| AppUsageSummary {
@@ -51,8 +52,8 @@ impl ReportsRepo {
         end_date: &str,
         uid: u32,
     ) -> anyhow::Result<Vec<TitleUsageSummary>> {
-        let mut conn = self.pool.get().await?;
-        let rows = reads::title_usage_summary(&mut conn, start_date, end_date, uid).await?;
+        let conn = self.pool.client().await?;
+        let rows = reads::title_usage_summary(&conn, start_date, end_date, uid).await?;
         Ok(rows
             .into_iter()
             .map(|r| TitleUsageSummary {
@@ -70,13 +71,15 @@ impl ReportsRepo {
         end_date: &str,
         uid: u32,
     ) -> anyhow::Result<Vec<CategoryUsageSummary>> {
-        let mut conn = self.pool.get().await?;
-        let rows = reads::category_usage_summary(&mut conn, start_date, end_date, uid).await?;
+        let conn = self.pool.client().await?;
+        let rows = reads::category_usage_summary(&conn, start_date, end_date, uid).await?;
         Ok(rows
             .into_iter()
-            .map(|r| CategoryUsageSummary {
-                category_name: r.0,
-                total_millis: r.1,
+            .filter_map(|r| {
+                Category::try_from(r.0).ok().map(|c| CategoryUsageSummary {
+                    category: c,
+                    total_millis: r.1,
+                })
             })
             .collect())
     }
@@ -91,8 +94,8 @@ impl ReportsRepo {
         end_date: &str,
         uid: u32,
     ) -> anyhow::Result<Vec<DateTotal>> {
-        let mut conn = self.pool.get().await?;
-        let rows = reads::daily_bar_totals(&mut conn, start_date, end_date, uid).await?;
+        let conn = self.pool.client().await?;
+        let rows = reads::daily_bar_totals(&conn, start_date, end_date, uid).await?;
         Ok(rows
             .into_iter()
             .map(|r| DateTotal {
@@ -109,7 +112,7 @@ impl ReportsRepo {
         start_millis: i64,
         end_millis: i64,
     ) -> anyhow::Result<Vec<DayEventRow>> {
-        let mut conn = self.pool.get().await?;
-        EventDao::get_day_events(&mut conn, uid.0 as i32, start_millis, end_millis).await
+        let conn = self.pool.client().await?;
+        EventDao::get_day_events(&conn, uid.0 as i32, start_millis, end_millis).await
     }
 }

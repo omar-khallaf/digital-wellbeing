@@ -265,14 +265,6 @@ async fn main() -> Result<()> {
     let _ = watchdog_handle.await;
     let _ = tokio::time::timeout(tokio::time::Duration::from_secs(2), signal_handle).await;
 
-    // Checkpoint WAL and close the pool cleanly so the next startup does not
-    // hit "database is locked". The logind shutdown-inhibit lock above gives
-    // us time to finish before the system powers off.
-    if let Err(e) = pool.checkpoint_wal().await {
-        warn!(error = %e, "final WAL checkpoint failed");
-    }
-    pool.close();
-
     Ok(())
 }
 

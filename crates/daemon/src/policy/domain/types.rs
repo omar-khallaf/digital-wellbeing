@@ -4,7 +4,7 @@
 //! first-match-wins evaluation with `Notify` as non-terminating, `Allow`
 //! explicit effect, and `Target::Any` wildcard.
 
-use wellbeing_core::{AppClass, DomainPattern, PolicyId, TimeWindow};
+use wellbeing_core::{AppClass, Category, DomainPattern, PolicyId, TimeWindow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effect {
@@ -30,12 +30,12 @@ impl Effect {
     }
 }
 
-/// `Category` stores the category **name** (not row id) — the database
-/// resolves name↔id via the `categories` table.
+/// `Category` stores the [`Category`] enum variant directly — the old
+/// `categories` table has been removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyTarget {
     App(AppClass),
-    Category(String),
+    Category(Category),
     Domain(DomainPattern),
     Any,
 }
@@ -54,8 +54,6 @@ pub struct Policy {
     pub time_limit_minutes: u64,
     pub user_id: u32,
     pub created_by: u32,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

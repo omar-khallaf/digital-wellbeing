@@ -9,3 +9,4 @@ mod ui;
 
 pub use data::*;
 pub use domain::*;
+pub use ui::*;

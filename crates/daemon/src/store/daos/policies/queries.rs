@@ -1,83 +1,126 @@
 //! Internal query helpers for the policy repository (take an explicit
-//! `&mut DbConn` argument so the transaction methods can share a connection).
+//! `&DbConn` argument so the transaction methods can share a connection).
 
 use std::collections::HashMap;
 
-use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, SelectableHelper};
-use diesel_async::RunQueryDsl;
-use wellbeing_core::{TargetType, Uid};
+use turso::params_from_iter;
+use wellbeing_core::Uid;
 
 use crate::policy::data::insert::{NewPolicy, UpdatePolicy};
-use crate::policy::data::models::{PolicyRow, PolicyTableRow, ScheduleRow};
+use crate::policy::data::models::{PolicyTableRow, ScheduleRow};
 use crate::store::connection::DbConn;
-use crate::store::schema;
+use crate::store::schema_constants::{policies, policy_schedules};
 
 /// Get the user_id that owns a policy (for auth checks).
-pub(crate) async fn get_policy_user(conn: &mut DbConn, id: i32) -> anyhow::Result<i32> {
-    use schema::policies::columns as c;
-    let user_id: i32 = schema::policies::table
-        .filter(c::id.eq(id))
-        .select(c::user_id)
-        .first(conn)
-        .await?;
-    Ok(user_id)
+pub(crate) async fn get_policy_user(conn: &DbConn, id: i32) -> anyhow::Result<i32> {
+    let sql = format!(
+        "SELECT {} FROM {} WHERE {} = ?1",
+        policies::USER_ID,
+        policies::TABLE,
+        policies::ID,
+    );
+
+    let mut result = conn.query(&sql, (id,)).await?;
+    if let Some(row) = result.next().await? {
+        Ok(row.get(0)?)
+    } else {
+        anyhow::bail!("policy not found")
+    }
 }
 
 /// Hot-path: return ALL matching policies for an app, pre-sorted by priority.
-///
-/// Uses pure diesel DSL for the query + Rust-side schedule filtering
-/// (bitwise day_mask and midnight-wrapping time ranges cannot be expressed
-/// in diesel DSL). Category names are resolved separately for the
-/// category-targeted policies.
+/// `category_discriminants` are the integer values of the `Category` enum
+/// (0=Productivity…6=Uncategorized) for the app's resolved categories.
 pub(crate) async fn resolve_policies_for_app_full(
-    conn: &mut DbConn,
+    conn: &DbConn,
     app_id: i32,
-    category_names: &[String],
+    category_discriminants: &[i32],
     uid: Uid,
     day_mask: i32,
     minute: i32,
-) -> anyhow::Result<Vec<PolicyRow>> {
-    use schema::categories::columns as ca;
-    use schema::policies::columns as p;
-
+) -> anyhow::Result<Vec<PolicyTableRow>> {
     let user_id = uid.0 as i32;
 
-    // Resolve category IDs from names.
-    let cat_ids: Vec<i32> = if category_names.is_empty() {
-        Vec::new()
-    } else {
-        schema::categories::table
-            .filter(ca::name.eq_any(category_names))
-            .select(ca::id)
-            .load(conn)
-            .await?
-    };
+    let mut target_conditions: Vec<String> = vec![
+        format!(
+            "({}.{} = 0 AND {}.{} = ?)",
+            policies::TABLE,
+            policies::TARGET_TYPE,
+            policies::TABLE,
+            policies::APP_ID
+        ),
+        format!("{}.{} = 3", policies::TABLE, policies::TARGET_TYPE),
+    ];
 
-    // Build target-matching query: Any (3) OR App-specific (0) OR Category-match (1).
-    let mut query = schema::policies::table
-        .filter(p::user_id.eq(user_id))
-        .into_boxed();
+    if !category_discriminants.is_empty() {
+        target_conditions.push(format!(
+            "({}.{} = 1 AND {}.{} IN ({}))",
+            policies::TABLE,
+            policies::TARGET_TYPE,
+            policies::TABLE,
+            policies::CATEGORY,
+            category_discriminants
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
 
-    let any_target = p::target_type.eq(TargetType::Any as i32);
-    let app_target = p::target_type
-        .eq(TargetType::App as i32)
-        .and(p::app_id.eq(app_id));
+    let where_clause = format!(
+        "{}.{} = ? AND ({})",
+        policies::TABLE,
+        policies::USER_ID,
+        target_conditions.join(" OR "),
+    );
 
-    query = if cat_ids.is_empty() {
-        query.filter(any_target.or(app_target))
-    } else {
-        let cat_target = p::target_type
-            .eq(TargetType::Category as i32)
-            .and(p::category_id.eq_any(&cat_ids));
-        query.filter(any_target.or(app_target).or(cat_target))
-    };
+    let columns = [
+        policies::ID,
+        policies::NAME,
+        policies::PRIORITY,
+        policies::EFFECT,
+        policies::TARGET_TYPE,
+        policies::APP_ID,
+        policies::CATEGORY,
+        policies::DOMAIN_PATTERN,
+        policies::TIME_LIMIT_MINUTES,
+        policies::USER_ID,
+        policies::CREATED_BY,
+    ]
+    .join(", ");
 
-    // Load matching policy table rows.
-    let table_rows: Vec<PolicyTableRow> = query
-        .select(PolicyTableRow::as_select())
-        .order((p::target_type.asc(), p::priority.asc()))
-        .load(conn)
-        .await?;
+    let sql = format!(
+        "SELECT {columns} FROM {} WHERE {} ORDER BY {} ASC, {} ASC",
+        policies::TABLE,
+        where_clause,
+        policies::TARGET_TYPE,
+        policies::PRIORITY,
+    );
+
+    let mut params: Vec<turso::Value> = Vec::new();
+    params.push(user_id.into());
+    params.push(app_id.into());
+    for &cat_val in category_discriminants {
+        params.push(cat_val.into());
+    }
+
+    let mut result = conn.query(&sql, params_from_iter(params)).await?;
+    let mut table_rows = Vec::new();
+    while let Some(row) = result.next().await? {
+        table_rows.push(PolicyTableRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            priority: row.get(2)?,
+            effect: row.get(3)?,
+            target_type: row.get(4)?,
+            app_id: row.get::<Option<i32>>(5)?,
+            category: row.get::<Option<i32>>(6)?,
+            domain_pattern: row.get::<Option<String>>(7)?,
+            time_limit_minutes: row.get::<Option<i32>>(8)?,
+            user_id: row.get(9)?,
+            created_by: row.get(10)?,
+        });
+    }
 
     if table_rows.is_empty() {
         return Ok(Vec::new());
@@ -85,10 +128,7 @@ pub(crate) async fn resolve_policies_for_app_full(
 
     // Load all schedule rows for these policies.
     let policy_ids: Vec<i32> = table_rows.iter().map(|r| r.id).collect();
-    let schedule_rows: Vec<ScheduleRow> = schema::policy_schedules::table
-        .filter(schema::policy_schedules::policy_id.eq_any(&policy_ids))
-        .load(conn)
-        .await?;
+    let schedule_rows: Vec<ScheduleRow> = load_schedules(conn, &policy_ids).await?;
 
     // Index schedules by policy_id.
     let schedule_map: HashMap<i32, Vec<&ScheduleRow>> = {
@@ -99,27 +139,8 @@ pub(crate) async fn resolve_policies_for_app_full(
         m
     };
 
-    // Resolve category id→name map for category-targeted policies.
-    let cat_id_to_name: HashMap<i32, String> = {
-        let cat_ids_with_policy: Vec<i32> = table_rows
-            .iter()
-            .filter(|r| r.target_type == TargetType::Category as i32)
-            .filter_map(|r| r.category_id)
-            .collect();
-        if cat_ids_with_policy.is_empty() {
-            HashMap::new()
-        } else {
-            let names: Vec<(i32, String)> = schema::categories::table
-                .filter(ca::id.eq_any(&cat_ids_with_policy))
-                .select((ca::id, ca::name))
-                .load(conn)
-                .await?;
-            names.into_iter().collect()
-        }
-    };
-
     // Filter by schedule and build PolicyRow.
-    let mut result: Vec<PolicyRow> = Vec::new();
+    let mut result = Vec::new();
     for row in table_rows {
         let schedules = schedule_map.get(&row.id);
 
@@ -141,29 +162,7 @@ pub(crate) async fn resolve_policies_for_app_full(
             continue;
         }
 
-        let category_name = if row.target_type == TargetType::Category as i32 {
-            row.category_id
-                .and_then(|cid| cat_id_to_name.get(&cid).cloned())
-        } else {
-            None
-        };
-
-        result.push(PolicyRow {
-            id: row.id,
-            name: row.name,
-            priority: row.priority,
-            effect: row.effect,
-            target_type: row.target_type,
-            app_id: row.app_id,
-            category_id: row.category_id,
-            domain_pattern: row.domain_pattern,
-            time_limit_minutes: row.time_limit_minutes,
-            user_id: row.user_id,
-            created_by: row.created_by,
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-            category_name,
-        });
+        result.push(row);
     }
 
     Ok(result)
@@ -171,78 +170,240 @@ pub(crate) async fn resolve_policies_for_app_full(
 
 /// Read all policies, optionally filtered by user_id.
 pub(crate) async fn read_policies(
-    conn: &mut DbConn,
+    conn: &DbConn,
     caller_root: bool,
     user_id: i32,
-) -> anyhow::Result<Vec<PolicyRow>> {
-    use schema::policies::columns as p;
-    let table_rows = if caller_root {
-        schema::policies::table
-            .order((p::target_type.asc(), p::priority.asc()))
-            .select(PolicyTableRow::as_select())
-            .load::<PolicyTableRow>(conn)
-            .await?
+) -> anyhow::Result<Vec<PolicyTableRow>> {
+    let sql = if caller_root {
+        format!(
+            "SELECT {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} FROM {} ORDER BY {} ASC, {} ASC",
+            policies::ID,
+            policies::NAME,
+            policies::PRIORITY,
+            policies::EFFECT,
+            policies::TARGET_TYPE,
+            policies::APP_ID,
+            policies::CATEGORY,
+            policies::DOMAIN_PATTERN,
+            policies::TIME_LIMIT_MINUTES,
+            policies::USER_ID,
+            policies::CREATED_BY,
+            policies::TABLE,
+            policies::TARGET_TYPE,
+            policies::PRIORITY,
+        )
     } else {
-        schema::policies::table
-            .filter(p::user_id.eq(user_id))
-            .order((p::target_type.asc(), p::priority.asc()))
-            .select(PolicyTableRow::as_select())
-            .load::<PolicyTableRow>(conn)
-            .await?
+        format!(
+            "SELECT {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} FROM {} WHERE {} = ? ORDER BY {} ASC, {} ASC",
+            policies::ID,
+            policies::NAME,
+            policies::PRIORITY,
+            policies::EFFECT,
+            policies::TARGET_TYPE,
+            policies::APP_ID,
+            policies::CATEGORY,
+            policies::DOMAIN_PATTERN,
+            policies::TIME_LIMIT_MINUTES,
+            policies::USER_ID,
+            policies::CREATED_BY,
+            policies::TABLE,
+            policies::USER_ID,
+            policies::TARGET_TYPE,
+            policies::PRIORITY,
+        )
     };
-    Ok(table_rows.into_iter().map(PolicyRow::from).collect())
+
+    let mut result = if caller_root {
+        conn.query(&sql, ()).await?
+    } else {
+        conn.query(&sql, (user_id,)).await?
+    };
+
+    let mut table_rows = Vec::new();
+    while let Some(row) = result.next().await? {
+        table_rows.push(PolicyTableRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            priority: row.get(2)?,
+            effect: row.get(3)?,
+            target_type: row.get(4)?,
+            app_id: row.get::<Option<i32>>(5)?,
+            category: row.get::<Option<i32>>(6)?,
+            domain_pattern: row.get::<Option<String>>(7)?,
+            time_limit_minutes: row.get::<Option<i32>>(8)?,
+            user_id: row.get(9)?,
+            created_by: row.get(10)?,
+        });
+    }
+
+    Ok(table_rows)
 }
 
 /// Create a policy within a transaction (returns PolicyId).
 pub(crate) async fn create_policy(
-    conn: &mut DbConn,
+    conn: &DbConn,
     new: NewPolicy,
 ) -> anyhow::Result<wellbeing_core::PolicyId> {
-    let row: PolicyTableRow = diesel::insert_into(schema::policies::table)
-        .values(&new)
-        .returning(PolicyTableRow::as_returning())
-        .get_result(conn)
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+         RETURNING {}",
+        policies::TABLE,
+        policies::NAME,
+        policies::PRIORITY,
+        policies::EFFECT,
+        policies::TARGET_TYPE,
+        policies::APP_ID,
+        policies::CATEGORY,
+        policies::DOMAIN_PATTERN,
+        policies::TIME_LIMIT_MINUTES,
+        policies::USER_ID,
+        policies::CREATED_BY,
+        policies::ID,
+    );
+
+    let mut result = conn
+        .query(
+            &sql,
+            (
+                new.name,
+                new.priority,
+                new.effect,
+                new.target_type,
+                new.app_id,
+                new.category,
+                new.domain_pattern,
+                new.time_limit_minutes,
+                new.user_id,
+                new.created_by,
+            ),
+        )
         .await?;
-    Ok(wellbeing_core::PolicyId(row.id as i64))
+
+    if let Some(row) = result.next().await? {
+        Ok(wellbeing_core::PolicyId(row.get::<i32>(0)? as i64))
+    } else {
+        anyhow::bail!("failed to create policy")
+    }
 }
 
 /// Update a policy within a transaction; returns true if a row was updated.
 pub(crate) async fn update_policy(
-    conn: &mut DbConn,
+    conn: &DbConn,
     id: i32,
     changes: UpdatePolicy,
 ) -> anyhow::Result<bool> {
-    use schema::policies::columns as p;
-    let rows = diesel::update(schema::policies::table.filter(p::id.eq(id)))
-        .set(&changes)
-        .execute(conn)
-        .await?;
-    Ok(rows > 0)
+    let mut set_clauses = Vec::new();
+    let mut params: Vec<turso::Value> = Vec::new();
+
+    if let Some(name) = changes.name {
+        set_clauses.push(format!("{} = ?", policies::NAME));
+        params.push(name.into());
+    }
+    if let Some(priority) = changes.priority {
+        set_clauses.push(format!("{} = ?", policies::PRIORITY));
+        params.push(priority.into());
+    }
+    if let Some(effect) = changes.effect {
+        set_clauses.push(format!("{} = ?", policies::EFFECT));
+        params.push(effect.into());
+    }
+    if let Some(target_type) = changes.target_type {
+        set_clauses.push(format!("{} = ?", policies::TARGET_TYPE));
+        params.push(target_type.into());
+    }
+    if let Some(app_id) = changes.app_id {
+        set_clauses.push(format!("{} = ?", policies::APP_ID));
+        params.push(app_id.into());
+    }
+    if let Some(category) = changes.category {
+        set_clauses.push(format!("{} = ?", policies::CATEGORY));
+        params.push(category.into());
+    }
+    if let Some(domain_pattern) = changes.domain_pattern {
+        set_clauses.push(format!("{} = ?", policies::DOMAIN_PATTERN));
+        params.push(domain_pattern.into());
+    }
+    if let Some(time_limit_minutes) = changes.time_limit_minutes {
+        set_clauses.push(format!("{} = ?", policies::TIME_LIMIT_MINUTES));
+        params.push(time_limit_minutes.into());
+    }
+
+    if set_clauses.is_empty() {
+        return Ok(false);
+    }
+
+    let sql = format!(
+        "UPDATE {} SET {} WHERE {} = ?",
+        policies::TABLE,
+        set_clauses.join(", "),
+        policies::ID,
+    );
+
+    params.push(id.into());
+
+    let rows_affected = conn.execute(&sql, params_from_iter(params)).await?;
+    Ok(rows_affected > 0)
 }
 
-/// Resolve a category name to its row id. Returns `None` when the name
-/// is empty or no matching category exists.
-pub(crate) async fn resolve_category_name(
-    conn: &mut DbConn,
-    name: &str,
-) -> anyhow::Result<Option<i32>> {
-    use schema::categories::columns as c;
+/// Resolve a category name to its `Category` enum discriminant.
+/// Returns `None` when the name is empty or no matching category exists.
+pub(crate) fn resolve_category_name_to_discriminant(name: &str) -> Option<i32> {
     if name.is_empty() {
-        return Ok(None);
+        return None;
     }
-    Ok(schema::categories::table
-        .filter(c::name.eq(name))
-        .select(c::id)
-        .first(conn)
-        .await
-        .ok())
+    // Match against known Category names (case-sensitive).
+    match name {
+        "Productivity" => Some(0),
+        "Communication" => Some(1),
+        "Entertainment" => Some(2),
+        "Social" => Some(3),
+        "Development" => Some(4),
+        "Utilities" => Some(5),
+        "Uncategorized" => Some(6),
+        _ => None,
+    }
 }
 
 /// Delete a policy within a transaction; returns true if a row was deleted.
-pub(crate) async fn delete_policy(conn: &mut DbConn, id: i32) -> anyhow::Result<bool> {
-    use schema::policies::columns as p;
-    let rows = diesel::delete(schema::policies::table.filter(p::id.eq(id)))
-        .execute(conn)
+pub(crate) async fn delete_policy(conn: &DbConn, id: i32) -> anyhow::Result<bool> {
+    let sql = format!("DELETE FROM {} WHERE {} = ?", policies::TABLE, policies::ID,);
+
+    let rows_affected = conn.execute(&sql, (id,)).await?;
+    Ok(rows_affected > 0)
+}
+
+pub(crate) async fn load_schedules(
+    conn: &DbConn,
+    policy_ids: &[i32],
+) -> anyhow::Result<Vec<ScheduleRow>> {
+    if policy_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders: Vec<String> = policy_ids.iter().map(|_| "?".to_string()).collect();
+    let sql = format!(
+        "SELECT {}, {}, {}, {} FROM {} WHERE {} IN ({})",
+        policy_schedules::POLICY_ID,
+        policy_schedules::START_MINUTE,
+        policy_schedules::END_MINUTE,
+        policy_schedules::DAY_MASK,
+        policy_schedules::TABLE,
+        policy_schedules::POLICY_ID,
+        placeholders.join(", "),
+    );
+
+    let mut result = conn
+        .query(&sql, params_from_iter(policy_ids.to_vec()))
         .await?;
-    Ok(rows > 0)
+    let mut rows = Vec::new();
+    while let Some(row) = result.next().await? {
+        rows.push(ScheduleRow {
+            policy_id: row.get(0)?,
+            start_minute: row.get(1)?,
+            end_minute: row.get(2)?,
+            day_mask: row.get(3)?,
+        });
+    }
+    Ok(rows)
 }

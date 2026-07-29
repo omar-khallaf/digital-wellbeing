@@ -1,27 +1,19 @@
 //! Event repository — the `events` table.
 //!
-//! The events table is append-only. Flushes insert rows one at a time
-//! because diesel's Vec-based multi-row insert is not supported for SQLite.
+//! The events table is append-only. Uses raw SQL via turso.
 
 use std::collections::HashMap;
 
-use diesel::BoolExpressionMethods;
-use diesel::ExpressionMethods;
-use diesel::QueryDsl;
-use diesel::SelectableHelper;
-use diesel_async::RunQueryDsl;
+use turso::params_from_iter;
 use wellbeing_core::{AppClass, DayEventRow, EventType, Uid, WindowTitle};
 
 use crate::blocking::domain::TimedEvent;
 use crate::store::connection::DbConn;
-use crate::store::schema;
+use crate::store::schema_constants::events;
 
-/// Event row type.
-#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
-#[diesel(table_name = crate::store::schema::events)]
+/// Event row type (plain struct, no diesel derives).
+#[derive(Debug, Clone)]
 pub struct EventRow {
-    // All fields are populated via diesel Queryable derivation.
-    #[allow(dead_code)]
     pub id: i32,
     pub event_type: i32,
     pub user_id: i32,
@@ -30,57 +22,76 @@ pub struct EventRow {
     pub title: Option<String>,
 }
 
-/// Diesel-backed event repository — provides static `_conn` methods only.
 pub(crate) struct EventDao;
 
-// ── Internal / transaction-friendly methods ─────────────────────────────
-
 impl EventDao {
-    /// Flush events using an existing connection.
-    pub(crate) async fn flush_events(
-        conn: &mut DbConn,
-        events: &[TimedEvent],
-    ) -> anyhow::Result<()> {
+    pub(crate) async fn flush_events(conn: &DbConn, events: &[TimedEvent]) -> anyhow::Result<()> {
         if events.is_empty() {
             return Ok(());
         }
 
+        // Insert one row at a time. Each call is async-native (no spawn_blocking).
         for timed in events {
             let event = &timed.event;
-            let app_class = event.app_class().map(|a| a.as_ref());
-            let title = event.title().map(|t| t.as_str());
-            let uid = event.uid().0 as i32;
-
-            diesel::insert_into(schema::events::table)
-                .values((
-                    schema::events::event_type.eq(i32::from(event.event_type())),
-                    schema::events::user_id.eq(uid),
-                    schema::events::timestamp.eq(timed.timestamp.timestamp_millis()),
-                    schema::events::app_class.eq(app_class),
-                    schema::events::title.eq(title),
-                ))
-                .execute(conn)
-                .await?;
+            let sql = format!(
+                "INSERT INTO {} ({}, {}, {}, {}, {}) VALUES (?1, ?2, ?3, ?4, ?5)",
+                events::TABLE,
+                events::EVENT_TYPE,
+                events::USER_ID,
+                events::TIMESTAMP,
+                events::APP_CLASS,
+                events::TITLE,
+            );
+            conn.execute(
+                &sql,
+                (
+                    i32::from(event.event_type()),
+                    event.uid().0 as i32,
+                    timed.timestamp.timestamp_millis(),
+                    event.app_class().map(|s| s.as_ref()),
+                    event.title().map(|t| t.as_str()),
+                ),
+            )
+            .await?;
         }
 
         Ok(())
     }
 
-    /// Get events for a user in a time range.
     pub(crate) async fn get_day_events(
-        conn: &mut DbConn,
+        conn: &DbConn,
         uid: i32,
         start_millis: i64,
         end_millis: i64,
     ) -> anyhow::Result<Vec<DayEventRow>> {
-        let rows: Vec<EventRow> = schema::events::table
-            .filter(schema::events::user_id.eq(uid))
-            .filter(schema::events::timestamp.ge(start_millis))
-            .filter(schema::events::timestamp.lt(end_millis))
-            .order(schema::events::timestamp.asc())
-            .select(EventRow::as_select())
-            .load(conn)
-            .await?;
+        let sql = format!(
+            "SELECT {}, {}, {}, {}, {}, {} FROM {} WHERE {} = ?1 AND {} >= ?2 AND {} < ?3 ORDER BY {} ASC",
+            events::ID,
+            events::EVENT_TYPE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::APP_CLASS,
+            events::TITLE,
+            events::TABLE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+        );
+
+        let mut result = conn.query(&sql, (uid, start_millis, end_millis)).await?;
+        let mut rows = Vec::new();
+
+        while let Some(row) = result.next().await? {
+            rows.push(EventRow {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                user_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                app_class: row.get(4)?,
+                title: row.get(5)?,
+            });
+        }
 
         Ok(rows
             .into_iter()
@@ -99,79 +110,128 @@ impl EventDao {
             .collect())
     }
 
-    /// Fetch last non-ignored events using an existing connection.
     pub(crate) async fn get_last_events_for_uids(
-        conn: &mut DbConn,
+        conn: &DbConn,
         uids: &[Uid],
-    ) -> HashMap<Uid, Option<EventRow>> {
-        use diesel::dsl::{exists, not};
-        use diesel::query_dsl::methods::FilterDsl;
-
+    ) -> anyhow::Result<HashMap<Uid, Option<EventRow>>> {
         let mut results: HashMap<Uid, Option<EventRow>> =
             uids.iter().map(|&uid| (uid, None)).collect();
 
         if uids.is_empty() {
-            return results;
+            return Ok(results);
         }
 
         let raw_uids: Vec<i32> = uids.iter().map(|uid| uid.0 as i32).collect();
 
-        // Alias schema for the subquery
-        let (e1, e2) = (schema::events::table, diesel::alias!(schema::events as e2));
+        // Build a query that gets the latest event per user, excluding ignored types.
+        // Use a subquery to find the max timestamp per user, then join back.
+        let placeholders: Vec<String> = raw_uids.iter().map(|_| "?".to_string()).collect();
+        let uid_list = placeholders.join(", ");
 
         let ignored_types: Vec<i32> = EventType::IGNORED_BY_MEASUREMENT
             .iter()
             .map(|&et| et.into())
             .collect();
+        let ignored_placeholders: Vec<String> =
+            ignored_types.iter().map(|_| "?".to_string()).collect();
+        let ignored_list = ignored_placeholders.join(", ");
 
-        // Fetch only the latest single row per UID, excluding ignored types.
-        let fetched_rows: Vec<EventRow> = FilterDsl::filter(
-            QueryDsl::filter(
-                QueryDsl::filter(e1, schema::events::user_id.eq_any(&raw_uids)),
-                schema::events::event_type.ne_all(&ignored_types),
-            ),
-            not(exists(FilterDsl::filter(
-                FilterDsl::filter(
-                    FilterDsl::filter(
-                        e2,
-                        e2.field(schema::events::user_id)
-                            .eq(schema::events::user_id),
-                    ),
-                    e2.field(schema::events::event_type).ne_all(&ignored_types),
-                ),
-                e2.field(schema::events::timestamp)
-                    .gt(schema::events::timestamp)
-                    .or(e2
-                        .field(schema::events::timestamp)
-                        .eq(schema::events::timestamp)
-                        .and(e2.field(schema::events::id).gt(schema::events::id))),
-            ))),
-        )
-        .load(conn)
-        .await
-        .unwrap_or_default();
+        let sql = format!(
+            "SELECT e1.{}, e1.{}, e1.{}, e1.{}, e1.{}, e1.{} FROM {} e1 \
+             WHERE e1.{} IN ({}) \
+             AND e1.{} NOT IN ({}) \
+             AND NOT EXISTS ( \
+                 SELECT 1 FROM {} e2 \
+                 WHERE e2.{} = e1.{} \
+                 AND e2.{} NOT IN ({}) \
+                 AND (e2.{} > e1.{} OR (e2.{} = e1.{} AND e2.{} > e1.{})) \
+             )",
+            events::ID,
+            events::EVENT_TYPE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::APP_CLASS,
+            events::TITLE,
+            events::TABLE,
+            events::USER_ID,
+            uid_list,
+            events::EVENT_TYPE,
+            ignored_list,
+            events::TABLE,
+            events::USER_ID,
+            events::USER_ID,
+            events::EVENT_TYPE,
+            ignored_list,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+            events::ID,
+            events::ID,
+        );
 
-        for row in fetched_rows {
-            let uid = Uid(row.user_id as u32);
-            results.insert(uid, Some(row));
+        let mut params: Vec<i32> = raw_uids.clone();
+        params.extend(ignored_types.clone());
+
+        match conn.query(&sql, params_from_iter(params)).await {
+            Ok(mut result) => {
+                while let Some(row) = result.next().await? {
+                    let user_id: i32 = row.get(2)?;
+                    let uid = Uid(user_id as u32);
+                    results.insert(
+                        uid,
+                        Some(EventRow {
+                            id: row.get(0)?,
+                            event_type: row.get(1)?,
+                            user_id,
+                            timestamp: row.get(3)?,
+                            app_class: row.get(4)?,
+                            title: row.get(5)?,
+                        }),
+                    );
+                }
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("query failed: {}", e));
+            }
         }
 
-        results
+        Ok(results)
     }
 
-    /// Get events within a timestamp range (inclusive).
     pub(crate) async fn get_event_range(
-        conn: &mut DbConn,
+        conn: &DbConn,
         start: i64,
         end: i64,
     ) -> anyhow::Result<Vec<EventRow>> {
-        use schema::events::columns as c;
-        Ok(schema::events::table
-            .filter(c::timestamp.ge(start))
-            .filter(c::timestamp.le(end))
-            .order(c::timestamp.asc())
-            .select(EventRow::as_select())
-            .load::<EventRow>(conn)
-            .await?)
+        let sql = format!(
+            "SELECT {}, {}, {}, {}, {}, {} FROM {} WHERE {} >= ?1 AND {} <= ?2 ORDER BY {} ASC",
+            events::ID,
+            events::EVENT_TYPE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::APP_CLASS,
+            events::TITLE,
+            events::TABLE,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+            events::TIMESTAMP,
+        );
+
+        let mut result = conn.query(&sql, (start, end)).await?;
+        let mut rows = Vec::new();
+
+        while let Some(row) = result.next().await? {
+            rows.push(EventRow {
+                id: row.get(0)?,
+                event_type: row.get(1)?,
+                user_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                app_class: row.get(4)?,
+                title: row.get(5)?,
+            });
+        }
+
+        Ok(rows)
     }
 }

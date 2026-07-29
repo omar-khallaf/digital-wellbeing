@@ -551,15 +551,15 @@ void DbusThread::handleBlockedAppsReply(sd_bus_message *msg) {
         return;
     }
 
-    r = sd_bus_message_enter_container(msg, SD_BUS_TYPE_ARRAY, "(sxut)");
+    r = sd_bus_message_enter_container(msg, SD_BUS_TYPE_ARRAY, "(sxyt)");
     if (r >= 0) {
-        while (sd_bus_message_enter_container(msg, SD_BUS_TYPE_STRUCT, "sxut") > 0) {
+        while (sd_bus_message_enter_container(msg, SD_BUS_TYPE_STRUCT, "sxyt") > 0) {
             const char *wClass = nullptr;
             int64_t policyId = 0;
-            uint32_t reason = 0;
+            uint8_t reason = 0;
             uint64_t blockedSince = 0;
 
-            r = sd_bus_message_read(msg, "sxut", &wClass, &policyId, &reason, &blockedSince);
+            r = sd_bus_message_read(msg, "sxyt", &wClass, &policyId, &reason, &blockedSince);
             if (r < 0) {
                 sd_bus_message_exit_container(msg);
                 break;
@@ -601,9 +601,9 @@ void DbusThread::handleBlockedAppsChanged(sd_bus_message *msg) {
     uint32_t uid = 0;
     const char *rawAppClass = nullptr;
     int blocked = 0;
-    uint32_t reason = 0;
+    uint8_t reason = 0;
 
-    int r = sd_bus_message_read(msg, "usbu", &uid, &rawAppClass, &blocked, &reason);
+    int r = sd_bus_message_read(msg, "usby", &uid, &rawAppClass, &blocked, &reason);
     if (r < 0) {
         logErr("BlockedAppsChanged: read failed");
         return;

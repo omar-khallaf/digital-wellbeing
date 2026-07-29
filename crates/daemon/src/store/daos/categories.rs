@@ -1,267 +1,311 @@
-//! Categories repository — the `categories` and `app_categories` tables.
+//! Categories repository — the `app_categories` table only.
 //!
-//! The `categories` table is system-defined and read-only for users.
-//! Only `app_categories` (user-specific category overrides) is mutable.
+//! The old `categories` table has been removed — categories are now a
+//! fixed `#[repr(u8)]` enum in `wellbeing_core::Category`.  Only the
+//! `app_categories` table (user-specific category overrides) remains.
 
-use diesel::ExpressionMethods;
-use diesel::JoinOnDsl;
-use diesel::QueryDsl;
-use diesel::dsl::{insert_into, update};
-use diesel_async::RunQueryDsl;
+use std::collections::HashMap;
+
 use wellbeing_core::Uid;
-use wellbeing_core::{AppCategoryRow, AppClass, Category, CategoryId};
+use wellbeing_core::{AppCategoryRow, AppClass, Category};
 
 use crate::store::connection::DbConn;
-use crate::store::schema;
+use crate::store::schema_constants::{app_categories, apps};
 
 /// System-level user id sentinel (root / no specific user).
 const SYSTEM_USER_ID: i32 = 0;
-/// Fallback category id if "Uncategorized" query fails.
-const UNCATEGORIZED_FALLBACK_ID: i32 = 7;
 
-/// Diesel-backed category repository — provides static methods.
+/// Default category value stored in the database.
+const DEFAULT_CATEGORY_INT: i32 = Category::Uncategorized as i32;
+
+/// Category repository — provides static methods.
 pub(crate) struct CategoryDao;
 
-// ── Internal / transaction-friendly methods ─────────────────────────────
 impl CategoryDao {
-    /// Resolve category ids for a batch of (uid, app_id) pairs using an
-    /// existing connection. User-specific entries take precedence; system-global
-    /// (user_id = 0) entries are fallback. Unmapped apps get "Uncategorized".
+    /// Resolve category **ints** for a batch of (uid, app_id) pairs.
+    /// User-specific entries take precedence; system-global (user_id = 0)
+    /// entries are fallback. Unmapped apps get `Uncategorized` (6).
     pub(crate) async fn resolve_category_map(
-        conn: &mut DbConn,
+        conn: &DbConn,
         pairs: &[(Uid, i32)],
-    ) -> std::collections::HashMap<(Uid, i32), Vec<i32>> {
-        use diesel::QueryDsl;
-        let mut map: std::collections::HashMap<(Uid, i32), Vec<i32>> =
-            std::collections::HashMap::new();
-
-        // Cache the Uncategorized category id — look it up once.
-        let uncategorized_id: i32 = schema::categories::table
-            .filter(schema::categories::name.eq("Uncategorized"))
-            .select(schema::categories::id)
-            .first(conn)
-            .await
-            .unwrap_or(UNCATEGORIZED_FALLBACK_ID); // fallback id if query fails
+    ) -> HashMap<(Uid, i32), Vec<i32>> {
+        let mut map: HashMap<(Uid, i32), Vec<i32>> = HashMap::new();
 
         for &(uid, app_id) in pairs {
-            let user_cats: Vec<i32> = schema::app_categories::table
-                .filter(schema::app_categories::app_id.eq(app_id))
-                .filter(schema::app_categories::user_id.eq(uid.0 as i32))
-                .filter(schema::app_categories::ignore.eq(false))
-                .filter(schema::app_categories::category_id.is_not_null())
-                .select(schema::app_categories::category_id)
-                .load::<Option<i32>>(conn)
+            // Try user-specific categories first
+            let user_cats: Vec<i32> = match conn
+                .query(
+                    &format!(
+                        "SELECT {} FROM {} WHERE {} = ?1 AND {} = ?2 AND {} = 0 AND {} IS NOT NULL",
+                        app_categories::CATEGORY,
+                        app_categories::TABLE,
+                        app_categories::APP_ID,
+                        app_categories::USER_ID,
+                        app_categories::IGNORE,
+                        app_categories::CATEGORY,
+                    ),
+                    (app_id, uid.0 as i32),
+                )
                 .await
-                .unwrap_or_default()
-                .into_iter()
-                .flatten()
-                .collect();
+            {
+                Ok(mut result) => {
+                    let mut cats = Vec::new();
+                    while let Some(row) = result.next().await.ok().flatten() {
+                        if let Ok(cat_val) = row.get::<i32>(0) {
+                            cats.push(cat_val);
+                        }
+                    }
+                    cats
+                }
+                Err(_) => Vec::new(),
+            };
 
             let ids = if !user_cats.is_empty() {
                 user_cats
             } else {
-                let sys_cats: Vec<i32> = schema::app_categories::table
-                    .filter(schema::app_categories::app_id.eq(app_id))
-                    .filter(schema::app_categories::user_id.eq(SYSTEM_USER_ID))
-                    .filter(schema::app_categories::ignore.eq(false))
-                    .filter(schema::app_categories::category_id.is_not_null())
-                    .select(schema::app_categories::category_id)
-                    .load::<Option<i32>>(conn)
+                // Fall back to system-global categories (user_id = 0)
+                let sys_cats: Vec<i32> = match conn
+                    .query(
+                        &format!(
+                            "SELECT {} FROM {} WHERE {} = ?1 AND {} = ?2 AND {} = 0 AND {} IS NOT NULL",
+                            app_categories::CATEGORY,
+                            app_categories::TABLE,
+                            app_categories::APP_ID,
+                            app_categories::USER_ID,
+                            app_categories::IGNORE,
+                            app_categories::CATEGORY,
+                        ),
+                        (app_id, SYSTEM_USER_ID),
+                    )
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .flatten()
-                    .collect();
+                {
+                    Ok(mut result) => {
+                        let mut cats = Vec::new();
+                        while let Some(row) = result.next().await.ok().flatten() {
+                            if let Ok(cat_val) = row.get::<i32>(0) {
+                                cats.push(cat_val);
+                            }
+                        }
+                        cats
+                    }
+                    Err(_) => Vec::new(),
+                };
+
                 if sys_cats.is_empty() {
-                    vec![uncategorized_id]
+                    vec![DEFAULT_CATEGORY_INT]
                 } else {
                     sys_cats
                 }
             };
+
             map.insert((uid, app_id), ids);
         }
 
         map
     }
 
-    /// Resolve category names for an app (user-specific then system fallback).
-    pub(crate) async fn resolve_category_names_for_app(
-        conn: &mut DbConn,
-        app_class: &wellbeing_core::AppClass,
+    /// Resolve categories for an app (user-specific then system fallback).
+    /// Returns `Category` enum values from the stored integer.
+    pub(crate) async fn resolve_categories_for_app(
+        conn: &DbConn,
+        app_class: &AppClass,
         uid: Uid,
-    ) -> anyhow::Result<Vec<String>> {
-        use diesel::ExpressionMethods;
-        use diesel::QueryDsl;
-        use diesel_async::RunQueryDsl;
+    ) -> anyhow::Result<Vec<Category>> {
+        // Try user-specific categories first
+        let cat_ints: Vec<i32> = match conn
+            .query(
+                &format!(
+                    "SELECT ac.{} FROM {} ac \
+                     INNER JOIN {} a ON a.{} = ac.{} \
+                     WHERE a.{} = ?1 AND ac.{} IS NOT NULL AND ac.{} = 0 AND ac.{} = ?2",
+                    app_categories::CATEGORY,
+                    app_categories::TABLE,
+                    apps::TABLE,
+                    apps::ID,
+                    app_categories::APP_ID,
+                    apps::APP_CLASS,
+                    app_categories::CATEGORY,
+                    app_categories::IGNORE,
+                    app_categories::USER_ID,
+                ),
+                (app_class.as_ref(), uid.0 as i32),
+            )
+            .await
+        {
+            Ok(mut result) => {
+                let mut ids = Vec::new();
+                while let Some(row) = result.next().await.ok().flatten() {
+                    if let Ok(cat_val) = row.get::<i32>(0) {
+                        ids.push(cat_val);
+                    }
+                }
+                ids
+            }
+            Err(e) => return Err(anyhow::anyhow!("query failed: {}", e)),
+        };
 
-        let cat_ids: Vec<i32> = schema::app_categories::table
-            .inner_join(schema::apps::table)
-            .filter(schema::apps::app_class.eq(app_class.as_ref()))
-            .filter(schema::app_categories::category_id.is_not_null())
-            .filter(schema::app_categories::ignore.eq(false))
-            .filter(schema::app_categories::user_id.eq(uid.0 as i32))
-            .select(schema::app_categories::category_id)
-            .load::<Option<i32>>(conn)
-            .await?
-            .into_iter()
-            .flatten()
-            .collect();
-
-        if !cat_ids.is_empty() {
-            let names: Vec<String> = schema::categories::table
-                .filter(schema::categories::id.eq_any(&cat_ids))
-                .select(schema::categories::name)
-                .load(conn)
-                .await?;
-            return Ok(names);
+        if !cat_ints.is_empty() {
+            return Ok(cat_ints
+                .into_iter()
+                .filter_map(|v| Category::try_from(v).ok())
+                .collect());
         }
 
-        // System-global fallback (user_id = 0).
-        let fallback_ids: Vec<i32> = schema::app_categories::table
-            .inner_join(schema::apps::table)
-            .filter(schema::apps::app_class.eq(app_class.as_ref()))
-            .filter(schema::app_categories::category_id.is_not_null())
-            .filter(schema::app_categories::ignore.eq(false))
-            .filter(schema::app_categories::user_id.eq(0i32))
-            .select(schema::app_categories::category_id)
-            .load::<Option<i32>>(conn)
-            .await?
+        // System-global fallback (user_id = 0)
+        let fallback_ints: Vec<i32> = match conn
+            .query(
+                &format!(
+                    "SELECT ac.{} FROM {} ac \
+                     INNER JOIN {} a ON a.{} = ac.{} \
+                     WHERE a.{} = ?1 AND ac.{} IS NOT NULL AND ac.{} = 0 AND ac.{} = ?2",
+                    app_categories::CATEGORY,
+                    app_categories::TABLE,
+                    apps::TABLE,
+                    apps::ID,
+                    app_categories::APP_ID,
+                    apps::APP_CLASS,
+                    app_categories::CATEGORY,
+                    app_categories::IGNORE,
+                    app_categories::USER_ID,
+                ),
+                (app_class.as_ref(), SYSTEM_USER_ID),
+            )
+            .await
+        {
+            Ok(mut result) => {
+                let mut ids = Vec::new();
+                while let Some(row) = result.next().await.ok().flatten() {
+                    if let Ok(cat_val) = row.get::<i32>(0) {
+                        ids.push(cat_val);
+                    }
+                }
+                ids
+            }
+            Err(e) => return Err(anyhow::anyhow!("query failed: {}", e)),
+        };
+
+        Ok(fallback_ints
             .into_iter()
-            .flatten()
-            .collect();
-
-        if !fallback_ids.is_empty() {
-            let names: Vec<String> = schema::categories::table
-                .filter(schema::categories::id.eq_any(&fallback_ids))
-                .select(schema::categories::name)
-                .load(conn)
-                .await?;
-            Ok(names)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-}
-
-// ── DAO functions (replace raw SQL in dbus layer) ───────────────────────
-
-impl CategoryDao {
-    /// List all system-defined categories.
-    pub(crate) async fn list_all_categories(conn: &mut DbConn) -> anyhow::Result<Vec<Category>> {
-        use crate::store::schema::categories::columns as c;
-        let rows: Vec<(i32, String, Option<String>, Option<String>)> =
-            crate::store::schema::categories::table
-                .select((c::id, c::name, c::color, c::icon))
-                .load(conn)
-                .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|(id, name, color, icon)| Category {
-                id: CategoryId(id as i64),
-                name,
-                color: color.unwrap_or_default(),
-                icon: icon.unwrap_or_default(),
-            })
+            .filter_map(|v| Category::try_from(v).ok())
             .collect())
     }
 
     /// Get app_categories for a user (user-specific overrides).
     pub(crate) async fn list_app_categories(
-        conn: &mut DbConn,
+        conn: &DbConn,
         caller: u32,
     ) -> anyhow::Result<Vec<AppCategoryRow>> {
-        use crate::store::schema::app_categories;
-        use crate::store::schema::apps;
-
-        type AppCategoryRowRaw = (
-            String,         // apps.app_class (window class)
-            i32,            // user_id
-            Option<i32>,    // category_id
-            Option<String>, // display_name
-            Option<String>, // icon_path
-            bool,           // ignore
+        let sql = format!(
+            "SELECT a.{}, ac.{}, ac.{}, ac.{}, ac.{}, ac.{} \
+             FROM {} ac \
+             INNER JOIN {} a ON a.{} = ac.{} \
+             WHERE ac.{} = ?1",
+            apps::APP_CLASS,
+            app_categories::USER_ID,
+            app_categories::CATEGORY,
+            app_categories::DISPLAY_NAME,
+            app_categories::ICON_PATH,
+            app_categories::IGNORE,
+            app_categories::TABLE,
+            apps::TABLE,
+            apps::ID,
+            app_categories::APP_ID,
+            app_categories::USER_ID,
         );
-        let rows: Vec<AppCategoryRowRaw> = app_categories::table
-            .inner_join(apps::table.on(apps::id.eq(app_categories::app_id)))
-            .filter(app_categories::user_id.eq(caller as i32))
-            .select((
-                apps::app_class,
-                app_categories::user_id,
-                app_categories::category_id,
-                app_categories::display_name,
-                app_categories::icon_path,
-                app_categories::ignore,
-            ))
-            .load(conn)
-            .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(app_class, uid, cat_id, display_name, icon_path, ignore)| AppCategoryRow {
-                    app_class: AppClass::new(&app_class)
-                        .unwrap_or_else(|_| AppClass::new("?").unwrap()),
-                    user_id: Uid(uid as u32),
-                    category_id: CategoryId(cat_id.unwrap_or(0) as i64),
-                    display_name: display_name.unwrap_or_default(),
-                    icon_path: icon_path.unwrap_or_default(),
-                    ignore,
-                },
-            )
-            .collect())
+        let mut result = conn.query(&sql, (caller as i32,)).await?;
+        let mut rows = Vec::new();
+        while let Some(row) = result.next().await? {
+            let cat_int: i32 = row.get::<Option<i32>>(2)?.unwrap_or(DEFAULT_CATEGORY_INT);
+            rows.push(AppCategoryRow {
+                app_class: AppClass::new(&row.get::<String>(0)?)
+                    .unwrap_or_else(|_| AppClass::new("?").unwrap()),
+                user_id: Uid(row.get::<i32>(1)? as u32),
+                category: Category::try_from(cat_int).unwrap_or(Category::Uncategorized),
+                display_name: row.get::<Option<String>>(3)?.unwrap_or_default(),
+                icon_path: row.get::<Option<String>>(4)?.unwrap_or_default(),
+                ignore: row.get(5)?,
+            });
+        }
+        Ok(rows)
     }
 
     /// Set or create an app category override (upsert).
     pub(crate) async fn upsert_app_category(
-        conn: &mut DbConn,
+        conn: &DbConn,
         app_class: String,
-        category_id: CategoryId,
+        category: Category,
         caller: u32,
         now_str: &str,
     ) -> anyhow::Result<()> {
-        use crate::store::schema::app_categories;
-        use crate::store::schema::apps;
-
         let uid = caller as i32;
-        let cat_id: Option<i32> = if category_id.0 > 0 {
-            Some(category_id.0 as i32)
-        } else {
-            None
+        let cat_val: Option<i32> = Some(category as i32);
+
+        // Resolve app_id
+        let app_id: i32 = match conn
+            .query(
+                &format!(
+                    "SELECT {} FROM {} WHERE {} = ?1",
+                    apps::ID,
+                    apps::TABLE,
+                    apps::APP_CLASS
+                ),
+                (app_class.as_str(),),
+            )
+            .await
+        {
+            Ok(mut result) => {
+                if let Some(row) = result.next().await.ok().flatten() {
+                    row.get(0)?
+                } else {
+                    anyhow::bail!("app not found")
+                }
+            }
+            Err(e) => return Err(anyhow::anyhow!("query failed: {}", e)),
         };
 
-        // Resolve app_id via subquery against the window-class string.
-        let app_id: i32 = apps::table
-            .filter(apps::app_class.eq(&app_class))
-            .select(apps::id)
-            .first(conn)
+        // Try to update existing row
+        let update_sql = format!(
+            "UPDATE {} SET {} = ?1, {} = ?2 WHERE {} = ?3 AND {} = ?4",
+            app_categories::TABLE,
+            app_categories::CATEGORY,
+            app_categories::UPDATED_AT,
+            app_categories::APP_ID,
+            app_categories::USER_ID,
+        );
+
+        let rows_affected = conn
+            .execute(&update_sql, (cat_val, now_str, app_id, uid))
             .await?;
 
-        let updated = update(
-            app_categories::table
-                .filter(app_categories::app_id.eq(app_id))
-                .filter(app_categories::user_id.eq(uid)),
-        )
-        .set((
-            app_categories::category_id.eq(cat_id),
-            app_categories::updated_at.eq(now_str),
-        ))
-        .execute(conn)
-        .await?;
+        if rows_affected == 0 {
+            // Insert new row
+            let insert_sql = format!(
+                "INSERT INTO {} ({}, {}, {}, {}, {}, {}, {}) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                app_categories::TABLE,
+                app_categories::APP_ID,
+                app_categories::USER_ID,
+                app_categories::CATEGORY,
+                app_categories::DISPLAY_NAME,
+                app_categories::ICON_PATH,
+                app_categories::IGNORE,
+                app_categories::UPDATED_AT,
+            );
 
-        if updated == 0 {
-            insert_into(app_categories::table)
-                .values((
-                    app_categories::app_id.eq(app_id),
-                    app_categories::user_id.eq(uid),
-                    app_categories::category_id.eq(cat_id),
-                    app_categories::display_name.eq(None::<String>),
-                    app_categories::icon_path.eq(None::<String>),
-                    app_categories::ignore.eq(false),
-                    app_categories::updated_at.eq(now_str),
-                ))
-                .execute(conn)
-                .await?;
+            conn.execute(
+                &insert_sql,
+                (
+                    app_id,
+                    uid,
+                    cat_val,
+                    None::<String>,
+                    None::<String>,
+                    false,
+                    now_str,
+                ),
+            )
+            .await?;
         }
 
         Ok(())

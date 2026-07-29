@@ -147,8 +147,6 @@ pub struct PolicyData {
     pub schedule_json: String,
     pub user_id: Uid,
     pub created_by: Uid,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 /// Input for creating/updating a policy.

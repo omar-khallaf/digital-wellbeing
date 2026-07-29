@@ -21,9 +21,6 @@ pub enum Error {
     #[error("invalid policy: {reason}")]
     InvalidPolicy { reason: &'static str },
 
-    #[error("category not found: {0}")]
-    CategoryNotFound(i64),
-
     #[error("plugin not connected")]
     PluginNotConnected,
 

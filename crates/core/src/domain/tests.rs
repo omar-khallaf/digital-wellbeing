@@ -7,7 +7,6 @@ use crate::dbus_constants::{
     EVENT_TAG_UNFOCUS,
 };
 use crate::valuetypes::*;
-use chrono::Utc;
 use zvariant::{DynamicType, LE, Structure, Value, to_bytes};
 
 #[test]
@@ -60,8 +59,6 @@ fn policy_dbus_roundtrips() {
         schedule_json: "[]".to_string(),
         user_id: Uid(1000),
         created_by: Uid(1000),
-        created_at: Utc::now().to_rfc3339(),
-        updated_at: Utc::now().to_rfc3339(),
     };
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
     let bytes = to_bytes(ctxt, &policy).expect("serialize PolicyData");
@@ -71,14 +68,14 @@ fn policy_dbus_roundtrips() {
 }
 
 #[test]
-fn block_reason_roundtrips_as_u32() {
+fn block_reason_roundtrips_as_u8() {
     let reason = BlockReason::AppTimeLimit;
     let ctxt = zvariant::serialized::Context::new_dbus(LE, 0);
     let bytes = to_bytes(ctxt, &reason).expect("serialize BlockReason");
     assert_eq!(
         bytes.len(),
-        4,
-        "BlockReason should serialize as 4 bytes (u32)"
+        1,
+        "BlockReason should serialize as 1 byte (u8)"
     );
     let (decoded, _): (BlockReason, _) = bytes.deserialize().expect("deserialize BlockReason");
     assert_eq!(decoded, BlockReason::AppTimeLimit);

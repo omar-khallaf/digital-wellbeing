@@ -10,7 +10,7 @@ mod sidebar;
 
 use std::sync::Arc;
 
-use self::content::{dashboard_content, loading_state, reports_content};
+use self::content::{dashboard_content, policies_content, reports_content};
 use self::header::header;
 use self::sidebar::sidebar;
 
@@ -27,7 +27,6 @@ use crate::components::{
     AppBadge, AppEntryView, DashAppsDelegate, DashTitlesDelegate, PolListDelegate, RepAppsDelegate,
     RepTitlesDelegate, TitleEntryView,
 };
-use crate::policies;
 use crate::reports;
 use crate::theme::*;
 
@@ -263,7 +262,7 @@ impl App {
                 }
                 Tab::Policies => {
                     let vm = self.policies_vm.clone();
-                    self.policies_content(cx, &vm).into_any_element()
+                    policies_content(self, cx, &vm).into_any_element()
                 }
                 Tab::Reports => {
                     let date_opts = reports::DateRangeOptions {
@@ -284,18 +283,5 @@ impl App {
                 }
             })
             .into_any_element()
-    }
-
-    fn policies_content(
-        &mut self,
-        cx: &mut Context<Self>,
-        vm: &Option<policies::PoliciesViewModel>,
-    ) -> impl IntoElement {
-        match (vm.as_ref(), self.pol_list.as_ref()) {
-            (Some(vm), Some(pol_list)) => {
-                self.render_policy_list(cx, vm, pol_list).into_any_element()
-            }
-            _ => loading_state(cx).into_any_element(),
-        }
     }
 }

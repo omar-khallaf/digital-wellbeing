@@ -7,7 +7,7 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, NumberInput};
 use gpui_component::{h_flex, v_flex};
 
-use wellbeing_core::{AppClass, TimeWindow};
+use wellbeing_core::{AppClass, TargetType, TimeWindow};
 
 use crate::app::{App as GuiApp, RenderMode};
 use crate::components::card;
@@ -58,13 +58,16 @@ impl GuiApp {
         let kinds = ["Allow", "Block", "TimeLimit", "Notify"];
         let kind = &form.kind;
 
-        let target_types: [(&str, &str); 3] =
-            [("App", "App"), ("Category", "Category"), ("Any", "Any")];
+        let target_types: [(TargetType, &str); 3] = [
+            (TargetType::App, "App"),
+            (TargetType::Category, "Category"),
+            (TargetType::Any, "Any"),
+        ];
         let current_target_label = match target {
-            PolicyTarget::App(_) => "App",
-            PolicyTarget::Category(_) => "Category",
-            PolicyTarget::Domain(_) => "Domain",
-            PolicyTarget::Any => "Any",
+            PolicyTarget::App(_) => TargetType::App,
+            PolicyTarget::Category(_) => TargetType::Category,
+            PolicyTarget::Domain(_) => TargetType::Domain,
+            PolicyTarget::Any => TargetType::Any,
         };
         let is_app_target = matches!(target, PolicyTarget::App(_));
         let is_cat_target = matches!(target, PolicyTarget::Category(_));
@@ -89,20 +92,19 @@ impl GuiApp {
                     )
                     .children(target_types.iter().map(|(key, label)| {
                         let is_active = current_target_label == *key;
-                        let key_str = key.to_string();
+                        let target_type = *key;
                         let entity = entity.clone();
-                        Button::new(format!("target-{}", key))
+                        Button::new(format!("target-{:?}", target_type))
                             .label(*label)
                             .when(is_active, |b| b.primary())
                             .on_click(move |_, _window, app| {
                                 entity.update(app, |this, cx2| {
                                     if let Some((ref mut t, ref mut f)) = this.policy_edit {
-                                        match key_str.as_str() {
-                                            "Category" => {
-                                                *t =
-                                                    PolicyTarget::Category(f.category_name.clone());
+                                        match target_type {
+                                            TargetType::Category => {
+                                                *t = PolicyTarget::Category(f.category);
                                             }
-                                            "Any" => {
+                                            TargetType::Any => {
                                                 *t = PolicyTarget::Any;
                                             }
                                             _ => {
@@ -171,13 +173,13 @@ impl GuiApp {
                     .categories
                     .iter()
                     .map(|cat| {
-                        let is_sel = form.category_name == cat.name;
-                        let color = crate::theme::parse_hex(&cat.color)
+                        let category = *cat;
+                        let is_sel = form.category == category;
+                        let color = crate::theme::parse_hex(cat.color())
                             .unwrap_or_else(|| theme::text_muted(&*cx));
-                        let cat_name = cat.name.clone();
                         let entity = entity.clone();
                         div()
-                            .id(format!("cat-opt-{}", cat.id.0))
+                            .id(format!("cat-opt-{}", category as u8))
                             .gap_2()
                             .px(sp::MD)
                             .py(sp::SM)
@@ -188,8 +190,8 @@ impl GuiApp {
                             .on_click(move |_, _window, app| {
                                 entity.update(app, |this, cx2| {
                                     if let Some((ref mut t, ref mut f)) = this.policy_edit {
-                                        f.category_name = cat_name.clone();
-                                        *t = PolicyTarget::Category(f.category_name.clone());
+                                        f.category = category;
+                                        *t = PolicyTarget::Category(category);
                                     }
                                     cx2.notify();
                                 });
@@ -202,13 +204,13 @@ impl GuiApp {
                                         div()
                                             .text_sm()
                                             .text_color(theme::text_primary(&*cx))
-                                            .child(cat.name.clone()),
+                                            .child(cat.name()),
                                     )
                                     .child(
                                         div()
                                             .text_xs()
                                             .text_color(theme::text_muted(&*cx))
-                                            .child(cat.icon.clone()),
+                                            .child(cat.icon()),
                                     ),
                             )
                             .into_any_element()

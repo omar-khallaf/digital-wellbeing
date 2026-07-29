@@ -49,7 +49,7 @@ pub(crate) struct OpenFocus {
 
 /// Accumulate category deltas from app-aggregated (uid, AggKeyApp) deltas.
 async fn accumulate_category_deltas(
-    conn: &mut DbConn,
+    conn: &DbConn,
     agg: &HashMap<(Uid, AggKeyApp), i64>,
     agg_category: &mut HashMap<(Uid, AggKeyCategory), i64>,
 ) -> anyhow::Result<()> {
@@ -85,7 +85,7 @@ async fn accumulate_category_deltas(
 
 /// Apply closed-interval deltas from a buffered event batch.
 pub(crate) async fn apply_closed_deltas_from_buffer(
-    conn: &mut DbConn,
+    conn: &DbConn,
     events: &[TimedEvent],
     uids: &[Uid],
     now: DateTime<Utc>,
@@ -99,6 +99,7 @@ pub(crate) async fn apply_closed_deltas_from_buffer(
     // 1. Fetch last event per uid from DB.
     let last_events =
         crate::store::daos::events::EventDao::get_last_events_for_uids(conn, uids).await;
+    let last_events = last_events?;
 
     let mut per_uid: HashMap<Uid, Vec<&TimedEvent>> = HashMap::new();
     for timed in events {
@@ -224,54 +225,48 @@ pub(crate) async fn apply_closed_deltas_from_buffer(
 
 /// Refresh `open_millis` for registered uids (minute-tick).
 pub(crate) async fn refresh_open_intervals_inner(
-    conn: &mut DbConn,
+    conn: &DbConn,
     uids: &[Uid],
     now: DateTime<Utc>,
 ) -> anyhow::Result<()> {
     let now_millis = now.timestamp_millis();
     let last_events =
         crate::store::daos::events::EventDao::get_last_events_for_uids(conn, uids).await;
+    let last_events = last_events?;
 
     let mut agg_open: HashMap<(Uid, AggKeyApp), i64> = HashMap::new();
     let mut agg_open_by_title: HashMap<(Uid, AggKeyTitle), i64> = HashMap::new();
     let mut agg_open_category: HashMap<(Uid, AggKeyCategory), i64> = HashMap::new();
 
-    for (&uid, row) in &last_events {
-        let Some(row) = row else { continue };
+    if let Some((&uid, row)) = last_events.iter().next() {
+        let Some(row) = row else { return Ok(()) };
         let event_type = EventType::try_from(row.event_type).unwrap_or(EventType::Focus);
-        if event_type != EventType::Focus {
-            continue;
+        if event_type == EventType::Focus {
+            let app_class = row
+                .app_class
+                .as_deref()
+                .and_then(|s| wellbeing_core::AppClass::new(s).ok())
+                .unwrap_or_else(|| wellbeing_core::AppClass::new("unknown").unwrap());
+            let app_id = AppsDao::ensure_app(conn, &app_class).await.unwrap_or(0);
+            let title = row
+                .title
+                .as_deref()
+                .map(WindowTitle::new)
+                .unwrap_or_else(|| WindowTitle::new("(untitled)"));
+            let focus = OpenFocus {
+                ts_ms: row.timestamp,
+                app_class,
+                app_id,
+                title,
+            };
+            accumulate_open(
+                &focus,
+                now_millis,
+                uid,
+                &mut agg_open,
+                &mut agg_open_by_title,
+            );
         }
-        if now_millis <= row.timestamp {
-            continue;
-        }
-
-        let app_class = row
-            .app_class
-            .as_deref()
-            .and_then(|s| wellbeing_core::AppClass::new(s).ok())
-            .unwrap_or_else(|| wellbeing_core::AppClass::new("unknown").unwrap());
-        let app_id = AppsDao::ensure_app(conn, &app_class).await.unwrap_or(0);
-        let title = row
-            .title
-            .as_deref()
-            .map(WindowTitle::new)
-            .unwrap_or_else(|| WindowTitle::new("(untitled)"));
-
-        let focus = OpenFocus {
-            ts_ms: row.timestamp,
-            app_class,
-            app_id,
-            title,
-        };
-
-        accumulate_open(
-            &focus,
-            now_millis,
-            uid,
-            &mut agg_open,
-            &mut agg_open_by_title,
-        );
     }
 
     for ((uid, key), open_ms) in &agg_open {

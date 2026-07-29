@@ -170,22 +170,20 @@ fn build_category_slices(
         return Vec::new();
     }
 
-    let cat_color: HashMap<&str, &str> = categories
-        .iter()
-        .map(|c| (c.name.as_str(), c.color.as_str()))
-        .collect();
+    let cat_color: HashMap<&str, &str> = categories.iter().map(|c| (c.name(), c.color())).collect();
 
     let mut slices: Vec<Slice> = category_summary
         .iter()
         .map(|s| {
+            let cat_name = s.category.name();
             let color = cat_color
-                .get(s.category_name.as_str())
+                .get(cat_name)
                 .map(|c| c.to_string())
                 .unwrap_or_default();
             Slice {
                 percentage: (s.total_millis as f64 / total) * 100.0,
-                app_class: s.category_name.clone(),
-                display_name: s.category_name.clone(),
+                app_class: cat_name.to_owned(),
+                display_name: cat_name.to_owned(),
                 color,
             }
         })
@@ -217,8 +215,8 @@ fn build_top_apps_from_summary(
     let app_meta: HashMap<&str, (&str, Option<String>)> = app_categories
         .iter()
         .map(|ac| {
-            let color = if ac.category_id.0 > 0 {
-                Some(format!("cat_{}", ac.category_id.0))
+            let color = if (ac.category as u8) > 0 {
+                Some(format!("cat_{}", ac.category as u8))
             } else {
                 None
             };

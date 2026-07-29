@@ -99,7 +99,7 @@ pub trait Daemon {
 
     async fn list_categories(&self) -> zbus::Result<Vec<Category>>;
     async fn get_app_categories(&self) -> zbus::Result<Vec<AppCategoryRow>>;
-    async fn set_app_category(&self, app_class: &str, category_id: CategoryId) -> zbus::Result<()>;
+    async fn set_app_category(&self, app_class: &str, category: Category) -> zbus::Result<()>;
 
     /// Read-only property — returns [`BlockedApps`] instead of raw `Vec` to work
     /// around zbus 5.18's Variant-unwrapping bug in `Proxy::get_property`.

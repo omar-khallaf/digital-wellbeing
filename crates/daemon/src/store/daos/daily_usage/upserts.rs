@@ -1,183 +1,232 @@
 //! Batch-upsert helpers for the daily_usage materialized tables.
 //!
-//! Every function here takes `conn: &mut DbConn` — they are associated
+//! Every function here takes `conn: &DbConn` — they are associated
 //! functions called from the delta-computation pipeline.
 
-use diesel::NullableExpressionMethods;
-use diesel::dsl::insert_into;
-use diesel::{ExpressionMethods, QueryDsl};
-use diesel_async::RunQueryDsl;
 use wellbeing_core::{Uid, WindowTitle};
 
 use crate::store::connection::DbConn;
-use crate::store::schema;
-
-// ── Per-app upserts ─────────────────────────────────────────────────────
+use crate::store::schema_constants::{
+    apps, daily_usage_by_app, daily_usage_by_category, daily_usage_by_title,
+};
 
 pub(crate) async fn upsert_closed_delta(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     app_id: i32,
     delta_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::daily_usage_by_app::columns as c;
-    insert_into(schema::daily_usage_by_app::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::app_id.eq(app_id),
-            c::closed_millis.eq(delta_ms),
-            c::open_millis.eq(0),
-        ))
-        .on_conflict((c::date, c::user_id, c::app_id))
-        .do_update()
-        .set(c::closed_millis.eq(c::closed_millis + delta_ms))
-        .execute(conn)
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, ?4, 0) \
+         ON CONFLICT({}, {}, {}) DO UPDATE SET {} = {} + ?4",
+        daily_usage_by_app::TABLE,
+        daily_usage_by_app::DATE,
+        daily_usage_by_app::USER_ID,
+        daily_usage_by_app::APP_ID,
+        daily_usage_by_app::CLOSED_MILLIS,
+        daily_usage_by_app::OPEN_MILLIS,
+        daily_usage_by_app::DATE,
+        daily_usage_by_app::USER_ID,
+        daily_usage_by_app::APP_ID,
+        daily_usage_by_app::CLOSED_MILLIS,
+        daily_usage_by_app::CLOSED_MILLIS,
+    );
+
+    conn.execute(&sql, (date, uid.0 as i32, app_id, delta_ms))
         .await?;
     Ok(())
 }
 
 pub(crate) async fn upsert_open_delta(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     app_id: i32,
     open_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::daily_usage_by_app::columns as c;
-    insert_into(schema::daily_usage_by_app::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::app_id.eq(app_id),
-            c::closed_millis.eq(0),
-            c::open_millis.eq(open_ms),
-        ))
-        .on_conflict((c::date, c::user_id, c::app_id))
-        .do_update()
-        .set(c::open_millis.eq(open_ms))
-        .execute(conn)
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, 0, ?4) \
+         ON CONFLICT({}, {}, {}) DO UPDATE SET {} = ?4",
+        daily_usage_by_app::TABLE,
+        daily_usage_by_app::DATE,
+        daily_usage_by_app::USER_ID,
+        daily_usage_by_app::APP_ID,
+        daily_usage_by_app::CLOSED_MILLIS,
+        daily_usage_by_app::OPEN_MILLIS,
+        daily_usage_by_app::DATE,
+        daily_usage_by_app::USER_ID,
+        daily_usage_by_app::APP_ID,
+        daily_usage_by_app::OPEN_MILLIS,
+    );
+
+    conn.execute(&sql, (date, uid.0 as i32, app_id, open_ms))
         .await?;
     Ok(())
 }
 
-// ── Per-title upserts ────────────────────────────────────────────────────
-
 pub(crate) async fn upsert_closed_delta_by_title(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     app_class: &str,
     title: &WindowTitle,
     delta_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::apps;
-    use schema::daily_usage_by_title::columns as c;
+    let app_id: i32 = match conn
+        .query(
+            &format!(
+                "SELECT {} FROM {} WHERE {} = ?1",
+                apps::ID,
+                apps::TABLE,
+                apps::APP_CLASS
+            ),
+            (app_class,),
+        )
+        .await
+    {
+        Ok(mut result) => {
+            if let Some(row) = result.next().await.ok().flatten() {
+                row.get(0)?
+            } else {
+                anyhow::bail!("app not found")
+            }
+        }
+        Err(e) => return Err(anyhow::anyhow!("query failed: {}", e)),
+    };
 
-    let app_classs_subq = apps::table
-        .filter(apps::app_class.eq(app_class))
-        .select(apps::id)
-        .single_value()
-        .assume_not_null();
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 0) \
+         ON CONFLICT({}, {}, {}, {}) DO UPDATE SET {} = {} + ?5",
+        daily_usage_by_title::TABLE,
+        daily_usage_by_title::DATE,
+        daily_usage_by_title::USER_ID,
+        daily_usage_by_title::APP_ID,
+        daily_usage_by_title::TITLE,
+        daily_usage_by_title::CLOSED_MILLIS,
+        daily_usage_by_title::OPEN_MILLIS,
+        daily_usage_by_title::DATE,
+        daily_usage_by_title::USER_ID,
+        daily_usage_by_title::APP_ID,
+        daily_usage_by_title::TITLE,
+        daily_usage_by_title::CLOSED_MILLIS,
+        daily_usage_by_title::CLOSED_MILLIS,
+    );
 
-    insert_into(schema::daily_usage_by_title::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::app_id.eq(app_classs_subq),
-            c::title.eq(title.as_str()),
-            c::closed_millis.eq(delta_ms),
-            c::open_millis.eq(0),
-        ))
-        .on_conflict((c::date, c::user_id, c::app_id, c::title))
-        .do_update()
-        .set(c::closed_millis.eq(c::closed_millis + delta_ms))
-        .execute(conn)
+    conn.execute(&sql, (date, uid.0 as i32, app_id, title.as_str(), delta_ms))
         .await?;
     Ok(())
 }
 
 pub(crate) async fn upsert_open_delta_by_title(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     app_class: &str,
     title: &WindowTitle,
     open_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::apps;
-    use schema::daily_usage_by_title::columns as c;
+    let app_id: i32 = match conn
+        .query(
+            &format!(
+                "SELECT {} FROM {} WHERE {} = ?1",
+                apps::ID,
+                apps::TABLE,
+                apps::APP_CLASS
+            ),
+            (app_class,),
+        )
+        .await
+    {
+        Ok(mut result) => {
+            if let Some(row) = result.next().await.ok().flatten() {
+                row.get(0)?
+            } else {
+                anyhow::bail!("app not found")
+            }
+        }
+        Err(e) => return Err(anyhow::anyhow!("query failed: {}", e)),
+    };
 
-    let app_classs_subq = apps::table
-        .filter(apps::app_class.eq(app_class))
-        .select(apps::id)
-        .single_value()
-        .assume_not_null();
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, ?4, 0, ?5) \
+         ON CONFLICT({}, {}, {}, {}) DO UPDATE SET {} = ?5",
+        daily_usage_by_title::TABLE,
+        daily_usage_by_title::DATE,
+        daily_usage_by_title::USER_ID,
+        daily_usage_by_title::APP_ID,
+        daily_usage_by_title::TITLE,
+        daily_usage_by_title::CLOSED_MILLIS,
+        daily_usage_by_title::OPEN_MILLIS,
+        daily_usage_by_title::DATE,
+        daily_usage_by_title::USER_ID,
+        daily_usage_by_title::APP_ID,
+        daily_usage_by_title::TITLE,
+        daily_usage_by_title::OPEN_MILLIS,
+    );
 
-    insert_into(schema::daily_usage_by_title::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::app_id.eq(app_classs_subq),
-            c::title.eq(title.as_str()),
-            c::closed_millis.eq(0),
-            c::open_millis.eq(open_ms),
-        ))
-        .on_conflict((c::date, c::user_id, c::app_id, c::title))
-        .do_update()
-        .set(c::open_millis.eq(open_ms))
-        .execute(conn)
+    conn.execute(&sql, (date, uid.0 as i32, app_id, title.as_str(), open_ms))
         .await?;
     Ok(())
 }
 
-// ── Per-category upserts ─────────────────────────────────────────────────
-
 pub(crate) async fn upsert_closed_delta_by_category(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     category_id: i32,
     delta_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::daily_usage_by_category::columns as c;
-    insert_into(schema::daily_usage_by_category::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::category_id.eq(category_id),
-            c::closed_millis.eq(delta_ms),
-            c::open_millis.eq(0),
-        ))
-        .on_conflict((c::date, c::user_id, c::category_id))
-        .do_update()
-        .set(c::closed_millis.eq(c::closed_millis + delta_ms))
-        .execute(conn)
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, ?4, 0) \
+         ON CONFLICT({}, {}, {}) DO UPDATE SET {} = {} + ?4",
+        daily_usage_by_category::TABLE,
+        daily_usage_by_category::DATE,
+        daily_usage_by_category::USER_ID,
+        daily_usage_by_category::CATEGORY,
+        daily_usage_by_category::CLOSED_MILLIS,
+        daily_usage_by_category::OPEN_MILLIS,
+        daily_usage_by_category::DATE,
+        daily_usage_by_category::USER_ID,
+        daily_usage_by_category::CATEGORY,
+        daily_usage_by_category::CLOSED_MILLIS,
+        daily_usage_by_category::CLOSED_MILLIS,
+    );
+
+    conn.execute(&sql, (date, uid.0 as i32, category_id, delta_ms))
         .await?;
     Ok(())
 }
 
 pub(crate) async fn upsert_open_delta_by_category(
-    conn: &mut DbConn,
+    conn: &DbConn,
     date: &str,
     uid: Uid,
     category_id: i32,
     open_ms: i64,
 ) -> anyhow::Result<()> {
-    use schema::daily_usage_by_category::columns as c;
-    insert_into(schema::daily_usage_by_category::table)
-        .values((
-            c::date.eq(date),
-            c::user_id.eq(uid.0 as i32),
-            c::category_id.eq(category_id),
-            c::closed_millis.eq(0),
-            c::open_millis.eq(open_ms),
-        ))
-        .on_conflict((c::date, c::user_id, c::category_id))
-        .do_update()
-        .set(c::open_millis.eq(open_ms))
-        .execute(conn)
+    let sql = format!(
+        "INSERT INTO {} ({}, {}, {}, {}, {}) \
+         VALUES (?1, ?2, ?3, 0, ?4) \
+         ON CONFLICT({}, {}, {}) DO UPDATE SET {} = ?4",
+        daily_usage_by_category::TABLE,
+        daily_usage_by_category::DATE,
+        daily_usage_by_category::USER_ID,
+        daily_usage_by_category::CATEGORY,
+        daily_usage_by_category::CLOSED_MILLIS,
+        daily_usage_by_category::OPEN_MILLIS,
+        daily_usage_by_category::DATE,
+        daily_usage_by_category::USER_ID,
+        daily_usage_by_category::CATEGORY,
+        daily_usage_by_category::OPEN_MILLIS,
+    );
+
+    conn.execute(&sql, (date, uid.0 as i32, category_id, open_ms))
         .await?;
     Ok(())
 }

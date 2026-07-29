@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 use zvariant::{Type, Value};
 
 /// Application identifier (e.g. "firefox", "Code", "org.gnome.gedit").
@@ -68,10 +68,155 @@ pub struct Pid(pub u32);
 #[zvariant(signature = "x")]
 pub struct PolicyId(pub i64);
 
-/// Category identifier (SQLite row id).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type, Value)]
-#[zvariant(signature = "x")]
-pub struct CategoryId(pub i64);
+/// Fixed category discriminant (no SQLite row id, no DB table).
+///
+/// Stored as `u8` in the database and serialized as `y` (BYTE) over D-Bus.
+/// [`Display`] returns the human-readable category name for display/UI use.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Type, Value)]
+#[zvariant(signature = "y")]
+pub enum Category {
+    Productivity = 0,
+    Communication = 1,
+    Entertainment = 2,
+    Social = 3,
+    Development = 4,
+    Utilities = 5,
+    Uncategorized = 6,
+}
+
+impl Category {
+    /// All variants in discriminant order.
+    pub const ALL: [Category; 7] = [
+        Category::Productivity,
+        Category::Communication,
+        Category::Entertainment,
+        Category::Social,
+        Category::Development,
+        Category::Utilities,
+        Category::Uncategorized,
+    ];
+
+    /// Static display name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Category::Productivity => "Productivity",
+            Category::Communication => "Communication",
+            Category::Entertainment => "Entertainment",
+            Category::Social => "Social",
+            Category::Development => "Development",
+            Category::Utilities => "Utilities",
+            Category::Uncategorized => "Uncategorized",
+        }
+    }
+
+    /// Static hex color string.
+    pub const fn color(self) -> &'static str {
+        match self {
+            Category::Productivity => "#4CAF50",
+            Category::Communication => "#2196F3",
+            Category::Entertainment => "#FF9800",
+            Category::Social => "#E91E63",
+            Category::Development => "#9C27B0",
+            Category::Utilities => "#607D8B",
+            Category::Uncategorized => "#9E9E9E",
+        }
+    }
+
+    /// Static icon name.
+    pub const fn icon(self) -> &'static str {
+        match self {
+            Category::Productivity => "terminal",
+            Category::Communication => "chat",
+            Category::Entertainment => "games",
+            Category::Social => "globe",
+            Category::Development => "code",
+            Category::Utilities => "settings",
+            Category::Uncategorized => "help",
+        }
+    }
+
+    /// Parse a category name string into a [`Category`] variant.
+    /// Unknown names map to [`Category::Uncategorized`].
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "Productivity" => Category::Productivity,
+            "Communication" => Category::Communication,
+            "Entertainment" => Category::Entertainment,
+            "Social" => Category::Social,
+            "Development" => Category::Development,
+            "Utilities" => Category::Utilities,
+            _ => Category::Uncategorized,
+        }
+    }
+}
+
+impl From<Category> for u8 {
+    fn from(c: Category) -> Self {
+        c as u8
+    }
+}
+
+impl From<Category> for i32 {
+    fn from(c: Category) -> Self {
+        c as i32
+    }
+}
+
+impl TryFrom<u8> for Category {
+    type Error = &'static str;
+
+    fn try_from(v: u8) -> Result<Self, Self::Error> {
+        match v {
+            0 => Ok(Category::Productivity),
+            1 => Ok(Category::Communication),
+            2 => Ok(Category::Entertainment),
+            3 => Ok(Category::Social),
+            4 => Ok(Category::Development),
+            5 => Ok(Category::Utilities),
+            6 => Ok(Category::Uncategorized),
+            _ => Err("unknown Category discriminant"),
+        }
+    }
+}
+
+impl TryFrom<i32> for Category {
+    type Error = &'static str;
+
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        if !(0..=6).contains(&v) {
+            Err("unknown Category discriminant")
+        } else {
+            Category::try_from(v as u8)
+        }
+    }
+}
+
+impl std::fmt::Display for Category {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// Default is [`Category::Uncategorized`].
+impl Default for Category {
+    fn default() -> Self {
+        Category::Uncategorized
+    }
+}
+
+impl serde::Serialize for Category {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(*self as u8)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Category {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let v = u8::deserialize(deserializer)?;
+        Category::try_from(v).map_err(|e| de::Error::custom(e))
+    }
+}
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Type, Value,
