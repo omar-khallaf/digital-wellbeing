@@ -214,7 +214,7 @@ impl serde::Serialize for Category {
 impl<'de> serde::Deserialize<'de> for Category {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let v = u8::deserialize(deserializer)?;
-        Category::try_from(v).map_err(|e| de::Error::custom(e))
+        Category::try_from(v).map_err(de::Error::custom)
     }
 }
 

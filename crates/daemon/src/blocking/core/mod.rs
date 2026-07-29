@@ -27,7 +27,7 @@ use tracing::{debug, error, info};
 use wellbeing_core::*;
 
 use super::data::BlockingRepo;
-use crate::platform::linux::PluginRegistry;
+use crate::platform::linux::{ManagerClient, PluginRegistry};
 use crate::platform::{Platform, PlatformEvent, PowerEventKind};
 use crate::policy::Policy;
 use crate::policy::data::PolicyRepo;
@@ -210,15 +210,28 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         let uids = self.registry.read().await.registered_uids();
 
         for uid in uids {
-            let focused = {
+            let proxy = {
                 let reg = self.registry.read().await;
-                reg.current_focus_for_uid(uid).await
+                reg.focus_proxy_for_uid(uid)
             };
+
+            let Some((uid, proxy)) = proxy else {
+                debug!(
+                    ?uid,
+                    "evaluate_and_enforce: no plugin registered — skipping"
+                );
+                continue;
+            };
+
+            let client = ManagerClient::new(uid, proxy);
+            let focused = client.current_focus().await;
+
             let Some(event) = focused else {
                 debug!(
                     ?uid,
-                    "evaluate_and_enforce: no current focus for uid — skipping"
+                    "evaluate_and_enforce: plugin unreachable — cleaning up stale registration"
                 );
+                self.registry.write().await.unregister_by_uid(uid);
                 continue;
             };
             let Some(app_class) = event.app_class() else {
@@ -424,11 +437,19 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         owner_id: Uid,
         now: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<()> {
-        let focused = {
+        let proxy = {
             let reg = self.registry.read().await;
-            reg.current_focus_for_uid(owner_id).await
+            reg.focus_proxy_for_uid(owner_id)
         };
-        let Some(event) = focused else { return Ok(()) };
+        let Some((uid, proxy)) = proxy else {
+            return Ok(());
+        };
+        let client = ManagerClient::new(uid, proxy);
+        let focused = client.current_focus().await;
+        let Some(event) = focused else {
+            self.registry.write().await.unregister_by_uid(owner_id);
+            return Ok(());
+        };
         let Some(app_class) = event.app_class() else {
             return Ok(());
         };

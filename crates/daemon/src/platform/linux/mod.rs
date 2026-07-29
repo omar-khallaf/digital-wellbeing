@@ -12,7 +12,7 @@ use crate::platform::{Platform, PlatformEvent};
 
 mod manager;
 
-pub use manager::{ManagerProxy, PluginRegistry};
+pub use manager::{ManagerClient, ManagerProxy, PluginRegistry};
 
 #[allow(clippy::too_many_arguments)]
 #[proxy(

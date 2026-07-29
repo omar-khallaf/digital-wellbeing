@@ -1,8 +1,6 @@
 //! D-Bus interface controller — holds shared state and dependencies.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::sync::{RwLock, mpsc, mpsc::UnboundedSender};
 use wellbeing_core::Clock;
@@ -52,7 +50,6 @@ pub struct DaemonInterface {
     pub(crate) reports_repo: ReportsRepo,
     pub(crate) registry: Arc<RwLock<PluginRegistry>>,
     pub(crate) event_tx: UnboundedSender<PlatformEvent>,
-    pub(crate) plugin_reg_cooldown: RwLock<HashMap<u32, Instant>>,
     pub(crate) clock: Box<dyn Clock>,
     pub(crate) blocked_apps: BlockedAppsMap,
     pub(crate) policy_tx: mpsc::Sender<InternalEvent>,
@@ -78,7 +75,6 @@ impl DaemonInterface {
             reports_repo,
             registry,
             event_tx,
-            plugin_reg_cooldown: RwLock::new(HashMap::new()),
             clock,
             blocked_apps,
             policy_tx,

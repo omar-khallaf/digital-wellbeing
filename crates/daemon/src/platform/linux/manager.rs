@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use futures::StreamExt;
 
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::platform::{PlatformEvent, PowerEventKind};
 use wellbeing_core::{
@@ -115,23 +115,24 @@ impl PluginRegistry {
         self.by_uid.keys().copied().collect()
     }
 
-    /// Query the current focus state via `GetFocusState` for the plugin
-    /// registered to `uid`.  Returns None if no plugin is registered for
-    /// that uid, or if the method call fails.
-    pub async fn current_focus_for_uid(&self, uid: Uid) -> Option<PlatformEvent> {
+    /// Clone the [`ManagerProxy`] for a registered uid without holding the
+    /// registry lock across the subsequent D-Bus call.
+    ///
+    /// Returns `None` if no plugin is registered for that uid.
+    pub fn focus_proxy_for_uid(&self, uid: Uid) -> Option<(Uid, ManagerProxy<'static>)> {
         let instance_id = self.by_uid.get(&uid)?;
         let client = self.clients.get(instance_id)?;
-        let result = client.current_focus().await;
-        if result.is_none() {
-            warn!(
-                ?uid,
-                instance_id = %instance_id.as_str(),
-                "current_focus_for_uid: plugin returned None"
-            );
-        } else {
-            debug!(?uid, "current_focus_for_uid: got focus from plugin");
+        Some((client.uid, client.proxy.clone()))
+    }
+
+    /// Remove a plugin registration by uid. Safe to call after detecting
+    /// that the plugin's D-Bus connection is dead (e.g. `current_focus()`
+    /// returned an error).
+    pub fn unregister_by_uid(&mut self, uid: Uid) {
+        if let Some(instance_id) = self.by_uid.remove(&uid) {
+            self.clients.remove(&instance_id);
+            info!(?uid, "plugin unregistered (stale/disconnected)");
         }
-        result
     }
 
     /// Subscribe to the unified `Event` signal from a plugin instance.

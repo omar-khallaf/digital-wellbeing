@@ -138,15 +138,6 @@ impl DaemonInterface {
         let uid = Uid(caller_uid);
         let instance = PluginInstanceId::new(&sender_str);
 
-        {
-            let cooldown = self.plugin_reg_cooldown.read().await;
-            if let Some(last) = cooldown.get(&caller_uid)
-                && last.elapsed() < std::time::Duration::from_secs(10)
-            {
-                return Err(fdo::Error::Failed("rate limited".into()));
-            }
-        }
-
         let builder = ManagerProxy::builder(conn)
             .destination(sender_str)
             .map_err(|_| fdo::Error::Failed("plugin proxy creation failed".into()))?;
@@ -175,11 +166,6 @@ impl DaemonInterface {
             let ev_tx = self.event_tx.clone();
             let handle = self.tokio_handle.clone();
             plugin_handlers::spawn_event_forwarder(handle, ev_rx, ev_tx);
-        }
-
-        {
-            let mut cooldown = self.plugin_reg_cooldown.write().await;
-            cooldown.insert(caller_uid, std::time::Instant::now());
         }
 
         Ok(())
