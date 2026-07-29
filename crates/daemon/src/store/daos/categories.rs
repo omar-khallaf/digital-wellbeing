@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use turso::params_from_iter;
 use wellbeing_core::Uid;
 use wellbeing_core::{AppCategoryRow, AppClass, Category};
 
@@ -25,79 +26,89 @@ impl CategoryDao {
     /// Resolve category **ints** for a batch of (uid, app_id) pairs.
     /// User-specific entries take precedence; system-global (user_id = 0)
     /// entries are fallback. Unmapped apps get `Uncategorized` (6).
+    ///
+    /// Batched: one query per distinct UID + one system-global query,
+    /// instead of 2N round-trips (was 2 per pair).
     pub(crate) async fn resolve_category_map(
         conn: &DbConn,
         pairs: &[(Uid, i32)],
     ) -> HashMap<(Uid, i32), Vec<i32>> {
         let mut map: HashMap<(Uid, i32), Vec<i32>> = HashMap::new();
+        if pairs.is_empty() {
+            return map;
+        }
 
+        // Group pairs by UID so we can batch per-UID queries
+        let mut uid_groups: std::collections::HashMap<u32, Vec<i32>> =
+            std::collections::HashMap::new();
+        let mut all_app_set: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
         for &(uid, app_id) in pairs {
-            // Try user-specific categories first
-            let user_cats: Vec<i32> = match conn
-                .query(
-                    &format!(
-                        "SELECT {} FROM {} WHERE {} = ?1 AND {} = ?2 AND {} = 0 AND {} IS NOT NULL",
-                        app_categories::CATEGORY,
-                        app_categories::TABLE,
-                        app_categories::APP_ID,
-                        app_categories::USER_ID,
-                        app_categories::IGNORE,
-                        app_categories::CATEGORY,
-                    ),
-                    (app_id, uid.0 as i32),
-                )
-                .await
-            {
-                Ok(mut result) => {
-                    let mut cats = Vec::new();
-                    while let Some(row) = result.next().await.ok().flatten() {
-                        if let Ok(cat_val) = row.get::<i32>(0) {
-                            cats.push(cat_val);
-                        }
-                    }
-                    cats
-                }
-                Err(_) => Vec::new(),
-            };
+            uid_groups.entry(uid.0).or_default().push(app_id);
+            all_app_set.insert(app_id);
+        }
+        let all_app_ids: Vec<i32> = all_app_set.into_iter().collect();
 
-            let ids = if !user_cats.is_empty() {
-                user_cats
+        // Batch 1: user-specific lookups — one query per distinct uid
+        let mut user_map: HashMap<(Uid, i32), Vec<i32>> = HashMap::new();
+        for (&raw_uid, app_ids) in &uid_groups {
+            let app_ph: Vec<String> = app_ids.iter().map(|_| "?".to_string()).collect();
+            let sql = format!(
+                "SELECT {}, {} FROM {} WHERE {} IN ({}) AND {} = ? AND {} = 0 AND {} IS NOT NULL",
+                app_categories::APP_ID,
+                app_categories::CATEGORY,
+                app_categories::TABLE,
+                app_categories::APP_ID,
+                app_ph.join(", "),
+                app_categories::USER_ID,
+                app_categories::IGNORE,
+                app_categories::CATEGORY,
+            );
+            let mut params: Vec<turso::Value> = app_ids.iter().map(|&id| id.into()).collect();
+            params.push((raw_uid as i32).into());
+
+            if let Ok(mut result) = conn.query(&sql, params_from_iter(params)).await {
+                while let Some(row) = result.next().await.ok().flatten() {
+                    if let (Ok(app_id_val), Ok(cat_val)) = (row.get::<i32>(0), row.get::<i32>(1)) {
+                        user_map
+                            .entry((Uid(raw_uid), app_id_val))
+                            .or_default()
+                            .push(cat_val);
+                    }
+                }
+            }
+        }
+
+        // Batch 2: system-global lookup (user_id = 0)
+        let mut sys_map: HashMap<i32, Vec<i32>> = HashMap::new();
+        let all_app_ph: Vec<String> = all_app_ids.iter().map(|_| "?".to_string()).collect();
+        let sys_sql = format!(
+            "SELECT {}, {} FROM {} WHERE {} IN ({}) AND {} = 0 AND {} = 0 AND {} IS NOT NULL",
+            app_categories::APP_ID,
+            app_categories::CATEGORY,
+            app_categories::TABLE,
+            app_categories::APP_ID,
+            all_app_ph.join(", "),
+            app_categories::USER_ID,
+            app_categories::IGNORE,
+            app_categories::CATEGORY,
+        );
+        if let Ok(mut result) = conn.query(&sys_sql, params_from_iter(all_app_ids)).await {
+            while let Some(row) = result.next().await.ok().flatten() {
+                if let (Ok(app_id_val), Ok(cat_val)) = (row.get::<i32>(0), row.get::<i32>(1)) {
+                    sys_map.entry(app_id_val).or_default().push(cat_val);
+                }
+            }
+        }
+
+        // Populate results: user-specific → system-global → default
+        for &(uid, app_id) in pairs {
+            let ids = if let Some(cats) = user_map.get(&(uid, app_id)) {
+                cats.clone()
+            } else if let Some(cats) = sys_map.get(&app_id) {
+                cats.clone()
             } else {
-                // Fall back to system-global categories (user_id = 0)
-                let sys_cats: Vec<i32> = match conn
-                    .query(
-                        &format!(
-                            "SELECT {} FROM {} WHERE {} = ?1 AND {} = ?2 AND {} = 0 AND {} IS NOT NULL",
-                            app_categories::CATEGORY,
-                            app_categories::TABLE,
-                            app_categories::APP_ID,
-                            app_categories::USER_ID,
-                            app_categories::IGNORE,
-                            app_categories::CATEGORY,
-                        ),
-                        (app_id, SYSTEM_USER_ID),
-                    )
-                    .await
-                {
-                    Ok(mut result) => {
-                        let mut cats = Vec::new();
-                        while let Some(row) = result.next().await.ok().flatten() {
-                            if let Ok(cat_val) = row.get::<i32>(0) {
-                                cats.push(cat_val);
-                            }
-                        }
-                        cats
-                    }
-                    Err(_) => Vec::new(),
-                };
-
-                if sys_cats.is_empty() {
-                    vec![DEFAULT_CATEGORY_INT]
-                } else {
-                    sys_cats
-                }
+                vec![DEFAULT_CATEGORY_INT]
             };
-
             map.insert((uid, app_id), ids);
         }
 

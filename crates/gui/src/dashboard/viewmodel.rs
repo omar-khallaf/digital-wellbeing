@@ -49,11 +49,13 @@ impl DashboardViewModel {
         self.top_titles = build_top_titles_from_summary(&data.title_summary);
         self.block_cards = build_block_cards(&data.blocked, &app_names);
 
-        let today = Utc::now().date_naive();
+        let now = Utc::now();
+        let today = now.date_naive();
         self.day_timeline = Some(build_day_timeline(
             &mut data.day_events, // sorted in-place — fine, this is VM state
             today,
             &app_names,
+            now,
         ));
         self.date_range = DateRange {
             start: today,

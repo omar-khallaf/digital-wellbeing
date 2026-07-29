@@ -146,11 +146,8 @@ impl EventDao {
         }
 
         let raw_uids: Vec<i32> = uids.iter().map(|uid| uid.0 as i32).collect();
-
-        // Build a query that gets the latest event per user, excluding ignored types.
-        // Use a subquery to find the max timestamp per user, then join back.
-        let placeholders: Vec<String> = raw_uids.iter().map(|_| "?".to_string()).collect();
-        let uid_list = placeholders.join(", ");
+        let uid_placeholders: Vec<String> = raw_uids.iter().map(|_| "?".to_string()).collect();
+        let uid_list = uid_placeholders.join(", ");
 
         let ignored_types: Vec<i32> = EventType::IGNORED_BY_MEASUREMENT
             .iter()
@@ -160,15 +157,19 @@ impl EventDao {
             ignored_types.iter().map(|_| "?".to_string()).collect();
         let ignored_list = ignored_placeholders.join(", ");
 
+        // Find the latest non-ignored event per user using MAX(timestamp).
+        // The composite index idx_events_user_type_ts_id
+        // (user_id, event_type, timestamp, id) allows SQLite to resolve
+        // this as a group-wise index scan — one seek per user to the
+        // last entry (by timestamp) that isn't Idle/Resume.
         let sql = format!(
-            "SELECT e1.{}, e1.{}, e1.{}, e1.{}, e1.{}, e1.{} FROM {} e1 \
-             WHERE e1.{} IN ({}) \
-             AND e1.{} NOT IN ({}) \
-             AND NOT EXISTS ( \
-                 SELECT 1 FROM {} e2 \
-                 WHERE e2.{} = e1.{} \
+            "SELECT e.{}, e.{}, e.{}, e.{}, e.{}, e.{} FROM {} e \
+             WHERE (e.{} , e.{}) IN ( \
+                 SELECT e2.{} , MAX(e2.{}) \
+                 FROM {} e2 \
+                 WHERE e2.{} IN ({}) \
                  AND e2.{} NOT IN ({}) \
-                 AND (e2.{} > e1.{} OR (e2.{} = e1.{} AND e2.{} > e1.{})) \
+                 GROUP BY e2.{} \
              )",
             events::ID,
             events::EVENT_TYPE,
@@ -178,24 +179,19 @@ impl EventDao {
             events::TITLE,
             events::TABLE,
             events::USER_ID,
+            events::TIMESTAMP,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::TABLE,
+            events::USER_ID,
             uid_list,
             events::EVENT_TYPE,
             ignored_list,
-            events::TABLE,
             events::USER_ID,
-            events::USER_ID,
-            events::EVENT_TYPE,
-            ignored_list,
-            events::TIMESTAMP,
-            events::TIMESTAMP,
-            events::TIMESTAMP,
-            events::TIMESTAMP,
-            events::ID,
-            events::ID,
         );
 
-        let mut params: Vec<i32> = raw_uids.clone();
-        params.extend(ignored_types.clone());
+        let mut params: Vec<i32> = raw_uids;
+        params.extend(ignored_types);
 
         match conn.query(&sql, params_from_iter(params)).await {
             Ok(mut result) => {

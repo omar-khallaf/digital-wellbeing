@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_events_app_ts ON events(app_class, timestamp) WHERE app_class IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_user_ts ON events(user_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_user_type_ts_id ON events(user_id, event_type, timestamp, id);
 
 -- ── `apps` registry ───────────────────────────────────────────────────────────
 
@@ -69,7 +69,6 @@ CREATE TABLE IF NOT EXISTS daily_usage_by_category (
     PRIMARY KEY (date, user_id, category)
 );
 
-CREATE INDEX IF NOT EXISTS idx_daily_usage_by_category_date ON daily_usage_by_category(date);
 CREATE INDEX IF NOT EXISTS idx_daily_usage_by_category_user_date ON daily_usage_by_category(user_id, date);
 
 -- ── `policies` table ──────────────────────────────────────────────────────────

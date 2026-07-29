@@ -56,5 +56,14 @@ async fn prune_cycle(pool: &DbPool, clock: &dyn Clock) -> anyhow::Result<()> {
         }
     }
 
+    // Delete old daily_usage_by_category rows in batches
+    loop {
+        let sql = "DELETE FROM daily_usage_by_category WHERE rowid IN (SELECT rowid FROM daily_usage_by_category WHERE date < ?1 LIMIT ?2)";
+        let result = conn.execute(sql, (cutoff_date.as_str(), 500)).await?;
+        if result < 500 {
+            break;
+        }
+    }
+
     Ok(())
 }

@@ -70,12 +70,16 @@ fn fill_time_gaps(blocks: &mut Vec<TimelineBlock>) {
 /// are used to build focus intervals. Idle(2), Resumed(3), and other event types
 /// are ignored — time gaps between focus blocks are filled by `fill_time_gaps`.
 ///
+/// `now` is used to compute the duration of the currently-open block (if any)
+/// so `total_focus_millis` includes the active interval rather than ignoring it.
+///
 /// Note: the daemon already returns events sorted by `timestamp ASC` (the SQL
 /// query has `ORDER BY timestamp ASC`) so no re-sort is needed here.
 pub fn build_day_timeline(
     events: &mut [DayEventRow],
     date: NaiveDate,
     app_names: &HashMap<String, String>,
+    now: DateTime<Utc>,
 ) -> DayTimeline {
     // Events are already sorted by timestamp ASC from the daemon SQL query.
     #[cfg(debug_assertions)]
@@ -125,12 +129,14 @@ pub fn build_day_timeline(
 
     fill_time_gaps(&mut blocks);
 
+    let now_ms = now.timestamp_millis();
+
     let total_focus_millis: i64 = blocks
         .iter()
         .filter(|b| !b.is_gap)
-        .filter_map(|b| {
-            b.end
-                .map(|e| e.timestamp_millis() - b.start.timestamp_millis())
+        .map(|b| {
+            let end = b.end.map(|e| e.timestamp_millis()).unwrap_or(now_ms);
+            (end - b.start.timestamp_millis()).max(0)
         })
         .sum();
 
@@ -241,11 +247,15 @@ mod tests {
         }
     }
 
+    fn test_now() -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(1_748_773_800_000).unwrap() // 10:30:00 UTC
+    }
+
     #[test]
     fn test_empty_events_returns_empty_timeline() {
         let date = NaiveDate::from_ymd_opt(2025, 6, 1).unwrap();
         let names = HashMap::new();
-        let tl = build_day_timeline(&mut [], date, &names);
+        let tl = build_day_timeline(&mut [], date, &names, test_now());
         assert!(tl.blocks.is_empty());
         assert_eq!(tl.total_focus_millis, 0);
         assert_eq!(tl.date, date);
@@ -259,7 +269,7 @@ mod tests {
             make_row(EventType::Focus, 1_748_772_000_000, "org.mozilla.Firefox"),
             make_row(EventType::Unfocus, 1_748_772_050_000, "org.mozilla.Firefox"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         assert_eq!(tl.blocks.len(), 1);
         assert!(!tl.blocks[0].is_gap);
         assert_eq!(tl.blocks[0].app_class, "org.mozilla.Firefox");
@@ -276,7 +286,7 @@ mod tests {
             make_row(EventType::Unfocus, 1_748_772_050_000, "org.mozilla.Firefox"),
             make_row(EventType::Focus, 1_748_772_100_000, "com.Code.App"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         // Firefox block + gap + Code open block (gap fills between 5s and 10s)
         assert_eq!(tl.blocks.len(), 3);
         assert!(tl.blocks[0].end.is_some());
@@ -297,7 +307,7 @@ mod tests {
             make_row(EventType::Focus, 1_748_772_030_000, "com.Code.App"),
             make_row(EventType::Unfocus, 1_748_772_040_000, "com.Code.App"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         assert_eq!(tl.blocks.len(), 3); // block + gap + block
         assert!(!tl.blocks[0].is_gap);
         assert!(tl.blocks[1].is_gap);
@@ -316,7 +326,7 @@ mod tests {
             make_row(EventType::Idle, 1_748_772_010_000, "org.mozilla.Firefox"), // idle — ignored
             make_row(EventType::Unfocus, 1_748_772_020_000, "org.mozilla.Firefox"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         assert_eq!(tl.blocks.len(), 1);
         assert_eq!(tl.total_focus_millis, 20_000);
     }
@@ -330,7 +340,7 @@ mod tests {
             make_row(EventType::Focus, 1_748_772_000_000, "org.mozilla.Firefox"),
             make_row(EventType::Unfocus, 1_748_773_800_000, "org.mozilla.Firefox"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         let now = DateTime::from_timestamp_millis(1_748_773_800_000).unwrap();
         let buckets = compute_hourly_buckets(&tl, now);
         // Block is in hour 10
@@ -355,7 +365,7 @@ mod tests {
             make_row(EventType::Focus, 1_748_774_700_000, "org.mozilla.Firefox"),
             make_row(EventType::Unfocus, 1_748_776_500_000, "org.mozilla.Firefox"),
         ];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         let now = DateTime::from_timestamp_millis(1_748_776_500_000).unwrap();
         let buckets = compute_hourly_buckets(&tl, now);
         // 15 min in hour 10, 15 min in hour 11
@@ -375,7 +385,7 @@ mod tests {
             1_748_772_000_000,
             "org.mozilla.Firefox",
         )];
-        let tl = build_day_timeline(&mut events, date, &names);
+        let tl = build_day_timeline(&mut events, date, &names, test_now());
         // now = 10:30:00
         let now_ms = 1_748_773_800_000;
         let now_dt = DateTime::from_timestamp_millis(now_ms).unwrap();
