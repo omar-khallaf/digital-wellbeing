@@ -5,8 +5,13 @@
 //! current window focus state.
 pub mod linux;
 
+use std::sync::Arc;
+
 use futures::Stream;
+use tokio::sync::RwLock;
 use wellbeing_core::{AppClass, EventType, Uid, WindowTitle};
+
+pub use linux::PluginRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PowerEventKind {
@@ -56,6 +61,8 @@ pub trait Platform: Send + Sync + 'static {
         title: &str,
         body: &str,
     ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+
+    fn registry(&self) -> Arc<RwLock<PluginRegistry>>;
 }
 
 impl PlatformEvent {

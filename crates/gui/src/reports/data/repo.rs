@@ -114,7 +114,7 @@ impl ReportsRepo {
 }
 
 /// Raw D-Bus response bundle for the reports screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReportsData {
     /// Per-date total usage for the bar chart, pre-aggregated by SQL.
     pub daily_totals: Vec<DateTotal>,

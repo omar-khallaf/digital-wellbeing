@@ -189,7 +189,7 @@ impl DashboardRepo {
 }
 
 /// Raw D-Bus response bundle for the dashboard screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DashboardData {
     pub blocked: Vec<BlockedAppEntry>,
     pub day_events: Vec<DayEventRow>,

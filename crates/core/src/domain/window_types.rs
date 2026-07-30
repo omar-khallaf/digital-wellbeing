@@ -43,7 +43,7 @@ impl TryFrom<u8> for BlockReason {
 ///
 /// All fields use validated domain types; the integer wire format is
 /// handled by serde / zvariant at the D-Bus boundary.
-#[derive(Debug, Clone, Serialize, Deserialize, Type, Value)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type, Value)]
 pub struct BlockedAppEntry {
     pub app_class: AppClass,
     pub policy_id: PolicyId,

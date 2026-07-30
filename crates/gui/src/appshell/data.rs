@@ -46,6 +46,11 @@ pub struct App {
     /// Kept alive until the D-Bus call completes — dropping it would cancel.
     pub(crate) policy_task: Option<gpui::Task<()>>,
 
+    // ── InputState event subscriptions (kept alive to receive events) ──
+    _policy_time_limit_sub: Option<gpui::Subscription>,
+    _policy_app_class_sub: Option<gpui::Subscription>,
+    _policy_priority_sub: Option<gpui::Subscription>,
+
     /// Repository for policy CRUD operations (injected from main).
     pub(crate) policies_repo: Option<crate::policies::data::PoliciesRepo>,
     /// Broadcast sender to trigger the reports background flow refresh.
@@ -90,6 +95,9 @@ impl App {
             custom_start_input: None,
             custom_end_input: None,
             policy_task: None,
+            _policy_time_limit_sub: None,
+            _policy_app_class_sub: None,
+            _policy_priority_sub: None,
             policies_repo: None,
             reports_refresh_tx: None,
             pol_refresh_tx: None,
@@ -174,6 +182,18 @@ impl App {
     }
 
     /// Ensure policy-editor InputState entities exist; call from `render()`.
+    ///
+    /// Precondition: `self.policy_edit.is_some()` (caller checks first).
+    ///
+    /// Creates InputState entities lazily (once per editor open).  Initial
+    /// value sync happens inside `cx.new` at creation time — no separate
+    /// `entity.update` + notify during render.
+    ///
+    /// When the user switches to a different policy while the editor is
+    /// already open, `needs_sync` is true and the existing InputState values
+    /// are replaced via `entity.update(cx, …)`.  This ONE extra flush per
+    /// policy switch is unavoidable (the InputState owns its value, and the
+    /// form state changed behind it).
     pub(crate) fn ensure_policy_editor_inputs(
         &mut self,
         window: &mut Window,
@@ -183,19 +203,23 @@ impl App {
             self.time_limit_input = None;
             self.app_class_input = None;
             self.priority_input = None;
+            self._policy_time_limit_sub = None;
+            self._policy_app_class_sub = None;
+            self._policy_priority_sub = None;
             return;
         };
-        let form = form.clone();
+        let needs_sync = self.last_synced_policy_edit_id != self.policy_edit_id
+            && self.time_limit_input.is_some();
 
-        let needs_sync = self.last_synced_policy_edit_id != self.policy_edit_id;
-        if needs_sync {
-            self.last_synced_policy_edit_id = self.policy_edit_id;
-        }
-
+        // ── Time-limit input ────────────────────────────────────────────
         if self.time_limit_input.is_none() {
-            let entity: Entity<InputState> =
-                cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
-            let _ = cx.subscribe_in(
+            let desired = form.time_limit_minutes.to_string();
+            let entity: Entity<InputState> = cx.new(|cx| {
+                let mut s = InputState::new(window, cx).submit_on_enter(true);
+                s.set_value(desired, window, cx);
+                s
+            });
+            self._policy_time_limit_sub = Some(cx.subscribe_in(
                 &entity,
                 window,
                 |this: &mut App,
@@ -226,22 +250,24 @@ impl App {
                         }
                     }
                 },
-            );
+            ));
             self.time_limit_input = Some(entity);
-        }
-        if needs_sync && let Some(ref entity) = self.time_limit_input {
-            entity.update(cx, |state, cx| {
-                let desired = form.time_limit_minutes.to_string();
-                if state.value() != desired.as_str() {
-                    state.set_value(desired, window, cx);
-                }
-            });
+            // Mark synced: the `cx.new` callback already pushed the correct
+            // value into the InputState, so the first render is correct.
+            self.last_synced_policy_edit_id = self.policy_edit_id;
         }
 
+        // ── App-class input ─────────────────────────────────────────────
         if self.app_class_input.is_none() {
-            let entity =
-                cx.new(|cx| InputState::new(window, cx).placeholder("e.g. firefox, kitty, Code"));
-            let _ = cx.subscribe(
+            let desired = form.app_class.to_string();
+            let entity = cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder("e.g. firefox, kitty, Code");
+                if !desired.is_empty() {
+                    s.set_value(desired, window, cx);
+                }
+                s
+            });
+            self._policy_app_class_sub = Some(cx.subscribe(
                 &entity,
                 |this: &mut App,
                  state: Entity<InputState>,
@@ -255,21 +281,20 @@ impl App {
                         }
                     }
                 },
-            );
+            ));
             self.app_class_input = Some(entity);
-        }
-        if needs_sync && let Some(ref entity) = self.app_class_input {
-            entity.update(cx, |state, cx| {
-                if state.value() != form.app_class.as_str() {
-                    state.set_value(form.app_class.to_string(), window, cx);
-                }
-            });
+            self.last_synced_policy_edit_id = self.policy_edit_id;
         }
 
+        // ── Priority input ──────────────────────────────────────────────
         if self.priority_input.is_none() {
-            let entity: Entity<InputState> =
-                cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
-            let _ = cx.subscribe_in(
+            let desired = form.priority.to_string();
+            let entity: Entity<InputState> = cx.new(|cx| {
+                let mut s = InputState::new(window, cx).submit_on_enter(true);
+                s.set_value(desired, window, cx);
+                s
+            });
+            self._policy_priority_sub = Some(cx.subscribe_in(
                 &entity,
                 window,
                 |this: &mut App,
@@ -300,16 +325,42 @@ impl App {
                         }
                     }
                 },
-            );
+            ));
             self.priority_input = Some(entity);
+            self.last_synced_policy_edit_id = self.policy_edit_id;
         }
-        if needs_sync && let Some(ref entity) = self.priority_input {
-            entity.update(cx, |state, cx| {
+
+        // ── Re-sync when user switches to a different policy ────────────
+        // This path runs ONCE per policy switch.  The `entity.update` here
+        // does call `set_value` → `cx.notify()` on the InputState, which
+        // triggers one extra render frame.  Acceptable — it's a user-initiated
+        // action, not a loop.
+        if needs_sync {
+            if let Some(ref entity) = self.time_limit_input {
+                let desired = form.time_limit_minutes.to_string();
+                entity.update(cx, |state, cx| {
+                    if state.value() != desired.as_str() {
+                        state.set_value(desired, window, cx);
+                    }
+                });
+            }
+            if let Some(ref entity) = self.app_class_input {
+                let desired = form.app_class.to_string();
+                entity.update(cx, |state, cx| {
+                    if state.value() != desired.as_str() {
+                        state.set_value(desired, window, cx);
+                    }
+                });
+            }
+            if let Some(ref entity) = self.priority_input {
                 let desired = form.priority.to_string();
-                if state.value() != desired.as_str() {
-                    state.set_value(desired, window, cx);
-                }
-            });
+                entity.update(cx, |state, cx| {
+                    if state.value() != desired.as_str() {
+                        state.set_value(desired, window, cx);
+                    }
+                });
+            }
+            self.last_synced_policy_edit_id = self.policy_edit_id;
         }
     }
 

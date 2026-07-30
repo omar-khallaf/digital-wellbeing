@@ -59,6 +59,10 @@ impl Platform for LinuxPlatform {
             .await?;
         Ok(())
     }
+
+    fn registry(&self) -> Arc<RwLock<PluginRegistry>> {
+        self.registry.clone()
+    }
 }
 
 impl LinuxPlatform {

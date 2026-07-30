@@ -41,56 +41,6 @@ compositor and browser plugins for overlay enforcement and state tracking:
   native messaging and tracks tab/window focus (chrome.tabs, chrome.windows).
   Domain-level and app-level enforcement are independent and run in parallel.
 
-```text
-                     ┌──────────────────────────────────────────┐
-                     │  wellbeing-daemon (system/session mode)  │
-                     │                                          │
-                     │  ┌───────────tokio runtime─────────────┐ │
-                     │  │ EnforcerActor ReportBuilder         │ │
-                     │  │                                     │ │
-                     │  │  ──write──→ SQLite ───┐             │ │
-                     │  └────────────┬────────────────────────┘ │
-                     │               │ D-Bus signals            │
-                     │               │ (BlockStateChanged,      │
-                     │               │  DailyUsageChanged,      │
-                     │               │  PolicyMutated)          │
-                     │               ▼                          │
-                     │  ┌────────────────────────────────────┐  │
-                     │  │  D-Bus server                      │  │
-                     │  │  org.wellbeing.v1.Controller       │  │
-                     │  │  system bus (root) /               │  │
-                     │  │  session bus (non-root)            │  │
-                     │  └────────────────────────────────────┘  │
-                     │                                          │
-                     │  ┌────────────────────────────────────┐  │
-                     │  │  PluginRegistry (per-instance,     │  │
-                     │  │  on daemon's resolved bus)         │  │
-                     │  └────────────────────────────────────┘  │
-                     └────────────────────┬─────────────────────┘
-                                          │
-                            ┌─────────────┴─────────────┐
-                            │                           │
-                            │ D-Bus (daemon's bus)      │ D-Bus (daemon's bus)
-                            │                           │
-                            ▼                           ▼
-               ┌────────────────────────┐    ┌────────────────────────┐
-               │  wellbeing-gui         │    │  Compositor plugin     │
-               │  (user or root)        │    │  (user session)        │
-               │                        │    │                        │
-               │  ┌──────────────────┐  │    │  org.wellbeing.v1.     │
-               │  │ gpui (main thr.) │  │    │  Manager               │
-               │  │  render loop     │  │    │                        │
-               │  └────────┬─────────┘  │    │  Event [signal]        │
-               │           │ mpsc       │    │  CurrentFocus [prop]   │
-               │  ┌────────┴─────────┐  │    └────────────────────────┘
-               │  │ tokio (bg thr.)  │  │
-               │  │  D-Bus client    │  │
-               │  │  zbus stubs +    │  │
-               │  │  signal sub      │  │
-               │  └──────────────────┘  │
-               └────────────────────────┘
-```
-
 ## Workspace Layout
 
 ```

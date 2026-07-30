@@ -15,7 +15,7 @@ use crate::valuetypes::{AppClass, WindowTitle};
 ///
 /// Missing `app_class`/`title` are represented as empty strings (matching the
 /// codebase sentinel convention for D-Bus structs with no optional fields).
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct DayEventRow {
     pub id: u64,
     pub event_type: EventType,

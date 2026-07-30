@@ -10,7 +10,7 @@ use super::data::PoliciesData;
 ///
 /// Acts like a Compose ViewModel with `StateFlow` — raw data persists in
 /// `self.data` and derived fields are recomputed via `recompute_derived()`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PoliciesViewModel {
     /// Raw data bundle (like `MutableStateFlow<PoliciesData?>`).
     /// `None` before the first successful fetch.
@@ -28,7 +28,7 @@ pub struct PoliciesViewModel {
 }
 
 /// UI-level target for a policy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PolicyTarget {
     /// Target an individual app by its `AppClass`.
     App(AppClass),
@@ -41,7 +41,7 @@ pub enum PolicyTarget {
 }
 
 /// Editable form fields for a single policy configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PolicyConfigForm {
     /// Policy effect string: `"Allow"`, `"Block"`, `"TimeLimit"`, or `"Notify"`.
     pub kind: String,

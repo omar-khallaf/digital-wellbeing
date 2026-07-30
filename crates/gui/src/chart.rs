@@ -27,7 +27,7 @@ pub trait HasBarData {
 }
 
 /// One slice in a usage breakdown pie chart.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Slice {
     pub app_class: String,
     pub display_name: String,

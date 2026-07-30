@@ -181,44 +181,72 @@ async fn main() {
             // directly to the App entity.  No merge task, no bundling.
             // .detach() means the tasks self-clean when the window closes.
 
-            // Dashboard receiver
+            // Dashboard receiver — skip no-op updates to prevent
+            // unnecessary UI churn and timer re-arming.
             let entity = app_view.clone();
             let mut rx = dash_vm_rx.clone();
+            let mut prev_vm: Option<DashboardViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
-                    let vm = rx.borrow_and_update().clone();
-                    entity.update(cx, |app, cx| {
-                        app.set_dashboard_vm(vm);
-                        cx.notify();
-                    });
+                loop {
+                    match rx.changed().await {
+                        Ok(_) => {
+                            let vm = rx.borrow_and_update().clone();
+                            if prev_vm.as_ref() != vm.as_ref() {
+                                prev_vm = vm;
+                                entity.update(cx, |app, cx| {
+                                    app.set_dashboard_vm(Some(prev_vm.clone().unwrap()));
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             })
             .detach();
 
-            // Policies receiver
+            // Policies receiver — skip no-op updates.
             let entity = app_view.clone();
             let mut rx = pol_vm_rx.clone();
+            let mut prev_vm: Option<PoliciesViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
-                    let vm = rx.borrow_and_update().clone();
-                    entity.update(cx, |app, cx| {
-                        app.set_policies_vm(vm);
-                        cx.notify();
-                    });
+                loop {
+                    match rx.changed().await {
+                        Ok(_) => {
+                            let vm = rx.borrow_and_update().clone();
+                            if prev_vm.as_ref() != vm.as_ref() {
+                                prev_vm = vm;
+                                entity.update(cx, |app, cx| {
+                                    app.set_policies_vm(Some(prev_vm.clone().unwrap()));
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             })
             .detach();
 
-            // Reports receiver
+            // Reports receiver — skip no-op updates.
             let entity = app_view.clone();
             let mut rx = rep_vm_rx.clone();
+            let mut prev_vm: Option<ReportsViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
-                    let vm = rx.borrow_and_update().clone();
-                    entity.update(cx, |app, cx| {
-                        app.set_reports_vm(vm);
-                        cx.notify();
-                    });
+                loop {
+                    match rx.changed().await {
+                        Ok(_) => {
+                            let vm = rx.borrow_and_update().clone();
+                            if prev_vm.as_ref() != vm.as_ref() {
+                                prev_vm = vm;
+                                entity.update(cx, |app, cx| {
+                                    app.set_reports_vm(Some(prev_vm.clone().unwrap()));
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             })
             .detach();

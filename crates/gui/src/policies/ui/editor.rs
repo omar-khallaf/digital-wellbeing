@@ -581,7 +581,12 @@ impl GuiApp {
                                             });
                                             this.set_policy_task(task);
                                         }
-                                        cx2.notify();
+                                        // Note: no cx2.notify() here — the async
+                                        // callback (lines 571/577) notifies when
+                                        // the D-Bus operation completes. The form
+                                        // field updates above (539-547) don't
+                                        // affect visible element state (InputState
+                                        // entities own their values).
                                     });
                                 }
                             }),
@@ -627,7 +632,7 @@ impl GuiApp {
                                             });
                                             this.set_policy_task(task);
                                         }
-                                        cx2.notify();
+                                        // No cx2.notify() — same rationale as Save.
                                     });
                                 }
                             }),

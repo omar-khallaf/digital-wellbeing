@@ -6,7 +6,7 @@ use wellbeing_core::DateRange;
 use super::data::ReportsData;
 
 /// One bar in the reports daily bar chart — one per day, height = hours tracked.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DailyBar {
     pub date: NaiveDate,
     /// Total focus hours for this day (hourly millis / 3_600_000).
@@ -15,7 +15,7 @@ pub struct DailyBar {
 }
 
 /// A single row in the reports all-apps list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReportAppEntry {
     pub rank: usize,
     pub app_class: String,
@@ -25,7 +25,7 @@ pub struct ReportAppEntry {
 }
 
 /// A single row in the reports all-titles list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReportTitleEntry {
     pub rank: usize,
     pub app_class: String,
@@ -38,7 +38,7 @@ pub struct ReportTitleEntry {
 ///
 /// Acts like a Compose ViewModel with `StateFlow` — raw data persists in
 /// `self.data` and derived fields are recomputed via `recompute_derived()`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReportsViewModel {
     /// Raw data bundle (like `MutableStateFlow<ReportsData?>`).
     /// `None` before the first successful fetch.

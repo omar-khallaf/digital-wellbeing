@@ -8,7 +8,7 @@ use crate::chart::Slice;
 
 use super::data::DashboardData;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AppListEntry {
     pub rank: usize,
     pub app_class: String,
@@ -19,7 +19,7 @@ pub struct AppListEntry {
     pub is_blocked: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TitleListEntry {
     pub rank: usize,
     pub app_class: String,
@@ -28,14 +28,14 @@ pub struct TitleListEntry {
     pub percentage: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BlockCardInfo {
     pub app_class: String,
     pub display_name: String,
     pub blocked_since: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TimelineBlock {
     pub app_class: String,
     pub display_name: String,
@@ -47,7 +47,7 @@ pub struct TimelineBlock {
     pub is_gap: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DayTimeline {
     pub date: NaiveDate,
     pub blocks: Vec<TimelineBlock>,
@@ -60,7 +60,7 @@ pub struct DayTimeline {
 /// No gpui types, `Send + 'static`.  Acts like a Compose ViewModel with
 /// `StateFlow` — raw data persists in `self.data` and derived fields
 /// are recomputed in-place via `recompute_derived()` / `recompute_blocked()`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DashboardViewModel {
     /// Raw data bundle (like `MutableStateFlow<DashboardData?>` in Kotlin).
     /// `None` before the first successful fetch.
@@ -93,7 +93,7 @@ impl Default for DashboardViewModel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Kpis {
     pub total_millis: i64,
     pub top_app: String,
@@ -101,7 +101,7 @@ pub struct Kpis {
     pub active_blocks: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TimelineFragment {
     pub app_class: String,
     pub display_name: String,
@@ -112,7 +112,7 @@ pub struct TimelineFragment {
     pub start_offset: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HourlyBucket {
     pub hour: u32,
     /// All fragments (focus + gap) sorted by start_offset ASC.

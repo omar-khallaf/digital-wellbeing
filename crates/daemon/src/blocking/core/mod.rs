@@ -28,7 +28,7 @@ use tracing::{debug, error, info};
 use wellbeing_core::*;
 
 use super::data::BlockingRepo;
-use crate::platform::linux::{ManagerClient, PluginRegistry};
+use crate::platform::linux::ManagerClient;
 use crate::platform::{Platform, PlatformEvent, PowerEventKind};
 use crate::policy::Policy;
 use crate::policy::data::PolicyRepo;
@@ -52,7 +52,6 @@ pub enum InternalEvent {
 pub struct EnforcerActor<P: Platform, C: Clock> {
     pub(crate) blocking_repo: BlockingRepo,
     pub(crate) policy_repo: PolicyRepo,
-    pub(crate) registry: Arc<tokio::sync::RwLock<PluginRegistry>>,
     pub(crate) blocked_apps:
         Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppClass, BlockedAppEntry>>>>,
     platform: Arc<P>,
@@ -71,7 +70,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     pub fn new(
         pool: DbPool,
         platform: Arc<P>,
-        registry: Arc<tokio::sync::RwLock<PluginRegistry>>,
         clock: C,
         signal_tx: mpsc::UnboundedSender<DaemonSignal>,
         blocked_apps: Arc<tokio::sync::RwLock<HashMap<Uid, HashMap<AppClass, BlockedAppEntry>>>>,
@@ -83,7 +81,6 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 policy_repo: PolicyRepo::new(pool.clone()),
                 blocking_repo: BlockingRepo::new(pool),
                 platform,
-                registry,
                 blocked_apps,
                 clock,
                 signal_tx,
@@ -156,7 +153,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 }
             }
             InternalEvent::Shutdown(ack) => {
-                let uids = self.registry.read().await.registered_uids();
+                let uids = self.platform.registry().read().await.registered_uids();
                 for &uid in &uids {
                     self.event_buffer.push(
                         PlatformEvent::PowerEvent {
@@ -190,7 +187,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         let all_uids = {
             let mut set: std::collections::HashSet<Uid> =
                 self.event_buffer.uids().into_iter().collect();
-            set.extend(self.registry.read().await.registered_uids());
+            set.extend(self.platform.registry().read().await.registered_uids());
             set.into_iter().collect::<Vec<_>>()
         };
 
@@ -213,7 +210,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     }
 
     async fn evaluate_and_enforce(&self, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
-        let uids = self.registry.read().await.registered_uids();
+        let uids = self.platform.registry().read().await.registered_uids();
 
         // Parallel per-UID evaluation so plugin RTTs overlap.
         let mut futures: FuturesUnordered<_> = uids
@@ -234,9 +231,10 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         uid: Uid,
         now: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<()> {
+        let reg = self.platform.registry();
         let proxy = {
-            let reg = self.registry.read().await;
-            reg.focus_proxy_for_uid(uid)
+            let guard = reg.read().await;
+            guard.focus_proxy_for_uid(uid)
         };
 
         let Some((uid, proxy)) = proxy else {
@@ -255,7 +253,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 ?uid,
                 "evaluate_and_enforce: plugin unreachable — cleaning up stale registration"
             );
-            self.registry.write().await.unregister_by_uid(uid);
+            reg.write().await.unregister_by_uid(uid);
             return Ok(());
         };
         let Some(app_class) = event.app_class() else {
@@ -471,9 +469,10 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         owner_id: Uid,
         now: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<()> {
+        let reg = self.platform.registry();
         let proxy = {
-            let reg = self.registry.read().await;
-            reg.focus_proxy_for_uid(owner_id)
+            let guard = reg.read().await;
+            guard.focus_proxy_for_uid(owner_id)
         };
         let Some((uid, proxy)) = proxy else {
             return Ok(());
@@ -481,7 +480,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
         let client = ManagerClient::new(uid, proxy);
         let focused = client.current_focus().await;
         let Some(event) = focused else {
-            self.registry.write().await.unregister_by_uid(owner_id);
+            reg.write().await.unregister_by_uid(owner_id);
             return Ok(());
         };
         let Some(app_class) = event.app_class() else {

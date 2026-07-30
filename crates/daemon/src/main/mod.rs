@@ -80,7 +80,6 @@ async fn main() -> Result<()> {
         .build(bus)
         .await
         .context("failed to build platform")?;
-    let registry = platform.registry();
     let platform = Arc::new(platform);
     info!("platform layer ready");
 
@@ -108,7 +107,6 @@ async fn main() -> Result<()> {
     let (mut enforcer, internal_rx) = wellbeing_daemon::blocking::EnforcerActor::new(
         pool.clone(),
         platform.clone(),
-        registry.clone(),
         SystemClock,
         signal_tx.clone(),
         blocked_apps.clone(),
@@ -142,7 +140,7 @@ async fn main() -> Result<()> {
 
     // Clone recovery args before the initial interface consumes them
     let recovery_pool = pool.clone();
-    let recovery_registry = registry.clone();
+    let recovery_registry = platform.registry();
     let recovery_event_tx = platform.event_tx().clone();
     let recovery_policy_tx = policy_tx.clone();
     let recovery_blocked_apps = blocked_apps.clone();
@@ -157,7 +155,7 @@ async fn main() -> Result<()> {
         policy_repo,
         categorization_repo,
         reports_repo,
-        registry,
+        registry: platform.registry(),
         event_tx: platform.event_tx(),
         clock: Box::new(SystemClock),
         blocked_apps,

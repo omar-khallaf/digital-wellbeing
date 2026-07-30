@@ -5,7 +5,7 @@ use zvariant::Type;
 /// App-to-category assignment row.
 ///
 /// `category` holds the [`Category`] enum variant directly.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct AppCategoryRow {
     pub app_class: AppClass,
     pub user_id: Uid,

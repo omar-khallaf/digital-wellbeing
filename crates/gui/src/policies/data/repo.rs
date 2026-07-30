@@ -104,7 +104,7 @@ impl PoliciesRepo {
 }
 
 /// Raw D-Bus response bundle for the policies screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PoliciesData {
     pub policies: Vec<PolicyData>,
     pub categories: Vec<Category>,

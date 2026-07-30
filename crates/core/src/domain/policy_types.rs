@@ -90,7 +90,7 @@ impl TryFrom<i32> for TargetType {
 ///
 /// Cross-midnight: `start_minute > end_minute` means the window spans midnight.
 /// `start_minute == end_minute` is invalid (enforced by DB CHECK).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TimeWindow {
     pub start_minute: u16,
     pub end_minute: u16,
@@ -124,7 +124,7 @@ impl TimeWindow {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Full policy as exposed over D-Bus.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
 pub struct PolicyData {
     pub id: PolicyId,
     pub name: String,
