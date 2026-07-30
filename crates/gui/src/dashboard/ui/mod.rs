@@ -5,7 +5,7 @@ mod charts;
 mod panels;
 
 pub use self::charts::*;
-use self::panels::block_card;
+pub use self::panels::*;
 
 use gpui::prelude::*;
 use gpui::px;
@@ -13,101 +13,220 @@ use gpui::*;
 use gpui_component::list::ListState;
 use gpui_component::{h_flex, v_flex};
 
-use crate::chart::{empty_state, pie_chart_panel};
+use crate::chart::{EmptyState, PieChartPanel};
 use crate::components::{
-    self as cmp, DashAppsDelegate, DashTitlesDelegate, card, format_duration, stat_card,
+    self as cmp, Card, DashAppsDelegate, DashTitlesDelegate, StatCard, format_duration,
 };
 use crate::theme;
 
 use super::domain::DashboardViewModel;
 use super::viewmodel::compute_kpis;
 
+/// Rendered dashboard view — owns all data needed for rendering.
+pub struct DashboardView {
+    pub vm: DashboardViewModel,
+    pub apps_list: Entity<ListState<DashAppsDelegate>>,
+    pub titles_list: Entity<ListState<DashTitlesDelegate>>,
+}
+
+impl RenderOnce for DashboardView {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let kpis = compute_kpis(&self.vm);
+
+        v_flex()
+            .gap_4()
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(
+                        RenderOnce::render(
+                            StatCard {
+                                value: format_duration(kpis.total_millis).into(),
+                                label: "Total Screen Time".into(),
+                                dot_color: Some(theme::primary(cx)),
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                    .child(
+                        RenderOnce::render(
+                            StatCard {
+                                value: kpis.top_app.clone().into(),
+                                label: format!(
+                                    "Top App \u{B7} {}",
+                                    format_duration(kpis.top_app_millis)
+                                )
+                                .into(),
+                                dot_color: Some(theme::secondary(cx)),
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                    .child(
+                        RenderOnce::render(
+                            StatCard {
+                                value: kpis.active_blocks.to_string().into(),
+                                label: "Active Blocks".into(),
+                                dot_color: Some(theme::danger(cx)),
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    ),
+            )
+            .child(
+                RenderOnce::render(
+                    Card {
+                        title: Some("Day Timeline".into()),
+                        children: vec![if let Some(tl) = &self.vm.day_timeline {
+                            RenderOnce::render(
+                                DayTimelineChart {
+                                    timeline: tl.clone(),
+                                },
+                                window,
+                                cx,
+                            )
+                            .into_any_element()
+                        } else {
+                            RenderOnce::render(
+                                EmptyState {
+                                    message: "No timeline data for this day.".into(),
+                                },
+                                window,
+                                cx,
+                            )
+                            .into_any_element()
+                        }],
+                    },
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .child(
+                v_flex()
+                    .gap_4()
+                    .child(
+                        RenderOnce::render(
+                            Card {
+                                title: Some("By App".into()),
+                                children: vec![
+                                    RenderOnce::render(
+                                        PieChartPanel {
+                                            slices: self.vm.pie_app.clone(),
+                                            show_legend: true,
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                    .into_any_element(),
+                                ],
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    )
+                    .child(
+                        RenderOnce::render(
+                            Card {
+                                title: Some("By Category".into()),
+                                children: vec![
+                                    RenderOnce::render(
+                                        PieChartPanel {
+                                            slices: self.vm.pie_category.clone(),
+                                            show_legend: true,
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                    .into_any_element(),
+                                ],
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element(),
+                    ),
+            )
+            .child(
+                RenderOnce::render(
+                    Card {
+                        title: Some("Top Apps".into()),
+                        children: vec![
+                            div()
+                                .h(px(280.0))
+                                .child(cmp::List::new(&self.apps_list))
+                                .into_any_element(),
+                        ],
+                    },
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .child(
+                RenderOnce::render(
+                    Card {
+                        title: Some("Top Titles".into()),
+                        children: vec![
+                            div()
+                                .h(px(280.0))
+                                .child(cmp::List::new(&self.titles_list))
+                                .into_any_element(),
+                        ],
+                    },
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .when(!self.vm.block_cards.is_empty(), |el| {
+                el.child(
+                    RenderOnce::render(
+                        Card {
+                            title: Some("Currently Blocked".into()),
+                            children: self
+                                .vm
+                                .block_cards
+                                .iter()
+                                .map(|c| {
+                                    RenderOnce::render(BlockCard { info: c.clone() }, window, cx)
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>(),
+                        },
+                        window,
+                        cx,
+                    )
+                    .into_any_element(),
+                )
+            })
+    }
+}
+
 /// Render the complete dashboard view from a ViewModel.
 /// The `apps_list` / `titles_list` are gpui-component `List` states
 /// (virtualised, culled), owned by the parent `App` entity.
 pub fn render_dashboard_view(
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
     vm: &DashboardViewModel,
     apps_list: &Entity<ListState<DashAppsDelegate>>,
     titles_list: &Entity<ListState<DashTitlesDelegate>>,
 ) -> impl IntoElement {
-    let kpis = compute_kpis(vm);
-
-    v_flex()
-        .gap_4()
-        .child(
-            h_flex()
-                .gap_4()
-                .child(stat_card(
-                    cx,
-                    &format_duration(kpis.total_millis),
-                    "Total Screen Time",
-                    Some(theme::primary(cx)),
-                ))
-                .child(stat_card(
-                    cx,
-                    &kpis.top_app,
-                    &format!("Top App \u{B7} {}", format_duration(kpis.top_app_millis)),
-                    Some(theme::secondary(cx)),
-                ))
-                .child(stat_card(
-                    cx,
-                    &kpis.active_blocks.to_string(),
-                    "Active Blocks",
-                    Some(theme::danger(cx)),
-                )),
-        )
-        .child(card(
-            cx,
-            Some("Day Timeline"),
-            vec![if let Some(tl) = &vm.day_timeline {
-                day_timeline_chart(cx, tl)
-            } else {
-                empty_state(cx, "No timeline data for this day.")
-            }],
-        ))
-        .child(
-            v_flex()
-                .gap_4()
-                .child(card(
-                    cx,
-                    Some("By App"),
-                    vec![pie_chart_panel(cx, &vm.pie_app, true)],
-                ))
-                .child(card(
-                    cx,
-                    Some("By Category"),
-                    vec![pie_chart_panel(cx, &vm.pie_category, true)],
-                )),
-        )
-        .child(card(
-            cx,
-            Some("Top Apps"),
-            vec![
-                div()
-                    .h(px(280.0))
-                    .child(cmp::List::new(apps_list))
-                    .into_any_element(),
-            ],
-        ))
-        .child(card(
-            cx,
-            Some("Top Titles"),
-            vec![
-                div()
-                    .h(px(280.0))
-                    .child(cmp::List::new(titles_list))
-                    .into_any_element(),
-            ],
-        ))
-        .when(!vm.block_cards.is_empty(), |el| {
-            el.child(card(
-                cx,
-                Some("Currently Blocked"),
-                vm.block_cards
-                    .iter()
-                    .map(|c| block_card(cx, c))
-                    .collect::<Vec<_>>(),
-            ))
-        })
+    RenderOnce::render(
+        DashboardView {
+            vm: vm.clone(),
+            apps_list: apps_list.clone(),
+            titles_list: titles_list.clone(),
+        },
+        window,
+        cx,
+    )
 }

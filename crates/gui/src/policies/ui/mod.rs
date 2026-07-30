@@ -12,7 +12,7 @@ use gpui::*;
 use gpui_component::v_flex;
 
 use crate::app::App as GuiApp;
-use crate::components::{categories_section, policy_header, policy_list_card};
+use crate::components::{CategoriesSection, PolicyHeader, PolicyListCard};
 use crate::theme::{self, sp};
 
 use super::domain::PoliciesViewModel;
@@ -24,6 +24,7 @@ impl GuiApp {
     /// entities and the live `policy_edit` state.
     pub fn render_policies(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
         vm: &PoliciesViewModel,
     ) -> AnyElement {
@@ -32,11 +33,30 @@ impl GuiApp {
 
         v_flex()
             .gap_4()
-            .child(policy_header(&*cx, vm.policies.len(), entity.clone()))
+            .child(
+                RenderOnce::render(
+                    PolicyHeader {
+                        count: vm.policies.len(),
+                        entity: entity.clone(),
+                    },
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
             .child(
                 self.pol_list
                     .as_ref()
-                    .map(|pol_list| policy_list_card(&*cx, pol_list))
+                    .map(|pol_list| {
+                        RenderOnce::render(
+                            PolicyListCard {
+                                pol_list: pol_list.clone(),
+                            },
+                            window,
+                            cx,
+                        )
+                        .into_any_element()
+                    })
                     .unwrap_or_else(|| {
                         div()
                             .py(sp::MD)
@@ -46,21 +66,37 @@ impl GuiApp {
                             .into_any_element()
                     }),
             )
-            .child(self.render_editor(cx, vm, entity.clone()))
-            .child(categories_section(&*cx, &vm.categories))
+            .child(self.render_editor(window, cx, vm, entity.clone()))
+            .child(
+                RenderOnce::render(
+                    CategoriesSection {
+                        categories: vm.categories.clone(),
+                    },
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
             .into_any_element()
     }
 }
 
 /// Small hint text used by the editor when no policy is selected.
 #[cfg(feature = "gui-gpui")]
-pub(crate) fn empty_hint(cx: &App, message: &str) -> AnyElement {
-    div()
-        .py(sp::MD)
-        .text_sm()
-        .text_color(theme::text_muted(cx))
-        .child(message.to_string())
-        .into_any_element()
+pub struct EmptyHint {
+    pub message: SharedString,
+}
+
+#[cfg(feature = "gui-gpui")]
+impl RenderOnce for EmptyHint {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .py(sp::MD)
+            .text_sm()
+            .text_color(theme::text_muted(cx))
+            .child(self.message)
+            .into_any_element()
+    }
 }
 
 /// Render the complete policies view.
@@ -69,14 +105,15 @@ pub(crate) fn empty_hint(cx: &App, message: &str) -> AnyElement {
 #[cfg(feature = "gui-gpui")]
 pub fn render_policies_view(
     this: &mut GuiApp,
+    window: &mut Window,
     cx: &mut Context<GuiApp>,
     vm: &PoliciesViewModel,
 ) -> AnyElement {
-    this.render_policies(cx, vm)
+    this.render_policies(window, cx, vm)
 }
 
 /// Stub — gpui types unavailable without feature.
 #[cfg(not(feature = "gui-gpui"))]
-pub fn render_policies_view(_: &mut (), _: &mut (), _: &PoliciesViewModel) -> ! {
+pub fn render_policies_view(_: &mut (), _: &mut (), _: &mut (), _: &PoliciesViewModel) -> ! {
     panic!("gpui not enabled (feature gui-gpui is off)")
 }

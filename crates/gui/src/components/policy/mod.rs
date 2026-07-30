@@ -1,23 +1,20 @@
-//! Policy-specific components — PolListDelegate, PolicyHeader, PolicyListCard,
-//! and CategoriesSection.  These are policy-domain reusable pieces used by the
-//! policies screen and potentially other policy-management UIs.
+//! Policy-specific components — PolListDelegate with virtualised list sections,
+//! plus section components (PolicyHeader, PolicyListCard, CategoriesSection).
+
+mod sections;
+pub use sections::*;
 
 use gpui::prelude::*;
-use gpui::px;
 use gpui::*;
 use gpui_component::IndexPath;
-use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{h_flex, v_flex};
 use std::sync::Arc;
-use wellbeing_core::Category;
 
 use crate::app::App as GuiApp;
 use crate::policies::{PolicyConfigForm, PolicyTarget};
-use crate::theme::{self, rad, sp};
+use crate::theme::{self, sp};
 
-use super::{List, ListDelegate, ListItem, ListState, card};
-
-// ── Policy list delegate (sections + click-to-edit) ──────────────────
+use super::{ListDelegate, ListItem, ListState};
 
 /// Delegate for the Policies list with sections per target type.
 pub struct PolListDelegate {
@@ -61,7 +58,7 @@ impl ListDelegate for PolListDelegate {
     fn render_section_header(
         &mut self,
         section: usize,
-        _window: &mut gpui::Window,
+        _: &mut gpui::Window,
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<impl gpui::IntoElement> {
         let types = self.distinct_types();
@@ -86,7 +83,7 @@ impl ListDelegate for PolListDelegate {
     fn render_item(
         &mut self,
         ix: IndexPath,
-        _window: &mut gpui::Window,
+        _: &mut gpui::Window,
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let types = self.distinct_types();
@@ -175,9 +172,6 @@ impl ListDelegate for PolListDelegate {
                 .child(content)
                 .on_click(move |_, _window, app| {
                     app_entity.update(app, |this, cx| {
-                        // Toggle: clicking the already-selected policy deselects it.
-                        // Highlighting is derived from editor state — when the
-                        // editor closes so does the highlight.
                         if this.policy_edit_id == Some(pid) {
                             this.policy_edit_id = None;
                             this.policy_edit = None;
@@ -221,7 +215,7 @@ impl ListDelegate for PolListDelegate {
 
     fn render_empty(
         &mut self,
-        _window: &mut gpui::Window,
+        _: &mut gpui::Window,
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> impl gpui::IntoElement {
         gpui::div()
@@ -235,101 +229,8 @@ impl ListDelegate for PolListDelegate {
     fn set_selected_index(
         &mut self,
         _ix: Option<IndexPath>,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<ListState<Self>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<ListState<Self>>,
     ) {
     }
-}
-
-// ── Policy header component ──────────────────────────────────────────
-
-/// Header bar: "N policies configured" count + "New Policy" primary button.
-pub fn policy_header(cx: &App, count: usize, entity: Entity<GuiApp>) -> AnyElement {
-    h_flex()
-        .justify_between()
-        .items_center()
-        .child(
-            div()
-                .text_xs()
-                .text_color(theme::text_label(cx))
-                .child(format!("{count} policies configured")),
-        )
-        .child(
-            Button::new("new-policy")
-                .label("New Policy")
-                .primary()
-                .on_click(move |_, _window, app| {
-                    entity.update(app, |this, cx2| {
-                        this.policy_edit_id = None;
-                        this.policy_edit = Some((PolicyTarget::Any, PolicyConfigForm::default()));
-                        cx2.notify();
-                    });
-                }),
-        )
-        .into_any_element()
-}
-
-// ── Policy list card component ──────────────────────────────────────
-
-/// Card wrapping the virtualised policy list.
-pub fn policy_list_card(cx: &App, pol_list: &Entity<ListState<PolListDelegate>>) -> AnyElement {
-    card(
-        cx,
-        Some("Existing Policies"),
-        vec![
-            div()
-                .h(px(360.0))
-                .child(List::new(pol_list))
-                .into_any_element(),
-        ],
-    )
-}
-
-// ── Categories section component ────────────────────────────────────
-
-/// Card showing all configured categories with their color swatches.
-pub fn categories_section(cx: &App, categories: &[Category]) -> AnyElement {
-    let rows: Vec<AnyElement> = categories
-        .iter()
-        .map(|cat| {
-            let color =
-                crate::theme::parse_hex(cat.color()).unwrap_or_else(|| theme::text_muted(cx));
-            h_flex()
-                .gap_2()
-                .px(sp::MD)
-                .py(sp::SM)
-                .rounded(rad::md())
-                .child(div().size(px(12.0)).rounded(px(2.0)).bg(color))
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::text_primary(cx))
-                        .child(cat.name()),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted(cx))
-                        .child(cat.icon()),
-                )
-                .into_any_element()
-        })
-        .collect();
-
-    card(
-        cx,
-        Some("Categories"),
-        if rows.is_empty() {
-            vec![
-                div()
-                    .py(sp::MD)
-                    .text_sm()
-                    .text_color(theme::text_muted(cx))
-                    .child("No categories configured.")
-                    .into_any_element(),
-            ]
-        } else {
-            rows
-        },
-    )
 }

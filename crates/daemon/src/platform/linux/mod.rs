@@ -14,13 +14,13 @@ mod manager;
 
 pub use manager::{ManagerClient, ManagerProxy, PluginRegistry};
 
-#[allow(clippy::too_many_arguments)]
 #[proxy(
     interface = "org.freedesktop.Notifications",
     default_service = "org.freedesktop.Notifications",
     default_path = "/org/freedesktop/Notifications"
 )]
 trait Notifications {
+    #[allow(clippy::too_many_arguments)]
     async fn notify(
         &self,
         app_name: &str,

@@ -6,11 +6,8 @@ use gpui_component::IndexPath;
 use std::sync::Arc;
 
 use super::{
-    AppEntryView, ListDelegate, ListItem, ListState, TitleEntryView, render_app_entry_row,
-    render_title_entry_row,
+    AppEntryRow, AppEntryView, ListDelegate, ListItem, ListState, TitleEntryRow, TitleEntryView,
 };
-
-// ── Dashboard delegates ──────────────────────────────────────────────
 
 pub struct DashAppsDelegate {
     pub items: Arc<Vec<AppEntryView>>,
@@ -36,14 +33,22 @@ impl ListDelegate for DashAppsDelegate {
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let entry = self.items.get(ix.row)?;
-        Some(ListItem::new(format!("dash-app-{ix}")).child(render_app_entry_row(cx, entry)))
+        Some(
+            ListItem::new(format!("dash-app-{ix}")).child(
+                AppEntryRow {
+                    entry: entry.clone(),
+                }
+                .render(_window, cx)
+                .into_any_element(),
+            ),
+        )
     }
 
     fn set_selected_index(
         &mut self,
         _ix: Option<IndexPath>,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<ListState<Self>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<ListState<Self>>,
     ) {
     }
 }
@@ -72,19 +77,25 @@ impl ListDelegate for DashTitlesDelegate {
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let entry = self.items.get(ix.row)?;
-        Some(ListItem::new(format!("dash-title-{ix}")).child(render_title_entry_row(cx, entry)))
+        Some(
+            ListItem::new(format!("dash-title-{ix}")).child(
+                TitleEntryRow {
+                    entry: entry.clone(),
+                }
+                .render(_window, cx)
+                .into_any_element(),
+            ),
+        )
     }
 
     fn set_selected_index(
         &mut self,
         _ix: Option<IndexPath>,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<ListState<Self>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<ListState<Self>>,
     ) {
     }
 }
-
-// ── Reports delegates ────────────────────────────────────────────────
 
 pub struct RepAppsDelegate {
     pub items: Arc<Vec<AppEntryView>>,
@@ -110,14 +121,22 @@ impl ListDelegate for RepAppsDelegate {
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let entry = self.items.get(ix.row)?;
-        Some(ListItem::new(format!("rep-app-{ix}")).child(render_app_entry_row(cx, entry)))
+        Some(
+            ListItem::new(format!("rep-app-{ix}")).child(
+                AppEntryRow {
+                    entry: entry.clone(),
+                }
+                .render(_window, cx)
+                .into_any_element(),
+            ),
+        )
     }
 
     fn set_selected_index(
         &mut self,
         _ix: Option<IndexPath>,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<ListState<Self>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<ListState<Self>>,
     ) {
     }
 }
@@ -146,14 +165,22 @@ impl ListDelegate for RepTitlesDelegate {
         cx: &mut gpui::Context<ListState<Self>>,
     ) -> Option<Self::Item> {
         let entry = self.items.get(ix.row)?;
-        Some(ListItem::new(format!("rep-title-{ix}")).child(render_title_entry_row(cx, entry)))
+        Some(
+            ListItem::new(format!("rep-title-{ix}")).child(
+                TitleEntryRow {
+                    entry: entry.clone(),
+                }
+                .render(_window, cx)
+                .into_any_element(),
+            ),
+        )
     }
 
     fn set_selected_index(
         &mut self,
         _ix: Option<IndexPath>,
-        _window: &mut gpui::Window,
-        _cx: &mut gpui::Context<ListState<Self>>,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<ListState<Self>>,
     ) {
     }
 }
