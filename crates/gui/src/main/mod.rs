@@ -187,7 +187,7 @@ async fn main() {
             let mut rx = dash_vm_rx.clone();
             let mut prev_vm: Option<DashboardViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
+                while tokio::task::unconstrained(rx.changed()).await.is_ok() {
                     let vm = rx.borrow_and_update().clone();
                     if prev_vm.as_ref() != vm.as_ref() {
                         prev_vm = vm;
@@ -206,7 +206,7 @@ async fn main() {
             let mut rx = pol_vm_rx.clone();
             let mut prev_vm: Option<PoliciesViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
+                while tokio::task::unconstrained(rx.changed()).await.is_ok() {
                     let vm = rx.borrow_and_update().clone();
                     if prev_vm.as_ref() != vm.as_ref() {
                         prev_vm = vm;
@@ -225,7 +225,7 @@ async fn main() {
             let mut rx = rep_vm_rx.clone();
             let mut prev_vm: Option<ReportsViewModel> = None;
             cx.spawn(async move |cx| {
-                while rx.changed().await.is_ok() {
+                while tokio::task::unconstrained(rx.changed()).await.is_ok() {
                     let vm = rx.borrow_and_update().clone();
                     if prev_vm.as_ref() != vm.as_ref() {
                         prev_vm = vm;
