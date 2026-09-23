@@ -22,6 +22,8 @@ override_dh_auto_install:
 	# Rust binaries
 	install -Dm755 target/release/wellbeing-daemon debian/wellbeing-daemon/usr/bin/wellbeing-daemon
 	install -Dm755 target/release/wellbeing-gui debian/wellbeing-gui/usr/bin/wellbeing-gui
+	install -Dm644 deploy/desktop/wellbeing-gui.desktop debian/wellbeing-gui/usr/share/applications/wellbeing-gui.desktop
+	install -Dm644 deploy/desktop/wellbeing-gui.svg debian/wellbeing-gui/usr/share/icons/hicolor/scalable/apps/wellbeing-gui.svg
 
 	# Hyprland plugin
 	cd plugins/hyprland/build/$(PRESET)/app && \

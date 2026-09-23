@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Digital Wellbeing
+Comment=Track app usage and enforce screen-time limits
+Exec=wellbeing-gui
+Icon=wellbeing-gui
+Categories=Utility;Monitor;
+Terminal=false

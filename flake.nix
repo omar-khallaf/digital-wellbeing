@@ -258,6 +258,10 @@
                     pkgs.expat
                   ]
                 }"
+              mkdir -p $out/share/applications $out/share/icons/hicolor/scalable/apps
+              cp deploy/desktop/wellbeing-gui.desktop $out/share/applications/wellbeing-gui.desktop
+              substituteInPlace $out/share/applications/wellbeing-gui.desktop --replace-fail "Exec=wellbeing-gui" "Exec=$out/bin/wellbeing-gui"
+              cp deploy/desktop/wellbeing-gui.svg $out/share/icons/hicolor/scalable/apps/wellbeing-gui.svg
             '';
             meta = with pkgs.lib; {
               description = "Digital Wellbeing desktop GUI";

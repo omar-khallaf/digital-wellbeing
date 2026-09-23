@@ -101,6 +101,10 @@ package_wellbeing-gui() {
   cd "$srcdir/$pkgname"
   install -Dm755 target/release/wellbeing-gui \
     "$pkgdir/usr/bin/wellbeing-gui"
+  install -Dm644 deploy/desktop/wellbeing-gui.desktop \
+    "$pkgdir/usr/share/applications/wellbeing-gui.desktop"
+  install -Dm644 deploy/desktop/wellbeing-gui.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/wellbeing-gui.svg"
 }
 
 package_wellbeing-hyprland-plugin() {
