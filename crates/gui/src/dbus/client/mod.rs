@@ -5,4 +5,4 @@
 
 mod proxy;
 
-pub use proxy::{BlockedApps, DaemonProxy};
+pub use proxy::DaemonProxy;

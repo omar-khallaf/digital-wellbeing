@@ -15,7 +15,7 @@ use super::domain::PoliciesViewModel;
 impl PoliciesViewModel {
     /// Recompute ALL derived fields from the raw data in `self.data`.
     ///
-    /// Call after a full fetch (policy_mutated signal / daemon reconnect /
+    /// Call after a full fetch (policy_changed signal / daemon reconnect /
     /// manual refresh).  Preserves `selected_policy` and `is_admin` — those
     /// are UI editing state, not derived from raw data.
     pub fn recompute_derived(&mut self) {

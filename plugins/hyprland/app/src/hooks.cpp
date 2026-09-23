@@ -12,14 +12,14 @@
 #include <optional>
 #include <string>
 
-#include <hyprland/Compositor.hpp>
-#include <hyprland/config/shared/actions/ConfigActions.hpp>
-#include <hyprland/desktop/view/Window.hpp>
-#include <hyprland/event/EventBus.hpp>
-#include <hyprland/managers/SeatManager.hpp>
-#include <hyprland/managers/input/InputManager.hpp>
-#include <hyprland/render/OpenGL.hpp>
-#include <hyprland/render/Renderer.hpp>
+#include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/config/shared/actions/ConfigActions.hpp>
+#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/managers/SeatManager.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/render/OpenGL.hpp>
+#include <hyprland/src/render/Renderer.hpp>
 
 #include <sys/eventfd.h>
 

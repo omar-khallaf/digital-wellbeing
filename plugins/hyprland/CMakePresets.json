@@ -7,11 +7,15 @@
   },
   "configurePresets": [
     {
-      "name": "base-v3",
+      "name": "base",
       "hidden": true,
-      "generator": "Ninja Multi-Config",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
+        "CMAKE_BUILD_TYPE": {
+          "type": "STRING",
+          "value": "Release"
+        },
         "CMAKE_C_COMPILER": {
           "type": "STRING",
           "value": "gcc"
@@ -23,32 +27,52 @@
         "CMAKE_EXPORT_COMPILE_COMMANDS": {
           "type": "BOOL",
           "value": "ON"
+        },
+        "BUILD_TESTING": {
+          "type": "BOOL",
+          "value": "ON"
         }
       }
     },
     {
-      "name": "linux-host",
-      "displayName": "Linux Host",
-      "inherits": "base-v3"
+      "name": "linux-amd64",
+      "displayName": "Linux amd64",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": {
+          "type": "STRING",
+          "value": "Linux"
+        },
+        "CMAKE_SYSTEM_PROCESSOR": {
+          "type": "STRING",
+          "value": "x86_64"
+        }
+      }
+    },
+    {
+      "name": "linux-aarch64",
+      "displayName": "Linux aarch64",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": {
+          "type": "STRING",
+          "value": "Linux"
+        },
+        "CMAKE_SYSTEM_PROCESSOR": {
+          "type": "STRING",
+          "value": "aarch64"
+        }
+      }
     }
   ],
   "buildPresets": [
     {
-      "name": "base-build",
-      "hidden": true,
-      "jobs": 0
+      "name": "linux-amd64",
+      "configurePreset": "linux-amd64"
     },
     {
-      "name": "debug-host",
-      "configurePreset": "linux-host",
-      "inherits": "base-build",
-      "configuration": "Debug"
-    },
-    {
-      "name": "release-host",
-      "configurePreset": "linux-host",
-      "inherits": "base-build",
-      "configuration": "Release"
+      "name": "linux-aarch64",
+      "configurePreset": "linux-aarch64"
     }
   ]
 }

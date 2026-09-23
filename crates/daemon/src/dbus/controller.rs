@@ -1,9 +1,10 @@
 //! D-Bus interface controller — holds shared state and dependencies.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::{RwLock, mpsc, mpsc::UnboundedSender};
-use wellbeing_core::Clock;
+use wellbeing_core::{Clock, PluginInstanceId, Uid};
 
 use crate::blocking::InternalEvent;
 use crate::categorization::data::CategorizationRepo;
@@ -42,6 +43,24 @@ pub struct DaemonInterfaceConfig {
     pub policy_tx: mpsc::Sender<InternalEvent>,
 }
 
+/// Registry tracking domain-bridge clients.
+pub struct BridgeRegistry {
+    bridges: HashMap<PluginInstanceId, Uid>,
+}
+
+impl BridgeRegistry {
+    pub fn new() -> Self {
+        Self {
+            bridges: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, instance_id: PluginInstanceId, uid: Uid) {
+        self.bridges.insert(instance_id.clone(), uid);
+        tracing::info!(?instance_id, ?uid, "bridge registered");
+    }
+}
+
 /// The main D-Bus interface object, registered on the bus as
 /// `org.wellbeing.v1.Controller`.
 pub struct DaemonInterface {
@@ -49,6 +68,7 @@ pub struct DaemonInterface {
     pub(crate) categorization_repo: CategorizationRepo,
     pub(crate) reports_repo: ReportsRepo,
     pub(crate) registry: Arc<RwLock<PluginRegistry>>,
+    pub(crate) bridge_registry: Arc<RwLock<BridgeRegistry>>,
     pub(crate) event_tx: UnboundedSender<PlatformEvent>,
     pub(crate) clock: Box<dyn Clock>,
     pub(crate) blocked_apps: BlockedAppsMap,
@@ -74,6 +94,7 @@ impl DaemonInterface {
             categorization_repo,
             reports_repo,
             registry,
+            bridge_registry: Arc::new(RwLock::new(BridgeRegistry::new())),
             event_tx,
             clock,
             blocked_apps,

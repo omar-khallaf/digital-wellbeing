@@ -15,7 +15,7 @@
 //! ## Declarative Block State
 //!
 //! Block state is maintained in `active_blocks` and exposed to the compositor
-//! plugin via the `BlockedAppsChanged` D-Bus signal. The daemon never commands
+//! plugin via the `AppBlocked` D-Bus signal. The daemon never commands
 //! the plugin directly — the plugin reads daemon state and manages its own
 //! overlays.
 

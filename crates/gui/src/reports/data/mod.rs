@@ -22,7 +22,7 @@ use super::domain::{DailyBar, ReportAppEntry, ReportTitleEntry, ReportsViewModel
 impl ReportsViewModel {
     /// Recompute ALL derived fields from the raw data in `self.data`.
     ///
-    /// Call after a full fetch (DailyUsageChanged / daemon reconnect / manual
+    /// Call after a full fetch (daemon reconnect / manual
     /// refresh).  The `range` parameter comes from the user's selected date
     /// range (unlike the dashboard which always shows today).
     ///

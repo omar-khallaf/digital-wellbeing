@@ -26,7 +26,7 @@ use crate::dashboard::timeline::build_day_timeline;
 impl DashboardViewModel {
     /// Recompute ALL derived fields from the raw data in `self.data`.
     ///
-    /// Call after a full fetch (DailyUsageChanged / daemon reconnect / manual
+    /// Call after a full fetch (daemon reconnect / manual
     /// refresh).  Mutates `day_events` in-place (sorts into timeline order).
     pub fn recompute_derived(&mut self) {
         let Some(ref mut data) = self.data else {
@@ -65,7 +65,7 @@ impl DashboardViewModel {
 
     /// Fast path — only recompute `block_cards` from `data.blocked`.
     ///
-    /// Call after `BlockedAppsChanged` signal.  Leaves all other derived
+    /// Call after `app_blocked` signal.  Leaves all other derived
     /// fields untouched (they're still fresh from the last full fetch).
     pub fn recompute_blocked(&mut self) {
         let Some(ref data) = self.data else { return };

@@ -46,7 +46,7 @@ pub enum InternalEvent {
     Shutdown(Option<oneshot::Sender<()>>),
     /// A policy was mutated for the given user. Re-evaluate the currently
     /// focused app and update the blocked-apps map accordingly.
-    PolicyMutated { owner_id: Uid },
+    PolicyChanged { owner_id: Uid },
 }
 
 pub struct EnforcerActor<P: Platform, C: Clock> {
@@ -171,7 +171,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     let _ = tx.send(());
                 }
             }
-            InternalEvent::PolicyMutated { owner_id } => {
+            InternalEvent::PolicyChanged { owner_id } => {
                 if let Err(e) = self
                     .handle_policy_mutation(owner_id, self.clock.now())
                     .await
@@ -199,14 +199,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 .await?;
         }
 
-        self.emit_daily_usage_changed(&all_uids);
         Ok(())
-    }
-
-    fn emit_daily_usage_changed(&self, uids: &[Uid]) {
-        for &uid in uids {
-            let _ = self.signal_tx.send(DaemonSignal::DailyUsageChanged { uid });
-        }
     }
 
     async fn evaluate_and_enforce(&self, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<()> {
@@ -261,16 +254,19 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 ?uid,
                 "evaluate_and_enforce: current focus has no app_class — skipping"
             );
+            let _ = self.signal_tx.send(DaemonSignal::UsageUpdated { uid });
             return Ok(());
         };
 
         debug!(?uid, %app_class, "evaluate_and_enforce: evaluating focused app");
 
-        self.evaluate_and_apply(uid, app_class, now).await
+        self.evaluate_and_apply(uid, app_class, now).await?;
+        let _ = self.signal_tx.send(DaemonSignal::UsageUpdated { uid });
+        Ok(())
     }
 
     /// Evaluate a specific app for a uid and apply the result to blocked_apps.
-    /// Emits BlockedAppsChanged signals as needed.
+    /// Emits AppBlocked signals as needed.
     /// Used by handle_event (with event payload data) and evaluate_and_enforce
     /// (with re-queried GetFocusState data).
     async fn evaluate_and_apply(
@@ -293,9 +289,9 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 if was_new {
                     info!(
                         ?uid, %app_class, ?reason,
-                        "evaluate_and_apply: NEW block — emitting BlockedAppsChanged {{blocked: true}}"
+                        "evaluate_and_apply: NEW block — emitting AppBlocked {{blocked: true}}"
                     );
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    let _ = self.signal_tx.send(DaemonSignal::AppBlocked {
                         uid,
                         app_class: app_class.clone(),
                         blocked: true,
@@ -320,9 +316,9 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 {
                     info!(
                         ?uid, %app_class,
-                        "evaluate_and_apply: unblocked — emitting BlockedAppsChanged {{blocked: false}}"
+                        "evaluate_and_apply: unblocked — emitting AppBlocked {{blocked: false}}"
                     );
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    let _ = self.signal_tx.send(DaemonSignal::AppBlocked {
                         uid,
                         app_class: app_class.clone(),
                         blocked: false,
@@ -499,7 +495,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     .insert(app_class.clone(), entry)
                     .is_none();
                 if was_new {
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    let _ = self.signal_tx.send(DaemonSignal::AppBlocked {
                         uid: owner_id,
                         app_class: app_class.clone(),
                         blocked: true,
@@ -517,7 +513,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     .remove(app_class)
                     .is_some()
                 {
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    let _ = self.signal_tx.send(DaemonSignal::AppBlocked {
                         uid: owner_id,
                         app_class: app_class.clone(),
                         blocked: false,
@@ -547,7 +543,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
     }
 
     /// Remove all time-limit-based blocks (daily resets) and emit
-    /// `BlockedAppsChanged` with `blocked: false` for each removed entry.
+    /// `AppBlocked` with `blocked: false` for each removed entry.
     ///
     /// Hard blocks (`AppBlock`, `CategoryBlock`) are permanent and survive
     /// midnight rollover.
@@ -562,7 +558,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                     true
                 } else {
                     // Time-limit blocks — daily, reset.
-                    let _ = self.signal_tx.send(DaemonSignal::BlockedAppsChanged {
+                    let _ = self.signal_tx.send(DaemonSignal::AppBlocked {
                         uid: *uid,
                         app_class: entry.app_class.clone(),
                         blocked: false,

@@ -1,3 +1,7 @@
+// rust-lang/rust#159228: same solver recursion guard as lib.rs,
+// tripped here by the spawned enforcer future. Crate-level only.
+#![allow(recursion_depth_exceeding_limit)]
+
 //! wellbeing-daemon — Digital Wellbeing system service.
 //! Starts the D-Bus server, platform layer, and background actors.
 
@@ -12,11 +16,13 @@ use futures::StreamExt;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use wellbeing_core::BlockedAppsChangedSignal;
 use wellbeing_core::SystemClock;
 use wellbeing_core::dbus_constants::{
-    BLOCKED_APPS_CHANGED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
-    DAILY_USAGE_CHANGED_SIGNAL,
+    APP_BLOCKED_SIGNAL, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
+    DOMAIN_BLOCKED_SIGNAL, POLICY_CHANGED_SIGNAL, USAGE_UPDATED_SIGNAL,
+};
+use wellbeing_core::{
+    AppBlockedSignal, DomainBlockedSignal, PolicyChangedSignal, UsageUpdatedSignal,
 };
 use wellbeing_daemon::{
     bus_resolution::{self, BusMode, DaemonMode},
@@ -268,13 +274,13 @@ async fn main() -> Result<()> {
 
 async fn emit_signal(conn: &zbus::Connection, signal: DaemonSignal) {
     match signal {
-        DaemonSignal::BlockedAppsChanged {
+        DaemonSignal::AppBlocked {
             uid,
             app_class,
             blocked,
             reason,
         } => {
-            let payload = BlockedAppsChangedSignal {
+            let payload = AppBlockedSignal {
                 uid,
                 app_class,
                 blocked,
@@ -285,26 +291,67 @@ async fn emit_signal(conn: &zbus::Connection, signal: DaemonSignal) {
                     None::<&str>,
                     DAEMON_OBJECT_PATH,
                     DAEMON_INTERFACE,
-                    BLOCKED_APPS_CHANGED_SIGNAL,
+                    APP_BLOCKED_SIGNAL,
                     &payload,
                 )
                 .await
             {
-                error!(error = %e, "Failed to emit block_state_changed");
+                error!(error = %e, "Failed to emit app_blocked");
             }
         }
-        DaemonSignal::DailyUsageChanged { uid } => {
+        DaemonSignal::DomainBlocked {
+            uid,
+            domain,
+            blocked,
+            reason,
+        } => {
+            let payload = DomainBlockedSignal {
+                uid,
+                domain,
+                blocked,
+                reason,
+            };
             if let Err(e) = conn
                 .emit_signal(
                     None::<&str>,
                     DAEMON_OBJECT_PATH,
                     DAEMON_INTERFACE,
-                    DAILY_USAGE_CHANGED_SIGNAL,
-                    &uid,
+                    DOMAIN_BLOCKED_SIGNAL,
+                    &payload,
                 )
                 .await
             {
-                error!(error = %e, "Failed to emit daily_usage_changed");
+                error!(error = %e, "Failed to emit domain_blocked");
+            }
+        }
+        DaemonSignal::PolicyChanged { uid } => {
+            let payload = PolicyChangedSignal { uid };
+            if let Err(e) = conn
+                .emit_signal(
+                    None::<&str>,
+                    DAEMON_OBJECT_PATH,
+                    DAEMON_INTERFACE,
+                    POLICY_CHANGED_SIGNAL,
+                    &payload,
+                )
+                .await
+            {
+                error!(error = %e, "Failed to emit policy_changed");
+            }
+        }
+        DaemonSignal::UsageUpdated { uid } => {
+            let payload = UsageUpdatedSignal { uid };
+            if let Err(e) = conn
+                .emit_signal(
+                    None::<&str>,
+                    DAEMON_OBJECT_PATH,
+                    DAEMON_INTERFACE,
+                    USAGE_UPDATED_SIGNAL,
+                    &payload,
+                )
+                .await
+            {
+                error!(error = %e, "Failed to emit usage_updated");
             }
         }
     }

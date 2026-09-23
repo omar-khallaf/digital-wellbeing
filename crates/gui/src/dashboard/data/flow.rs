@@ -3,13 +3,14 @@
 //! repository, patches the ViewModel in-place, and emits it to the GPUI thread.
 //!
 //! Each D-Bus signal triggers a targeted re-fetch:
-//! - `DailyUsageChanged` → full fetch via `fetch_all`
-//! - `BlockedAppsChanged` → blocked apps only, patches `data.blocked`
+//! - `PolicyChanged` → full fetch via `fetch_all`
+//! - `AppBlocked` → blocked apps only, patches `data.blocked`
+//! - `DomainBlocked` → full fetch via `fetch_all`
+//! - `UsageUpdated` → full fetch via `fetch_all`
 //!
 //! The `DashboardViewModel` persists across updates (like a Compose ViewModel)
 //! and is patched in-place rather than rebuilt from a cache — no `cached_data`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -28,8 +29,10 @@ use super::repo::DashboardRepo;
 /// Discriminated flow events forwarded from D-Bus signal subscriptions
 /// to the main loop, so each signal triggers the correct action.
 enum FlowSignal {
-    DailyUsageChanged,
-    BlockedAppsChanged,
+    AppBlocked,
+    PolicyChanged,
+    DomainBlocked,
+    UsageUpdated,
     /// One of the signal forwarding streams ended (transient D-Bus glitch).
     /// Triggers re-subscription on the next loop iteration.
     SignalStreamEnded,
@@ -44,15 +47,17 @@ pub struct FlowState {
 ///
 /// The flow maintains a persistent `DashboardViewModel` that is patched
 /// in-place as D-Bus signals arrive:
-/// - `DailyUsageChanged` / daemon reconnect / manual refresh → full fetch
-/// - `BlockedAppsChanged` → only `get_blocked_apps()`, patches `data.blocked`
+/// - `PolicyChanged` / `DomainBlocked` / `UsageUpdated` / daemon reconnect / manual refresh → full fetch
+/// - `AppBlocked` → only `get_blocked_apps()`, patches `data.blocked`
 pub fn spawn_dashboard_flow(
     repo: DashboardRepo,
-    state: Arc<FlowState>,
+    state: std::sync::Arc<FlowState>,
     mut presence_rx: broadcast::Receiver<DaemonPresenceEvent>,
     mut refresh_rx: broadcast::Receiver<()>,
     vm_tx: watch::Sender<Option<DashboardViewModel>>,
 ) {
+    // uid-free daemon surface: caller identity comes from SO_PEERCRED.
+    let _ = state.uid;
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
         let mut proxy_subscribed = false;
@@ -73,24 +78,46 @@ pub fn spawn_dashboard_flow(
                 let mut subscribed = false;
                 match tokio::time::timeout(Duration::from_secs(5), DaemonProxy::new(&conn)).await {
                     Ok(Ok(p)) => {
-                        if let Ok(mut stream) = p.receive_daily_usage_changed().await {
+                        if let Ok(mut stream) = p.receive_app_blocked().await {
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(FlowSignal::DailyUsageChanged);
+                                    let _ = tx.send(FlowSignal::AppBlocked);
                                 }
-                                warn!("dashboard flow: daily_usage_changed signal stream ended");
+                                warn!("dashboard flow: app_blocked signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
                             subscribed = true;
                         }
-                        if let Ok(mut stream) = p.receive_on_blocked_apps_changed().await {
+                        if let Ok(mut stream) = p.receive_policy_changed().await {
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(FlowSignal::BlockedAppsChanged);
+                                    let _ = tx.send(FlowSignal::PolicyChanged);
                                 }
-                                warn!("dashboard flow: blocked_apps_changed signal stream ended");
+                                warn!("dashboard flow: policy_changed signal stream ended");
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
+                            });
+                            subscribed = true;
+                        }
+                        if let Ok(mut stream) = p.receive_domain_blocked().await {
+                            let tx = signal_tx.clone();
+                            tokio::spawn(async move {
+                                while stream.next().await.is_some() {
+                                    let _ = tx.send(FlowSignal::DomainBlocked);
+                                }
+                                warn!("dashboard flow: domain_blocked signal stream ended");
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
+                            });
+                            subscribed = true;
+                        }
+                        if let Ok(mut stream) = p.receive_usage_updated().await {
+                            let tx = signal_tx.clone();
+                            tokio::spawn(async move {
+                                while stream.next().await.is_some() {
+                                    let _ = tx.send(FlowSignal::UsageUpdated);
+                                }
+                                warn!("dashboard flow: usage_updated signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
                             subscribed = true;
@@ -118,7 +145,7 @@ pub fn spawn_dashboard_flow(
                             if ok {
                                 gen_cnt += 1;
                                 let my_gen = gen_cnt;
-                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
+                                do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                             }
                         }
                         DaemonPresenceEvent::Disappeared => {
@@ -129,14 +156,16 @@ pub fn spawn_dashboard_flow(
                 }
                 signal = signal_rx.recv() => {
                     match signal {
-                        Some(FlowSignal::DailyUsageChanged) => {
+                        Some(FlowSignal::PolicyChanged)
+                        | Some(FlowSignal::DomainBlocked)
+                        | Some(FlowSignal::UsageUpdated) => {
                             if daemon_available {
                                 gen_cnt += 1;
                                 let my_gen = gen_cnt;
-                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
+                                do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                             }
                         }
-                        Some(FlowSignal::BlockedAppsChanged) => {
+                        Some(FlowSignal::AppBlocked) => {
                             if daemon_available {
                                 match repo.get_blocked_apps().await {
                                     Ok(blocked) => {
@@ -160,7 +189,7 @@ pub fn spawn_dashboard_flow(
                 Ok(_) = refresh_rx.recv() => {
                                 gen_cnt += 1;
                                 let my_gen = gen_cnt;
-                                do_full_fetch(&repo, state.uid, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
+                                do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut gen_cnt).await;
                 }
             };
         }
@@ -172,7 +201,6 @@ pub fn spawn_dashboard_flow(
 /// Falls back to the last good state on error — the VM is never cleared.
 async fn do_full_fetch(
     repo: &DashboardRepo,
-    uid: u32,
     vm: &mut DashboardViewModel,
     tx: &watch::Sender<Option<DashboardViewModel>>,
     fetch_gen: u64,
@@ -180,13 +208,10 @@ async fn do_full_fetch(
 ) {
     let today = Utc::now().date_naive();
     match repo
-        .fetch_all(
-            uid,
-            DateRange {
-                start: today,
-                end: today,
-            },
-        )
+        .fetch_all(DateRange {
+            start: today,
+            end: today,
+        })
         .await
     {
         Ok(data) => {

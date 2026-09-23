@@ -89,7 +89,7 @@ cargo build -p wellbeing-daemon
 cargo build -p wellbeing-gui
 
 # Build the Hyprland compositor plugin (wellbeing-lockdown.so)
-cd plugins/hyprland && cmake --preset linux-host && cmake --build --preset release-host
+cd plugins/hyprland && cmake --preset linux-amd64 && cmake --build --preset linux-amd64
 
 # Run tests
 cargo test

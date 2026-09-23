@@ -7,8 +7,9 @@ Build-Depends: debhelper-compat (= 13),
  cmake,
  ninja-build,
  gcc,
- pkg-config,
- wayland-protocols,
+  pkg-config,
+  hyprland-dev,
+  wayland-protocols,
  glslang,
  lua5.5,
  libsystemd-dev,
@@ -53,7 +54,8 @@ Description: Digital Wellbeing desktop GUI
 
 Package: wellbeing-hyprland-plugin
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, wellbeing-common, dbus, hyprland (>= 0.41)
+Depends: ${shlibs:Depends}, ${misc:Depends}, wellbeing-common, dbus, hyprland (= 0.55.2)
 Description: Hyprland compositor plugin for Digital Wellbeing
  Renders block overlays via OpenGL and emits FocusChanged / ActivityChanged
- signals. Requires Hyprland >= 0.41.
+ signals. Built against Hyprland 0.55.2; rebuild for any other Hyprland
+ version. The plugin aborts load on ABI hash mismatch.

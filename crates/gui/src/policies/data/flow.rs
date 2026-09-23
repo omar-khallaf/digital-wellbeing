@@ -18,7 +18,7 @@ use super::repo::PoliciesRepo;
 /// Discriminated flow events forwarded from D-Bus signal subscriptions
 /// to the main loop, so each signal triggers the correct action.
 enum FlowSignal {
-    PolicyMutated,
+    PolicyChanged,
     /// One of the signal forwarding streams ended (transient D-Bus glitch).
     /// Triggers re-subscription on the next loop iteration.
     SignalStreamEnded,
@@ -27,7 +27,7 @@ enum FlowSignal {
 /// Spawn the policies background flow.
 ///
 /// The flow maintains a persistent `PoliciesViewModel` that is refreshed
-/// on any trigger (policy_mutated signal / daemon reconnect / manual refresh).
+/// on any trigger (policy_changed signal / daemon reconnect / manual refresh).
 pub fn spawn_policies_flow(
     repo: PoliciesRepo,
     uid: u32,
@@ -36,6 +36,8 @@ pub fn spawn_policies_flow(
     mut refresh_rx: broadcast::Receiver<()>,
     vm_tx: watch::Sender<Option<PoliciesViewModel>>,
 ) {
+    // uid-free daemon surface: caller identity comes from SO_PEERCRED.
+    let _ = uid;
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
         let mut generation: u64 = 0;
@@ -53,13 +55,13 @@ pub fn spawn_policies_flow(
             if !proxy_subscribed && daemon_available {
                 match repo.proxy().await {
                     Ok(p) => {
-                        if let Ok(mut stream) = p.receive_policy_mutated().await {
+                        if let Ok(mut stream) = p.receive_policy_changed().await {
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(FlowSignal::PolicyMutated);
+                                    let _ = tx.send(FlowSignal::PolicyChanged);
                                 }
-                                warn!("policies flow: policy_mutated signal stream ended");
+                                warn!("policies flow: policy_changed signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
                         }
@@ -84,7 +86,7 @@ pub fn spawn_policies_flow(
                             if ok {
                                 generation += 1;
                                 let my_gen = generation;
-                                do_full_fetch(&repo, uid, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
+                                do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                             }
                         }
                         DaemonPresenceEvent::Disappeared => {
@@ -95,11 +97,11 @@ pub fn spawn_policies_flow(
                 }
                 signal = signal_rx.recv() => {
                     match signal {
-                        Some(FlowSignal::PolicyMutated) => {
+                        Some(FlowSignal::PolicyChanged) => {
                             if daemon_available {
                                 generation += 1;
                                 let my_gen = generation;
-                                do_full_fetch(&repo, uid, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
+                                do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                             }
                         }
                         Some(FlowSignal::SignalStreamEnded) => {
@@ -112,7 +114,7 @@ pub fn spawn_policies_flow(
                 Ok(_) = refresh_rx.recv() => {
                     generation += 1;
                     let my_gen = generation;
-                    do_full_fetch(&repo, uid, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
+                    do_full_fetch(&repo, &mut current_vm, &vm_tx, my_gen, &mut generation).await;
                 }
             };
         }
@@ -124,13 +126,12 @@ pub fn spawn_policies_flow(
 /// Falls back to the last good state on error — the VM is never cleared.
 async fn do_full_fetch(
     repo: &PoliciesRepo,
-    uid: u32,
     vm: &mut PoliciesViewModel,
     tx: &watch::Sender<Option<PoliciesViewModel>>,
     fetch_gen: u64,
     generation: &mut u64,
 ) {
-    match repo.fetch_all(uid).await {
+    match repo.fetch_all().await {
         Ok(data) => {
             if fetch_gen != *generation {
                 return;

@@ -21,7 +21,10 @@ use super::repo::ReportsRepo;
 /// Discriminated flow events forwarded from D-Bus signal subscriptions
 /// to the main loop, so each signal triggers the correct action.
 enum FlowSignal {
-    DailyUsageChanged,
+    AppBlocked,
+    PolicyChanged,
+    DomainBlocked,
+    UsageUpdated,
     /// One of the signal forwarding streams ended (transient D-Bus glitch).
     /// Triggers re-subscription on the next loop iteration.
     SignalStreamEnded,
@@ -33,7 +36,7 @@ pub struct FlowState {
 }
 
 /// Refreshes on:
-/// - `daily_usage_changed` D-Bus signal
+/// - `app_blocked` / `policy_changed` / `domain_blocked` / `usage_updated` D-Bus signals
 /// - Daemon presence change (reconnect)
 /// - Manual refresh trigger (range change, etc.)
 pub fn spawn_reports_flow(
@@ -43,6 +46,8 @@ pub fn spawn_reports_flow(
     mut refresh_rx: broadcast::Receiver<()>,
     vm_tx: watch::Sender<Option<ReportsViewModel>>,
 ) {
+    // uid-free daemon surface: caller identity comes from SO_PEERCRED.
+    let _ = state.uid;
     tokio::spawn(async move {
         let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FlowSignal>();
         let mut proxy_subscribed = false;
@@ -58,13 +63,43 @@ pub fn spawn_reports_flow(
             if !proxy_subscribed && daemon_available {
                 match repo.proxy().await {
                     Ok(p) => {
-                        if let Ok(mut stream) = p.receive_daily_usage_changed().await {
+                        if let Ok(mut stream) = p.receive_app_blocked().await {
                             let tx = signal_tx.clone();
                             tokio::spawn(async move {
                                 while stream.next().await.is_some() {
-                                    let _ = tx.send(FlowSignal::DailyUsageChanged);
+                                    let _ = tx.send(FlowSignal::AppBlocked);
                                 }
-                                warn!("reports flow: daily_usage_changed signal stream ended");
+                                warn!("reports flow: app_blocked signal stream ended");
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
+                            });
+                        }
+                        if let Ok(mut stream) = p.receive_policy_changed().await {
+                            let tx = signal_tx.clone();
+                            tokio::spawn(async move {
+                                while stream.next().await.is_some() {
+                                    let _ = tx.send(FlowSignal::PolicyChanged);
+                                }
+                                warn!("reports flow: policy_changed signal stream ended");
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
+                            });
+                        }
+                        if let Ok(mut stream) = p.receive_domain_blocked().await {
+                            let tx = signal_tx.clone();
+                            tokio::spawn(async move {
+                                while stream.next().await.is_some() {
+                                    let _ = tx.send(FlowSignal::DomainBlocked);
+                                }
+                                warn!("reports flow: domain_blocked signal stream ended");
+                                let _ = tx.send(FlowSignal::SignalStreamEnded);
+                            });
+                        }
+                        if let Ok(mut stream) = p.receive_usage_updated().await {
+                            let tx = signal_tx.clone();
+                            tokio::spawn(async move {
+                                while stream.next().await.is_some() {
+                                    let _ = tx.send(FlowSignal::UsageUpdated);
+                                }
+                                warn!("reports flow: usage_updated signal stream ended");
                                 let _ = tx.send(FlowSignal::SignalStreamEnded);
                             });
                         }
@@ -100,7 +135,10 @@ pub fn spawn_reports_flow(
                 }
                 signal = signal_rx.recv() => {
                     match signal {
-                        Some(FlowSignal::DailyUsageChanged) => {
+                        Some(FlowSignal::AppBlocked)
+                        | Some(FlowSignal::PolicyChanged)
+                        | Some(FlowSignal::DomainBlocked)
+                        | Some(FlowSignal::UsageUpdated) => {
                             if daemon_available {
                                 generation += 1;
                                 let my_gen = generation;
@@ -136,7 +174,7 @@ async fn do_full_fetch(
     generation: &mut u64,
 ) {
     let range = *state.selected_range.read().await;
-    match repo.fetch_all(state.uid, range).await {
+    match repo.fetch_all(range).await {
         Ok(data) => {
             if fetch_gen != *generation {
                 return;

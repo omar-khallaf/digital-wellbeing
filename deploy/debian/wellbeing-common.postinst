@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+# StateDirectory=digital-wellbeing mode 700 is created by systemd; no chown needed.
+case "$1" in
+  configure)
+    systemctl daemon-reload || true
+    systemctl enable digital-wellbeing-daemon.service || true
+    systemctl reload dbus.service || true
+    ;;
+esac
+#DEBHELPER#
+exit 0

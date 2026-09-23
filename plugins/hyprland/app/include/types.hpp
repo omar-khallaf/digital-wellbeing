@@ -12,10 +12,13 @@ inline constexpr auto DAEMON_OBJECT_PATH = "/org/wellbeing/Controller";
 inline constexpr auto MANAGER_INTERFACE = "org.wellbeing.v1.Manager";
 inline constexpr auto MANAGER_OBJECT_PATH = "/org/wellbeing/Manager";
 
-/// Unified Event signal name (replaces FocusChanged + ActivityChanged + power_event).
+/// Unified Event signal name.
 inline constexpr auto EVENT_SIGNAL = "Event";
 
-inline constexpr auto BLOCKED_APPS_CHANGED_SIGNAL = "BlockedAppsChanged";
+inline constexpr auto APP_BLOCKED_SIGNAL = "AppBlocked";
+inline constexpr auto DOMAIN_BLOCKED_SIGNAL = "DomainBlocked";
+
+inline constexpr auto GET_BLOCKED_APPS_METHOD = "GetBlockedApps";
 
 inline constexpr auto REGISTER_PLUGIN_METHOD = "RegisterPlugin";
 
@@ -121,7 +124,7 @@ inline constexpr size_t EVENT_FIELD_POWER_TAG = 3;
 inline constexpr size_t EVENT_STRUCT_FIELD_COUNT = 4;
 
 // These strings pin the D-Bus wire signatures that both Rust (zvariant) and C++
-// (sdbus-c++) must agree on. Change with extreme care — mismatches cause
+// (sd-bus) must agree on. Change with extreme care — mismatches cause
 // serialization errors.
 // Cross-reference: Rust BLOCKED_APP_SIGNATURE / EVENT_STRUCT_SIGNATURE in
 // crates/core/src/dbus_constants.rs.

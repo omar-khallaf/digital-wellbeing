@@ -19,18 +19,32 @@ pub const MANAGER_OBJECT_PATH: &str = "/org/wellbeing/Manager";
 
 // ── Signal names on the Controller interface ─────────────────────────────────
 
-/// Emitted when a block is shown or removed (a.k.a. BlockedAppsChanged).
-pub const BLOCKED_APPS_CHANGED_SIGNAL: &str = "BlockedAppsChanged";
-
-/// Emitted when daily usage data is updated.
-pub const DAILY_USAGE_CHANGED_SIGNAL: &str = "DailyUsageChanged";
+/// Emitted when an app becomes blocked for a user.
+pub const APP_BLOCKED_SIGNAL: &str = "AppBlocked";
 
 /// Emitted when a policy is created, updated, or deleted.
-pub const POLICY_MUTATED_SIGNAL: &str = "PolicyMutated";
+pub const POLICY_CHANGED_SIGNAL: &str = "PolicyChanged";
+
+/// Emitted when a domain becomes blocked for a user.
+pub const DOMAIN_BLOCKED_SIGNAL: &str = "DomainBlocked";
+
+/// Emitted every minute tick for each tracked user with fresh usage totals.
+pub const USAGE_UPDATED_SIGNAL: &str = "UsageUpdated";
+
+// ── Method names on the Controller interface ─────────────────────────────────
+
+/// Returns all blocked apps across users.
+pub const GET_BLOCKED_APPS_METHOD: &str = "GetBlockedApps";
+
+/// Returns blocked apps for a single user.
+pub const GET_BLOCKED_APPS_FOR_USER_METHOD: &str = "GetBlockedAppsForUser";
+
+/// Registers the compositor bridge so the daemon can push block state.
+pub const REGISTER_BRIDGE_METHOD: &str = "RegisterBridge";
 
 // ── Signal names on the Manager interface ────────────────────────────────────
 
-/// Name of the unified `event` signal (replaces FocusChanged + ActivityChanged).
+/// Name of the unified `event` signal.
 pub const EVENT_SIGNAL: &str = "Event";
 
 // ── Property names ───────────────────────────────────────────────────────────
@@ -39,7 +53,7 @@ pub const EVENT_SIGNAL: &str = "Event";
 pub const CURRENT_SESSION_PROPERTY: &str = "CurrentSession";
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Unified event signal — replaces FocusChanged, ActivityChanged, and power_event.
+// Unified event signal.
 //
 // The `event` signal carries a D-Bus struct with 4 fields:
 //   (u:tag, s:app_class, s:title, u:power_tag)
@@ -120,16 +134,13 @@ pub const EVENT_STRUCT_FIELD_COUNT: usize = 4;
 pub const BLOCKED_APP_SIGNATURE: &str = "(sxyt)";
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Legacy FocusChanged constants — retained during migration, no longer emitted by the plugin.
+// FocusChanged constants.
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// Legacy: FocusChanged variant U32 value — desktop/unfocused.
 pub const FOCUS_TAG_DESKTOP: u32 = 0;
 
-/// Legacy: FocusChanged struct first-field — app variant discriminator.
 pub const FOCUS_TAG_APP: u32 = 1;
 
-/// Legacy: FocusChanged variant U32 value — window blocked by enforcement.
 pub const FOCUS_TAG_BLOCKED: u32 = 2;
 
 pub const FOCUS_FIELD_TAG: usize = 0;
@@ -145,3 +156,28 @@ pub const FOCUS_FIELD_UID: usize = 4;
 pub const FOCUS_STRUCT_FIELD_COUNT: usize = 5;
 
 pub const FOCUS_STRUCT_SIGNATURE: &str = "(ussuu)";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signal_names_match_controller_contract() {
+        assert_eq!(APP_BLOCKED_SIGNAL, "AppBlocked");
+        assert_eq!(POLICY_CHANGED_SIGNAL, "PolicyChanged");
+        assert_eq!(DOMAIN_BLOCKED_SIGNAL, "DomainBlocked");
+        assert_eq!(USAGE_UPDATED_SIGNAL, "UsageUpdated");
+    }
+
+    #[test]
+    fn method_names_match_controller_contract() {
+        assert_eq!(GET_BLOCKED_APPS_METHOD, "GetBlockedApps");
+        assert_eq!(GET_BLOCKED_APPS_FOR_USER_METHOD, "GetBlockedAppsForUser");
+        assert_eq!(REGISTER_BRIDGE_METHOD, "RegisterBridge");
+    }
+
+    #[test]
+    fn blocked_app_signature_unchanged() {
+        assert_eq!(BLOCKED_APP_SIGNATURE, "(sxyt)");
+    }
+}

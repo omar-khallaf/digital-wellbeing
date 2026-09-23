@@ -28,14 +28,9 @@ impl ReportsRepo {
     }
 
     /// Fetch per-date total usage across a range, pre-aggregated by SQL.
-    pub async fn get_daily_bar_totals(
-        &self,
-        start: &str,
-        end: &str,
-        uid: u32,
-    ) -> Result<Vec<DateTotal>> {
+    pub async fn get_daily_bar_totals(&self, start: &str, end: &str) -> Result<Vec<DateTotal>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_daily_bar_totals(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_daily_bar_totals(start, end))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_daily_bar_totals"))?
             .map_err(Into::into)
@@ -54,10 +49,9 @@ impl ReportsRepo {
         &self,
         start: &str,
         end: &str,
-        uid: u32,
     ) -> Result<Vec<AppUsageSummary>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_app_usage_summary"))?
             .map_err(Into::into)
@@ -68,10 +62,9 @@ impl ReportsRepo {
         &self,
         start: &str,
         end: &str,
-        uid: u32,
     ) -> Result<Vec<TitleUsageSummary>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_title_usage_summary"))?
             .map_err(Into::into)
@@ -81,15 +74,15 @@ impl ReportsRepo {
     ///
     /// All summary fields (app, title, daily bar) arrive pre-aggregated by
     /// SQL — no GUI-side sorting or flattening needed.
-    pub async fn fetch_all(&self, uid: u32, range: DateRange) -> Result<ReportsData> {
+    pub async fn fetch_all(&self, range: DateRange) -> Result<ReportsData> {
         let start = range.start_str();
         let end = range.end_str();
 
         let (daily_totals, app_cats, app_summary, title_summary) = tokio::join!(
-            self.get_daily_bar_totals(&start, &end, uid),
+            self.get_daily_bar_totals(&start, &end),
             self.get_app_categories(),
-            self.get_app_usage_summary(&start, &end, uid),
-            self.get_title_usage_summary(&start, &end, uid),
+            self.get_app_usage_summary(&start, &end),
+            self.get_title_usage_summary(&start, &end),
         );
 
         Ok(ReportsData {

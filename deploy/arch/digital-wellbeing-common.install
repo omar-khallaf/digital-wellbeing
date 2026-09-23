@@ -1,0 +1,14 @@
+# StateDirectory=digital-wellbeing mode 700 is created by systemd; no chown needed.
+post_install() {
+  systemctl daemon-reload
+  systemctl enable digital-wellbeing-daemon.service
+  systemctl reload dbus.service || true
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  systemctl daemon-reload
+}

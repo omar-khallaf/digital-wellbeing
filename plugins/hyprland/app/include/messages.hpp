@@ -27,7 +27,7 @@ Overloaded(Ts...) -> Overloaded<Ts...>;
 
 // ── D-Bus thread → Compositor (chan B) ──────────────────────────────────────
 
-/// Per-app block command (from BlockedAppsChanged signal).
+/// Per-app block command (from AppBlocked signal).
 struct BlockCmd {
     BlockCmd() = default;
     BlockCmd(std::string wclass_, BlockReason reason_) : wclass(std::move(wclass_)), reason(reason_) {}

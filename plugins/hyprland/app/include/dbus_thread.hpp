@@ -101,8 +101,9 @@ class DbusThread {
     // ── Static C callbacks ──
     static auto onCompositorEvent(sd_event_source *src, int fd, uint32_t revents, void *userdata) -> int;
     static auto onRegisterReply(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
-    static auto onBlockedAppsReply(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
-    static auto onBlockedAppsChanged(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
+    static auto onGetBlockedAppsReply(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
+    static auto onAppBlocked(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
+    static auto onDomainBlocked(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
     static auto onNameOwnerChanged(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
     static auto onLogindSignal(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
     static auto onScreenSaverSignal(sd_bus_message *msg, void *userdata, sd_bus_error *ret_error) -> int;
@@ -112,8 +113,9 @@ class DbusThread {
 
     // ── Internal handlers ──
     void drainCompositorMessages();
-    void handleBlockedAppsReply(sd_bus_message *msg);
-    void handleBlockedAppsChanged(sd_bus_message *msg);
+    void handleGetBlockedAppsReply(sd_bus_message *msg);
+    void handleAppBlocked(sd_bus_message *msg);
+    void handleDomainBlocked(sd_bus_message *msg);
     void handleNameOwnerChanged(sd_bus_message *msg, sd_bus *sourceBus);
     void handleLogindSignal(sd_bus_message *msg);
     void handleScreenSaverSignal(sd_bus_message *msg);
@@ -139,7 +141,7 @@ class DbusThread {
     // ── Subscriptions ──
     /// Watch NameOwnerChanged for DAEMON_INTERFACE on a single bus.
     void subscribeNameOwnerChanged(sd_bus *bus);
-    /// BlockedAppsChanged — follows the daemon bus (m_daemonBus).
+    /// AppBlocked + DomainBlocked — follows the daemon bus (m_daemonBus).
     void subscribeToBlockedApps();
     /// logind PrepareForSleep / PrepareForShutdown — always on system bus.
     void subscribeToLogind(sd_bus *bus);

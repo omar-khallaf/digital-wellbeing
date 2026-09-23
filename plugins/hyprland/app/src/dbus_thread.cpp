@@ -84,22 +84,27 @@ auto DbusThread::onRegisterReply(sd_bus_message *msg, void *userdata, sd_bus_err
     logInfo("Registered with daemon");
     self->m_registered = true;
 
-    sd_bus_call_method_async(self->m_daemonBus, nullptr, DAEMON_INTERFACE, DAEMON_OBJECT_PATH,
-                             "org.freedesktop.DBus.Properties", "Get", &DbusThread::onBlockedAppsReply, self, "(ss)",
-                             DAEMON_INTERFACE, "BlockedApps");
+    sd_bus_call_method_async(self->m_daemonBus, nullptr, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DAEMON_INTERFACE,
+                             GET_BLOCKED_APPS_METHOD, &DbusThread::onGetBlockedAppsReply, self, nullptr);
     return 0;
 }
 
-auto DbusThread::onBlockedAppsReply(sd_bus_message *msg, void *userdata, sd_bus_error * /*unused*/) -> int {
+auto DbusThread::onGetBlockedAppsReply(sd_bus_message *msg, void *userdata, sd_bus_error * /*unused*/) -> int {
     auto *self = static_cast<DbusThread *>(userdata);
-    self->handleBlockedAppsReply(msg);
+    self->handleGetBlockedAppsReply(msg);
     self->emitCurrentFocusEvent();
     return 0;
 }
 
-auto DbusThread::onBlockedAppsChanged(sd_bus_message *msg, void *userdata, sd_bus_error * /*unused*/) -> int {
+auto DbusThread::onAppBlocked(sd_bus_message *msg, void *userdata, sd_bus_error * /*unused*/) -> int {
     auto *self = static_cast<DbusThread *>(userdata);
-    self->handleBlockedAppsChanged(msg);
+    self->handleAppBlocked(msg);
+    return 0;
+}
+
+auto DbusThread::onDomainBlocked(sd_bus_message *msg, void *userdata, sd_bus_error * /*unused*/) -> int {
+    auto *self = static_cast<DbusThread *>(userdata);
+    self->handleDomainBlocked(msg);
     return 0;
 }
 
@@ -539,19 +544,18 @@ void DbusThread::drainCompositorMessages() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// BlockedApps property reply
+// GetBlockedApps method reply — returns a(sxyt) directly (no variant wrapper).
 // ═════════════════════════════════════════════════════════════════════════════
 
-void DbusThread::handleBlockedAppsReply(sd_bus_message *msg) {
+void DbusThread::handleGetBlockedAppsReply(sd_bus_message *msg) {
     SyncAllCmd syncCmd;
 
-    int r = sd_bus_message_enter_container(msg, 'v', nullptr);
-    if (r < 0) {
-        logErr("handleBlockedAppsReply: enter_container(v) failed");
+    if (sd_bus_message_is_method_error(msg, nullptr) != 0) {
+        logErr("handleGetBlockedAppsReply: method error");
         return;
     }
 
-    r = sd_bus_message_enter_container(msg, SD_BUS_TYPE_ARRAY, "(sxyt)");
+    int r = sd_bus_message_enter_container(msg, SD_BUS_TYPE_ARRAY, "(sxyt)");
     if (r >= 0) {
         while (sd_bus_message_enter_container(msg, SD_BUS_TYPE_STRUCT, "sxyt") > 0) {
             const char *wClass = nullptr;
@@ -578,7 +582,6 @@ void DbusThread::handleBlockedAppsReply(sd_bus_message *msg) {
         }
         sd_bus_message_exit_container(msg);
     }
-    sd_bus_message_exit_container(msg);
 
     auto ws = m_channels.cmdQueue.prepare_write(1);
     if (ws.get_items_written() > 0) {
@@ -587,17 +590,18 @@ void DbusThread::handleBlockedAppsReply(sd_bus_message *msg) {
         }
         eventfd_write(m_channels.cmdEfd, 1);
     } else {
-        logErr("handleBlockedAppsReply: cmd queue full");
+        logErr("handleGetBlockedAppsReply: cmd queue full");
     }
 
     logInfo("Initial sync: " + std::to_string(syncCmd.entries.size()) + " blocked apps");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// BlockedAppsChanged signal handler
+// AppBlocked signal handler — payload (usby).
+// DomainBlocked is subscribed separately and ignored (no overlay action).
 // ═════════════════════════════════════════════════════════════════════════════
 
-void DbusThread::handleBlockedAppsChanged(sd_bus_message *msg) {
+void DbusThread::handleAppBlocked(sd_bus_message *msg) {
     uint32_t uid = 0;
     const char *rawAppClass = nullptr;
     int blocked = 0;
@@ -605,18 +609,20 @@ void DbusThread::handleBlockedAppsChanged(sd_bus_message *msg) {
 
     int r = sd_bus_message_read(msg, "usby", &uid, &rawAppClass, &blocked, &reason);
     if (r < 0) {
-        logErr("BlockedAppsChanged: read failed");
+        logErr("AppBlocked: read failed");
         return;
     }
 
+    (void)uid;
+
     auto wc = WindowClass::from_raw(rawAppClass);
     if (!wc.has_value()) {
-        logErr("BlockedAppsChanged: invalid wclass");
+        logErr("AppBlocked: invalid wclass");
         return;
     }
     auto br = raw_to_block_reason(reason);
     if (!br.has_value()) {
-        logErr("BlockedAppsChanged: invalid reason");
+        logErr("AppBlocked: invalid reason");
         return;
     }
 
@@ -629,7 +635,7 @@ void DbusThread::handleBlockedAppsChanged(sd_bus_message *msg) {
             }
             eventfd_write(m_channels.cmdEfd, 1);
         } else {
-            logErr("BlockedAppsChanged: cmd queue full");
+            logErr("AppBlocked: cmd queue full");
         }
     } else {
         UnblockCmd cmd{wc->value()};
@@ -640,9 +646,23 @@ void DbusThread::handleBlockedAppsChanged(sd_bus_message *msg) {
             }
             eventfd_write(m_channels.cmdEfd, 1);
         } else {
-            logErr("BlockedAppsChanged: cmd queue full");
+            logErr("AppBlocked: cmd queue full");
         }
     }
+}
+
+void DbusThread::handleDomainBlocked(sd_bus_message *msg) {
+    uint32_t uid = 0;
+    const char *rawDomain = nullptr;
+    uint8_t reason = 0;
+    int r = sd_bus_message_read(msg, "usy", &uid, &rawDomain, &reason);
+    if (r < 0) {
+        logErr("DomainBlocked: read failed");
+        return;
+    }
+    (void)uid;
+    (void)rawDomain;
+    (void)reason;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -663,7 +683,7 @@ void DbusThread::handleNameOwnerChanged(sd_bus_message *msg, sd_bus *sourceBus) 
 
     if ((oldOwner != nullptr) && (*oldOwner != 0) && ((newOwner == nullptr) || (*newOwner == 0))) {
         // Disappeared — m_daemonBus stays pointing to the bus so the
-        // existing BlockedAppsChanged match remains valid if the daemon
+        // existing AppBlocked match remains valid if the daemon
         // reappears on the same bus.
         m_registered = false;
         m_daemonOwner = false;
@@ -693,7 +713,7 @@ void DbusThread::handleNameOwnerChanged(sd_bus_message *msg, sd_bus *sourceBus) 
 
         setupDaemonProxy();
     } else if ((oldOwner != nullptr) && (*oldOwner != 0) && (newOwner != nullptr) && (*newOwner != 0)) {
-        // Restarted — same bus, BlockedAppsChanged match is still active
+        // Restarted — same bus, AppBlocked match is still active
         m_registered = false;
         logInfo("Daemon restarted — re-registering");
         setupDaemonProxy();
@@ -791,10 +811,14 @@ void DbusThread::subscribeToBlockedApps() {
     if (m_daemonBus == nullptr) {
         return;
     }
-    const auto match = std::string{"type='signal',interface='"} + DAEMON_INTERFACE + "',member='" +
-                       BLOCKED_APPS_CHANGED_SIGNAL + "',path='" + DAEMON_OBJECT_PATH + "'";
-    sd_bus_add_match(m_daemonBus, nullptr, match.c_str(), &DbusThread::onBlockedAppsChanged, this);
-    logInfo("Subscribed to BlockedAppsChanged");
+    const auto appMatch = std::string{"type='signal',interface='"} + DAEMON_INTERFACE + "',member='" +
+                          APP_BLOCKED_SIGNAL + "',path='" + DAEMON_OBJECT_PATH + "'";
+    sd_bus_add_match(m_daemonBus, nullptr, appMatch.c_str(), &DbusThread::onAppBlocked, this);
+    logInfo("Subscribed to AppBlocked");
+    const auto domainMatch = std::string{"type='signal',interface='"} + DAEMON_INTERFACE + "',member='" +
+                             DOMAIN_BLOCKED_SIGNAL + "',path='" + DAEMON_OBJECT_PATH + "'";
+    sd_bus_add_match(m_daemonBus, nullptr, domainMatch.c_str(), &DbusThread::onDomainBlocked, this);
+    logInfo("Subscribed to DomainBlocked");
 }
 
 void DbusThread::subscribeToLogind(sd_bus *bus) {

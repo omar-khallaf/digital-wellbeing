@@ -31,9 +31,9 @@ impl PoliciesRepo {
         self.bus.create_proxy().await
     }
 
-    pub async fn list_policies(&self, uid: u32) -> Result<Vec<PolicyData>> {
+    pub async fn list_policies(&self) -> Result<Vec<PolicyData>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.list_policies(uid))
+        timeout(DBUS_TIMEOUT, proxy.list_policies())
             .await
             .map_err(|_| anyhow::anyhow!("timeout: list_policies"))?
             .map_err(Into::into)
@@ -56,9 +56,9 @@ impl PoliciesRepo {
     }
 
     /// Fetch all data needed to build a `PoliciesViewModel`.
-    pub async fn fetch_all(&self, uid: u32) -> Result<PoliciesData> {
+    pub async fn fetch_all(&self) -> Result<PoliciesData> {
         let (policies, categories, app_cats) = tokio::join!(
-            self.list_policies(uid),
+            self.list_policies(),
             self.list_categories(),
             self.get_app_categories(),
         );

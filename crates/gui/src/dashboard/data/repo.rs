@@ -12,7 +12,7 @@ use tracing::warn;
 use wellbeing_core::*;
 
 use crate::dbus::BusManager;
-use crate::dbus::client::{BlockedApps, DaemonProxy};
+use crate::dbus::client::DaemonProxy;
 
 const DBUS_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -38,21 +38,15 @@ impl DashboardRepo {
 
     pub async fn get_blocked_apps(&self) -> Result<Vec<BlockedAppEntry>> {
         let proxy = self.proxy().await?;
-        let result: BlockedApps = timeout(DBUS_TIMEOUT, proxy.blocked_apps())
+        timeout(DBUS_TIMEOUT, proxy.get_blocked_apps())
             .await
-            .map_err(|_| anyhow::anyhow!("timeout: blocked_apps"))?
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(result.into())
+            .map_err(|_| anyhow::anyhow!("timeout: get_blocked_apps"))?
+            .map_err(Into::into)
     }
 
-    pub async fn get_day_events(
-        &self,
-        uid: u32,
-        start_ms: i64,
-        end_ms: i64,
-    ) -> Result<Vec<DayEventRow>> {
+    pub async fn get_day_events(&self, start_ms: i64, end_ms: i64) -> Result<Vec<DayEventRow>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_day_events(uid, start_ms, end_ms))
+        timeout(DBUS_TIMEOUT, proxy.get_day_events(start_ms, end_ms))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_day_events"))?
             .map_err(Into::into)
@@ -80,16 +74,12 @@ impl DashboardRepo {
         &self,
         start: &str,
         end: &str,
-        uid: u32,
     ) -> Result<Vec<CategoryUsageSummary>> {
         let proxy = self.proxy().await?;
-        timeout(
-            DBUS_TIMEOUT,
-            proxy.get_category_usage_summary(start, end, uid),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("timeout: get_category_usage_summary"))?
-        .map_err(Into::into)
+        timeout(DBUS_TIMEOUT, proxy.get_category_usage_summary(start, end))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout: get_category_usage_summary"))?
+            .map_err(Into::into)
     }
 
     /// Fetch all data needed to build a `DashboardViewModel`.
@@ -101,7 +91,7 @@ impl DashboardRepo {
     /// App/title/category summary fields arrive pre-sorted by total_millis DESC
     /// (GROUP BY + ORDER BY in SQL via the generated `total_millis`
     /// column) — no GUI-side sorting or aggregation needed.
-    pub async fn fetch_all(&self, uid: u32, range: DateRange) -> Result<DashboardData> {
+    pub async fn fetch_all(&self, range: DateRange) -> Result<DashboardData> {
         let start = range.start_str();
         let end = range.end_str();
 
@@ -119,17 +109,17 @@ impl DashboardRepo {
 
         let (blocks, day_events, cat_summary, cats, app_cats, app_sum, title_sum) = tokio::join!(
             self.get_blocked_apps(),
-            self.get_day_events(uid, day_start_ms, day_end_ms),
-            self.get_category_usage_summary(&start, &end, uid),
+            self.get_day_events(day_start_ms, day_end_ms),
+            self.get_category_usage_summary(&start, &end),
             self.list_categories(),
             self.get_app_categories(),
-            self.get_app_usage_summary(&start, &end, uid),
-            self.get_title_usage_summary(&start, &end, uid),
+            self.get_app_usage_summary(&start, &end),
+            self.get_title_usage_summary(&start, &end),
         );
 
         Ok(DashboardData {
             blocked: blocks.unwrap_or_else(|e| {
-                warn!("dashboard: blocked_apps failed: {e}");
+                warn!("dashboard: get_blocked_apps failed: {e}");
                 vec![]
             }),
             day_events: day_events.unwrap_or_else(|e| {
@@ -160,14 +150,9 @@ impl DashboardRepo {
     }
 
     /// Fetch aggregated per-app totals across a date range, sorted by total_millis DESC.
-    async fn get_app_usage_summary(
-        &self,
-        start: &str,
-        end: &str,
-        uid: u32,
-    ) -> Result<Vec<AppUsageSummary>> {
+    async fn get_app_usage_summary(&self, start: &str, end: &str) -> Result<Vec<AppUsageSummary>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_app_usage_summary(start, end))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_app_usage_summary"))?
             .map_err(Into::into)
@@ -178,10 +163,9 @@ impl DashboardRepo {
         &self,
         start: &str,
         end: &str,
-        uid: u32,
     ) -> Result<Vec<TitleUsageSummary>> {
         let proxy = self.proxy().await?;
-        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end, uid))
+        timeout(DBUS_TIMEOUT, proxy.get_title_usage_summary(start, end))
             .await
             .map_err(|_| anyhow::anyhow!("timeout: get_title_usage_summary"))?
             .map_err(Into::into)

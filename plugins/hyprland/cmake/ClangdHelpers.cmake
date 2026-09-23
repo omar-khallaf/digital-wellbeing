@@ -40,7 +40,7 @@ function(generate_clangd_config PROJECT_ROOT_DIR)
         endif()
     endforeach()
 
-    # 4. Universal FetchContent Discovery
+    # 4. Build-tree dependency discovery
     # This finds ANY 'include' directory inside the _deps folder (GTest, fmt, etc.)
     set(FETCH_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
     if(EXISTS "${FETCH_DEPS_DIR}")
@@ -57,7 +57,7 @@ function(generate_clangd_config PROJECT_ROOT_DIR)
         endforeach()
     endif()
 
-    # 5. Staging Prefix (For Boost/Sqlite from ExternalProject)
+    # 5. Staging prefix
     if(EXISTS "${CMAKE_STAGING_PREFIX}/include")
         list(APPEND CLANGD_FLAGS "-I" "${CMAKE_STAGING_PREFIX}/include")
     endif()

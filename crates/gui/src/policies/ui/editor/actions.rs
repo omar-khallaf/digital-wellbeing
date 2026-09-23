@@ -76,7 +76,7 @@ impl RenderOnce for SaveDeleteButtons {
                                             None => repo.create_policy(input).await.map(|_| ()),
                                         };
                                         if res.is_ok() {
-                                            if let Ok(data) = repo.fetch_all(uid).await {
+                                            if let Ok(data) = repo.fetch_all().await {
                                                 let mut vm = PoliciesViewModel {
                                                     data: Some(data),
                                                     is_admin,
@@ -117,12 +117,11 @@ impl RenderOnce for SaveDeleteButtons {
                                 return;
                             };
                             let is_admin = entity.read(app).state.mode == RenderMode::Admin;
-                            let uid = entity.read(app).state.uid;
                             entity.update(app, |this, cx2| {
                                 if let Some(id) = this.policy_edit_id {
                                     let task = cx2.spawn(async move |this2, cx3| {
                                         let _ = repo.delete_policy(id).await;
-                                        if let Ok(data) = repo.fetch_all(uid).await {
+                                        if let Ok(data) = repo.fetch_all().await {
                                             let mut vm = PoliciesViewModel {
                                                 data: Some(data),
                                                 is_admin,

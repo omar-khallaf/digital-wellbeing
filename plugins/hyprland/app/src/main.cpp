@@ -14,9 +14,9 @@
 #include <unistd.h>
 
 // Hyprland plugin API
-#include <hyprland/Compositor.hpp>
-#include <hyprland/event/EventBus.hpp>
-#include <hyprland/plugins/PluginAPI.hpp>
+#include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/plugins/PluginAPI.hpp>
 
 #include "hooks.hpp"
 #include "logging.hpp"
