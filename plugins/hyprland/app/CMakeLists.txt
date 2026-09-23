@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.27)
-project(wellbeing-lockdown LANGUAGES CXX)
+project(wellbeing-hyprland-plugin LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
@@ -27,13 +27,17 @@ endif()
 file(GLOB_RECURSE PLUGIN_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
-add_library(wellbeing-lockdown SHARED ${PLUGIN_SOURCES})
+add_library(wellbeing-hyprland-plugin SHARED ${PLUGIN_SOURCES})
 
-# Hyprland plugins load by path; drop the `lib` prefix so the artifact is
-# `wellbeing-lockdown.so` (matches PLUGIN_SO_NAME and Hyprland conventions).
-set_target_properties(wellbeing-lockdown PROPERTIES PREFIX "")
+# Keep CMake's default `lib` prefix intentionally so the artifact is
+# `libwellbeing-hyprland-plugin.so`, matching the nixpkgs `hyprlandPlugins`
+# convention (`$out/lib/lib<name>.so`) which home-manager's
+# `wayland.windowManager.hyprland.plugins` list auto-derives. Hyprland loads
+# by absolute path so the prefix is irrelevant to the compositor.
 
-target_include_directories(wellbeing-lockdown PRIVATE
+target_link_options(wellbeing-hyprland-plugin PRIVATE $<$<CONFIG:Release>:-s>)
+
+target_include_directories(wellbeing-hyprland-plugin PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ── System dependencies (pkg-config) ─────────────────────────────────────────
@@ -57,24 +61,24 @@ pkg_check_modules(hl_headers QUIET
 )
 
 if(hl_headers_FOUND)
-    target_include_directories(wellbeing-lockdown PRIVATE ${hl_headers_INCLUDE_DIRS})
-    message(STATUS "wellbeing-lockdown: transitive Hyprland header include dirs: ${hl_headers_INCLUDE_DIRS}")
+    target_include_directories(wellbeing-hyprland-plugin PRIVATE ${hl_headers_INCLUDE_DIRS})
+    message(STATUS "wellbeing-hyprland-plugin: transitive Hyprland header include dirs: ${hl_headers_INCLUDE_DIRS}")
 endif()
 
 pkg_check_modules(libsystemd REQUIRED IMPORTED_TARGET libsystemd)
 
-target_link_libraries(wellbeing-lockdown PRIVATE PkgConfig::deps PkgConfig::libsystemd rt)
+target_link_libraries(wellbeing-hyprland-plugin PRIVATE PkgConfig::deps PkgConfig::libsystemd rt)
 
 # ── LockFreeSpscQueue: vendored header-only ─────────────────────────────────
 add_library(spsc_queue INTERFACE)
 target_include_directories(spsc_queue INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/include)
-target_link_libraries(wellbeing-lockdown PRIVATE spsc_queue)
+target_link_libraries(wellbeing-hyprland-plugin PRIVATE spsc_queue)
 
 # ── Warning flags ────────────────────────────────────────────────────────────
 # Flags from the project template, excluding any that break Hyprland headers.
 target_compile_options(
-    wellbeing-lockdown
+    wellbeing-hyprland-plugin
     PRIVATE -Wall
             -Wextra
             -Wundef
@@ -102,7 +106,7 @@ generate_clangd_config("${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Expose the real compile DB (compile_commands.json) at the source root so
 # clangd uses the actual -std=... / -I flags.
-link_compile_commands(wellbeing-lockdown "${CMAKE_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
+link_compile_commands(wellbeing-hyprland-plugin "${CMAKE_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Force CMake re-configure on next build so clangd sees source changes.
 add_custom_target(force_reconfigure_clangd ALL

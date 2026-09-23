@@ -146,7 +146,7 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
         const std::string client_hash = __hyprland_api_get_client_hash();
 
         if (hash != client_hash) {
-            HyprlandAPI::addNotification(PHANDLE, "[wellbeing-lockdown] Version mismatch",
+            HyprlandAPI::addNotification(PHANDLE, "[wellbeing-hyprland-plugin] Version mismatch",
                                          CHyprColor{1.0, 0.2F, 0.2F, 1.0}, 5000);
             logErr("version mismatch: headers '" + client_hash + "' != compositor '" + hash + "'");
             throw std::runtime_error("version mismatch");
@@ -210,7 +210,7 @@ extern "C" APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     logInfo("PLUGIN_INIT: complete");
 
     return PLUGIN_DESCRIPTION_INFO{
-        "wellbeing-lockdown",
+        "wellbeing-hyprland-plugin",
         "Digital Wellbeing — compositor plugin for screen-time management",
         "Digital Wellbeing Authors",
         "0.2.0",

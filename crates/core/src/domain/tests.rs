@@ -85,7 +85,7 @@ fn block_reason_roundtrips_as_u8() {
 // Cross-language D-Bus contract tests
 //
 // These tests pin D-Bus type signatures and binary encodings that the C++
-// compositor plugin (wellbeing-lockdown) relies on. If any of these fail,
+// compositor plugin (libwellbeing-hyprland-plugin) relies on. If any of these fail,
 // the plugin will get InvalidArgs D-Bus errors ("Failed to enter a
 // container" / "Failed to open a variant") because the wire format
 // between Rust daemon and C++ plugin diverged.

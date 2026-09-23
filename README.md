@@ -88,7 +88,7 @@ cargo build --release
 cargo build -p wellbeing-daemon
 cargo build -p wellbeing-gui
 
-# Build the Hyprland compositor plugin (wellbeing-lockdown.so)
+# Build the Hyprland compositor plugin (libwellbeing-hyprland-plugin.so)
 cd plugins/hyprland && cmake --preset linux-amd64 && cmake --build --preset linux-amd64
 
 # Run tests
@@ -98,7 +98,7 @@ cargo test
 cd plugins/hyprland
 cmake --preset linux-host
 cmake --build build/linux-host --config Debug
-cd build/linux-host/wellbeing-lockdown-prefix/src/wellbeing-lockdown-build
+cd build/linux-host/wellbeing-hyprland-plugin-prefix/src/wellbeing-hyprland-plugin-build
 ctest -C Debug --output-on-failure
 
 # Lint

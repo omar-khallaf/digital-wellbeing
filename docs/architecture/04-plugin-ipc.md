@@ -51,8 +51,8 @@ flowchart LR
 
 Signals (plugin -> daemon):
 
-| Signal | Payload                                                                                                                                                 | When                                                   |
-| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Signal | Payload                                                                                                                                       | When                                                   |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | Event  | (u32, String, String, u32) — (tag, app_class, title, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block; power_tag encodes idle/resume/power | On every compositor focus switch and idle state change |
 
 Property (readable):

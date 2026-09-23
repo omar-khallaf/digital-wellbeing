@@ -25,7 +25,8 @@ override_dh_auto_install:
 
 	# Hyprland plugin
 	cd plugins/hyprland/build/$(PRESET)/app && \
-		install -Dm755 wellbeing-lockdown.so debian/wellbeing-hyprland-plugin/usr/lib/hyprland-plugins/wellbeing-lockdown.so
+		install -Dm755 libwellbeing-hyprland-plugin.so debian/wellbeing-hyprland-plugin/usr/lib/hyprland-plugins/libwellbeing-hyprland-plugin.so
+	strip --strip-unneeded debian/wellbeing-hyprland-plugin/usr/lib/hyprland-plugins/libwellbeing-hyprland-plugin.so
 
 	# Common D-Bus policy (shared by all components)
 	install -Dm644 deploy/dbus/org.wellbeing.v1.Controller.conf \
@@ -46,5 +47,5 @@ override_dh_auto_install:
 		debian/wellbeing-common/usr/share/dbus-1/services/org.wellbeing.v1.Controller.service
 
 	# Hyprland example config
-	install -Dm644 deploy/hyprland/wellbeing-lockdown.conf.example \
-		debian/wellbeing-hyprland-plugin/usr/share/doc/wellbeing-hyprland-plugin/examples/wellbeing-lockdown.conf.example
+	install -Dm644 deploy/hyprland/wellbeing-hyprland-plugin.conf.example \
+		debian/wellbeing-hyprland-plugin/usr/share/doc/wellbeing-hyprland-plugin/examples/wellbeing-hyprland-plugin.conf.example

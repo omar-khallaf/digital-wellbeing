@@ -158,9 +158,9 @@ via the app_categories table.
 
 Domain-level categorization powers the browser extension domain blocking
 feature. When the daemon receives a `DomainEvent` signal from the bridge, it
-resolves the domain's category before checking policies — enabling policies
-that target entire categories of websites (e.g., `Block(Social)` blocks
-`reddit.com`, `twitter.com`, etc. at the browser tab level).
+resolves the domain's category before checking policies — enabling policies that
+target entire categories of websites (e.g., `Block(Social)` blocks `reddit.com`,
+`twitter.com`, etc. at the browser tab level).
 
 ### domain_categories Table
 

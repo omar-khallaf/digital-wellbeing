@@ -153,8 +153,24 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
                 }
             }
             InternalEvent::Shutdown(ack) => {
-                let uids = self.platform.registry().read().await.registered_uids();
-                for &uid in &uids {
+                let mut set: std::collections::HashSet<Uid> = self
+                    .platform
+                    .registry()
+                    .read()
+                    .await
+                    .registered_uids()
+                    .into_iter()
+                    .collect();
+                set.extend(self.event_buffer.uids());
+                match self.blocking_repo.uids_with_open_intervals().await {
+                    Ok(db_uids) => {
+                        set.extend(db_uids);
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Shutdown: db-open UID lookup failed");
+                    }
+                }
+                for uid in set {
                     self.event_buffer.push(
                         PlatformEvent::PowerEvent {
                             kind: PowerEventKind::Shutdown,
@@ -188,6 +204,7 @@ impl<P: Platform, C: Clock> EnforcerActor<P, C> {
             let mut set: std::collections::HashSet<Uid> =
                 self.event_buffer.uids().into_iter().collect();
             set.extend(self.platform.registry().read().await.registered_uids());
+            set.extend(self.blocking_repo.uids_with_open_intervals().await?);
             set.into_iter().collect::<Vec<_>>()
         };
 

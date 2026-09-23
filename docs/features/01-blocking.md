@@ -173,10 +173,11 @@ When the user clicks Close Window on a blocked app:
 ## Overlay Design
 
 The overlay is drawn directly by a compositor plugin that loads into the
-compositor's address space. For Hyprland, this is wellbeing-lockdown.so; for
-KWin, a KWin Effect; for Wayfire, a Wayfire plugin; for GNOME Shell, a JS
-extension. All communicate with the daemon over the daemon's bus (system bus in
-system mode, session bus in session mode) using the same interface.
+compositor's address space. For Hyprland, this is
+libwellbeing-hyprland-plugin.so; for KWin, a KWin Effect; for Wayfire, a Wayfire
+plugin; for GNOME Shell, a JS extension. All communicate with the daemon over
+the daemon's bus (system bus in system mode, session bus in session mode) using
+the same interface.
 
 Unlike a client-side overlay (gpui window, layer-shell, etc.), the plugin
 renders the overlay UI after the blocked window finishes rendering — giving
@@ -257,8 +258,8 @@ through the daemon's BlockedApps property and BlockedAppsChanged signal (see
 
 Signals (plugin -> daemon):
 
-| Signal | Payload                                                                                                            |
-| ------ | ------------------------------------------------------------------------------------------------------------------ |
+| Signal | Payload                                                                                                  |
+| ------ | -------------------------------------------------------------------------------------------------------- |
 | Event  | (u32, String, String, u32) — (tag, app_class, title, power_tag); tag=0=Focus, tag=1=Unfocus, tag=2=Block |
 
 Property:

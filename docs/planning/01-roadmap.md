@@ -126,32 +126,34 @@ per-minute tick (eliminates per-app timers).
 
 The daemon's D-Bus interface is redesigned: properties become methods, caller
 uid is derived from `SO_PEERCRED` instead of message payloads, and signal names
-are clarified. Domain blocking moves from the old DNS+eBPF approach to a
-browser extension + native messaging bridge that mirrors the compositor plugin
-model. The extension sends domain focus/unfocus events (chrome.tabs,
-chrome.windows), the daemon tracks domain active time and evaluates domain
-policies, and the extension enforces verdicts with tab-level overlays.
+are clarified. Domain blocking moves from the old DNS+eBPF approach to a browser
+extension + native messaging bridge that mirrors the compositor plugin model.
+The extension sends domain focus/unfocus events (chrome.tabs, chrome.windows),
+the daemon tracks domain active time and evaluates domain policies, and the
+extension enforces verdicts with tab-level overlays.
 
 Two independent enforcement paths run in parallel:
 
-| Layer | Overlay rendered by | Technology | Target |
-|---|---|---|---|
-| App-level | Compositor plugin | C++ OpenGL (Hyprland) | `app_class` (whole window) |
-| Domain-level | Browser extension | HTML/CSS/JS (tab content) | `domain` (per tab) |
+| Layer        | Overlay rendered by | Technology                | Target                     |
+| ------------ | ------------------- | ------------------------- | -------------------------- |
+| App-level    | Compositor plugin   | C++ OpenGL (Hyprland)     | `app_class` (whole window) |
+| Domain-level | Browser extension   | HTML/CSS/JS (tab content) | `domain` (per tab)         |
 
 ### G1 — D-Bus Interface Revamp (Breaking Change)
 
 Interface `org.wellbeing.v1.Controller` is updated:
 
 **Properties removed:**
+
 - `BlockedApps` (property, read) — becomes `GetBlockedApps()` method.
 
 **All methods derive caller uid from SO_PEERCRED — uid is never passed in the
 message payload. Existing `user_id` / `uid` parameters are removed.**
 
 **Policy CRUD (uid removed from all signatures):**
-- `ListPolicies()` — returns policies for the calling user (was `ListPolicies(
-  filter_owner)` with RBAC branching).
+
+- `ListPolicies()` — returns policies for the calling user (was
+  `ListPolicies( filter_owner)` with RBAC branching).
 - `ListPoliciesForUser(uid)` — root only. Lists policies for any user.
 - `CreatePolicy(input)` — `input.user_id` removed; owner uid derived from
   connection. Root can use `CreatePolicyForUser(input, target_uid)`.
@@ -165,17 +167,21 @@ message payload. Existing `user_id` / `uid` parameters are removed.**
 - `DeletePolicyForUser(id, target_uid)` — root only. Deletes any user's policy.
 
 **Usage queries (uid removed from all signatures):**
+
 - `GetUsageRange(start_date, end_date)` — returns usage summaries for the
   calling user (was `GetUsageRange(start, end, uid)`).
 - `GetUsageRangeForUser(start_date, end_date, uid)` — root only. Returns usage
   for any user.
 
 **Category methods (unrestricted, no uid change):**
+
 - `ListCategories()` — unchanged (was already uid-free).
 - `GetAppCategories()` — unchanged (owner uid derived from connection).
-- `SetAppCategory(app_class, category_id)` — unchanged (owner uid derived from connection).
+- `SetAppCategory(app_class, category_id)` — unchanged (owner uid derived from
+  connection).
 
 **Block/domain state (uid-free, caller-scoped):**
+
 - `GetBlockedApps()` — returns blocked apps for the calling user (was
   `BlockedApps` property).
 - `GetBlockedAppsForUser(uid)` — root only. Returns blocked apps for any user.
@@ -184,6 +190,7 @@ message payload. Existing `user_id` / `uid` parameters are removed.**
   user.
 
 **Client registration (reverse discovery):**
+
 - `RegisterPlugin` — unchanged (compositor plugin registers itself; daemon
   learns uid via SO_PEERCRED, subscribes to the plugin's Event signal).
 - `RegisterBridge` — new. Domain bridge registers itself following the same
@@ -193,25 +200,28 @@ message payload. Existing `user_id` / `uid` parameters are removed.**
   in PluginRegistry (or a new BridgeRegistry).
 
 **Signal renames:**
+
 - `BlockedAppsChanged` → `AppBlocked` (payload unchanged: uid, app_class,
   blocked, reason).
 - `PolicyMutated` → `PolicyChanged` (payload unchanged: uid).
 
 **New signals:**
-- `DomainBlocked(uid, domain, blocked, reason)` — emitted when a domain block
-  is added or removed. Consumed by the bridge → forwarded to the extension.
+
+- `DomainBlocked(uid, domain, blocked, reason)` — emitted when a domain block is
+  added or removed. Consumed by the bridge → forwarded to the extension.
 
 **RBAC updates:**
+
 - All methods derive caller uid from `SO_PEERCRED` (kernel-authenticated).
   Existing `user_id` / `uid` parameters removed from all method signatures.
-- `*ForUser(uid)` methods return
-  `org.freedesktop.DBus.Error.AccessDenied` for non-root callers. Validation
-  order: **caller authentication** (SO_PEERCRED) → **ForUser check** (root
-  required if explicit target_uid) → **domain authorization** (ownership,
-  scope). This ordering ensures kernel-level identity is established before any
-  business-logic check runs.
+- `*ForUser(uid)` methods return `org.freedesktop.DBus.Error.AccessDenied` for
+  non-root callers. Validation order: **caller authentication** (SO_PEERCRED) →
+  **ForUser check** (root required if explicit target_uid) → **domain
+  authorization** (ownership, scope). This ordering ensures kernel-level
+  identity is established before any business-logic check runs.
 
 **Plugin contract updates (breaking — compositor plugin C++ code changes):**
+
 - `BlockedApps` property read → `GetBlockedApps()` method call.
 - `BlockedAppsChanged` → `AppBlocked` signal subscription.
 
@@ -226,20 +236,20 @@ message payload. Existing `user_id` / `uid` parameters are removed.**
       day, keyed by `(date, user_id, domain)`. Updated on the per-minute tick.
 - [ ] **Domain usage accumulation:** In the per-minute tick, parallel to app
       usage accumulation, record active time for the currently focused domain.
-- [ ] **`BlockedDomains` state:** New daemon state type mirroring
-      `BlockedApps`. Tracks `{domain, policy_id, blocked_since, reason}`.
+- [ ] **`BlockedDomains` state:** New daemon state type mirroring `BlockedApps`.
+      Tracks `{domain, policy_id, blocked_since, reason}`.
 - [ ] **Domain policy evaluation:** Remove the
       `PolicyTarget::Domain(_) => false` stub in the evaluator. Implement full
       domain matching: for each domain event, query policies with
       `target_type = Domain`, match against `DomainPattern`, evaluate via the
       existing `evaluate()` function, update `BlockedDomains`, emit
       `DomainBlocked` signal.
-- [ ] **Per-minute tick for domains:** Re-evaluate the focused domain
-      (catches TimeLimit expiry during continuous browsing).
+- [ ] **Per-minute tick for domains:** Re-evaluate the focused domain (catches
+      TimeLimit expiry during continuous browsing).
 - [ ] **Cross-layer interaction:** App-level blocks (compositor) and
       domain-level blocks (extension) are independent. A domain policy
-      evaluation never affects app-level state; an app block on the browser
-      does not impact domain tracking within it.
+      evaluation never affects app-level state; an app block on the browser does
+      not impact domain tracking within it.
 
 ### G3 — Native Bridge (Native Messaging Host)
 
@@ -251,39 +261,34 @@ and let the daemon subscribe.
 - [ ] **Bridge binary (Rust):** A per-user process that runs as the same uid.
       Connects to both system and session D-Bus busses permanently (same 4-step
       resolution as the compositor plugin).
-- [ ] **D-Bus interface (`org.wellbeing.v1.Bridge`):**
-      - Exposes a `DomainEvent(tag: u32, domain: s, tab_id: u32)` signal
-        (tag=0 Focus, tag=1 Unfocus, tag=2 Block). Mirrors the compositor
-        plugin's `Event` signal but for domains.
-      - Optionally exposes a `CurrentDomain` property (parallel to
-        `CurrentFocus`) for crash recovery / startup sync.
-      - Registered on both bus connections so the daemon can reach it from
-        either bus.
+- [ ] **D-Bus interface (`org.wellbeing.v1.Bridge`):** - Exposes a
+      `DomainEvent(tag: u32, domain: s, tab_id: u32)` signal (tag=0 Focus, tag=1
+      Unfocus, tag=2 Block). Mirrors the compositor plugin's `Event` signal but
+      for domains. - Optionally exposes a `CurrentDomain` property (parallel to
+      `CurrentFocus`) for crash recovery / startup sync. - Registered on both
+      bus connections so the daemon can reach it from either bus.
 - [ ] **Reverse registration:** At startup, the bridge calls `RegisterBridge()`
-      on the daemon's `org.wellbeing.v1.Controller`. The daemon:
-      1. Reads `SO_PEERCRED` uid from the connection.
-      2. Reads the unique bus name from `header.sender()`.
-      3. Creates a proxy to the bridge's interface.
-      4. Subscribes to the `DomainEvent` signal stream.
-- [ ] **Communication with extension (native messaging):**
-      - Receives JSON messages from the extension on stdin (tab focus, unfocus,
-        navigation, window focus change).
-      - Translates each message into a `DomainEvent` D-Bus signal emission.
-      - Subscribes to the daemon's `DomainBlocked` signal → writes JSON to
-        stdout (read by the extension via the persistent native messaging
-        port).
-- [ ] **Lifecycle management:**
-      - Daemon tracks the bridge instance in BridgeRegistry (parallel to
-        PluginRegistry), watching `NameOwnerChanged` for the bridge's unique
-        bus name to detect crash/disconnect.
-      - On daemon disconnect/reconnect: bridge re-runs 4-step resolution,
-        re-calls `RegisterBridge`, re-subscribes to `DomainBlocked`.
-      - On bridge crash: daemon cleans up any pending domain state for that
-        uid. When the bridge reappears, full re-registration restores tracking.
+      on the daemon's `org.wellbeing.v1.Controller`. The daemon: 1. Reads
+      `SO_PEERCRED` uid from the connection. 2. Reads the unique bus name from
+      `header.sender()`. 3. Creates a proxy to the bridge's interface. 4.
+      Subscribes to the `DomainEvent` signal stream.
+- [ ] **Communication with extension (native messaging):** - Receives JSON
+      messages from the extension on stdin (tab focus, unfocus, navigation,
+      window focus change). - Translates each message into a `DomainEvent` D-Bus
+      signal emission. - Subscribes to the daemon's `DomainBlocked` signal →
+      writes JSON to stdout (read by the extension via the persistent native
+      messaging port).
+- [ ] **Lifecycle management:** - Daemon tracks the bridge instance in
+      BridgeRegistry (parallel to PluginRegistry), watching `NameOwnerChanged`
+      for the bridge's unique bus name to detect crash/disconnect. - On daemon
+      disconnect/reconnect: bridge re-runs 4-step resolution, re-calls
+      `RegisterBridge`, re-subscribes to `DomainBlocked`. - On bridge crash:
+      daemon cleans up any pending domain state for that uid. When the bridge
+      reappears, full re-registration restores tracking.
 - [ ] **Native messaging manifest:** JSON deployed to the browser's native
       messaging hosts directory (e.g. `~/.mozilla/native-messaging-hosts/` or
-      `/etc/opt/chrome/native-messaging-hosts/`). Maps
-      `com.wellbeing.bridge` to the bridge binary path.
+      `/etc/opt/chrome/native-messaging-hosts/`). Maps `com.wellbeing.bridge` to
+      the bridge binary path.
 - [ ] **Lifecycle:** The browser auto-starts the bridge on first
       `runtime.connectNative`. The bridge exits when the browser closes the
       port. Single instance per user.
@@ -292,27 +297,25 @@ and let the daemon subscribe.
 
 - [ ] **Manifest V3 extension** (Chrome/Edge/Chromium) + **Firefox variant**
       (identical logic, `browser.*` namespace).
-- [ ] **Native messaging connection:** `browser.runtime.connectNative(
-      "com.wellbeing.bridge")` — persistent port for bidirectional
-      communication.
-- [ ] **Tab/window focus tracking (event source):**
-      - `chrome.tabs.onActivated` → `SubmitDomainEvent(Focus, domain, tab_id)`
-      - `chrome.tabs.onUpdated` (navigation) → `SubmitDomainEvent(Unfocus,
-        old_domain, tab_id)` + `SubmitDomainEvent(Focus, new_domain, tab_id)`
-      - `chrome.tabs.onRemoved` (if was focused) →
-        `SubmitDomainEvent(Unfocus, domain, tab_id)`
-      - `chrome.windows.onFocusChanged` (`WINDOW_ID_NONE`) →
-        `SubmitDomainEvent(Unfocus, current_domain, tab_id)`
-      - `chrome.windows.onFocusChanged` (window regained) →
-        `SubmitDomainEvent(Focus, active_tab_domain, tab_id)`
+- [ ] **Native messaging connection:**
+      `browser.runtime.connectNative(     "com.wellbeing.bridge")` — persistent
+      port for bidirectional communication.
+- [ ] **Tab/window focus tracking (event source):** - `chrome.tabs.onActivated`
+      → `SubmitDomainEvent(Focus, domain, tab_id)` - `chrome.tabs.onUpdated`
+      (navigation) → `SubmitDomainEvent(Unfocus,       old_domain, tab_id)` +
+      `SubmitDomainEvent(Focus, new_domain, tab_id)` - `chrome.tabs.onRemoved`
+      (if was focused) → `SubmitDomainEvent(Unfocus, domain, tab_id)` -
+      `chrome.windows.onFocusChanged` (`WINDOW_ID_NONE`) →
+      `SubmitDomainEvent(Unfocus, current_domain, tab_id)` -
+      `chrome.windows.onFocusChanged` (window regained) →
+      `SubmitDomainEvent(Focus, active_tab_domain, tab_id)`
 - [ ] **Block enforcement:** Receives `DomainBlocked` notifications from the
-      bridge. When a domain is blocked, replaces the tab content with a
-      blocking overlay (HTML/CSS block page with reason, time remaining for
-      TimeLimit). When unblocked, reloads the original page or removes the
-      overlay.
+      bridge. When a domain is blocked, replaces the tab content with a blocking
+      overlay (HTML/CSS block page with reason, time remaining for TimeLimit).
+      When unblocked, reloads the original page or removes the overlay.
 - [ ] **Graceful degradation:** If the bridge is not running (no native
-      messaging port), the extension operates in passive mode — no tracking,
-      no blocking. Shows a status indicator.
+      messaging port), the extension operates in passive mode — no tracking, no
+      blocking. Shows a status indicator.
 
 ### G5 — Policy & GUI Integration
 
@@ -371,27 +374,13 @@ user has entered allow-only/deep-work mode).
 
 - [ ] Default domain-to-category mappings are seeded in the initial migration,
       same pattern as `app_categories`:
-      ```sql
-      INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id) VALUES
-          ('reddit.com',  (SELECT id FROM categories WHERE name = 'Social'), 0),
-          ('twitter.com', (SELECT id FROM categories WHERE name = 'Social'), 0),
-          ('youtube.com', (SELECT id FROM categories WHERE name = 'Entertainment'), 0),
-          ('github.com',  (SELECT id FROM categories WHERE name = 'Development'), 0),
-          ('docs.rs',     (SELECT id FROM categories WHERE name = 'Development'), 0);
-      ```
+      `sql     INSERT OR IGNORE INTO domain_categories (domain, category_id, user_id) VALUES         ('reddit.com',  (SELECT id FROM categories WHERE name = 'Social'), 0),         ('twitter.com', (SELECT id FROM categories WHERE name = 'Social'), 0),         ('youtube.com', (SELECT id FROM categories WHERE name = 'Entertainment'), 0),         ('github.com',  (SELECT id FROM categories WHERE name = 'Development'), 0),         ('docs.rs',     (SELECT id FROM categories WHERE name = 'Development'), 0);     `
       The database is the single source of truth — no external config files.
 
 ### J2 — Domain-level categorization
 
 - [ ] New table `domain_categories`:
-      ```sql
-      CREATE TABLE domain_categories (
-          domain      TEXT NOT NULL,
-          category_id INTEGER NOT NULL REFERENCES categories(id),
-          user_id     INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (domain, user_id)
-      );
-      ```
+      `sql     CREATE TABLE domain_categories (         domain      TEXT NOT NULL,         category_id INTEGER NOT NULL REFERENCES categories(id),         user_id     INTEGER NOT NULL DEFAULT 0,         PRIMARY KEY (domain, user_id)     );     `
 - [ ] Resolution chain: 1. `domain_categories` user override
       (`user_id = uid`) 2. `domain_categories` system-global (`user_id = 0`) 3.
       AI classification (extends `AiClassifier` to domains) 4. Uncategorized
@@ -433,8 +422,8 @@ and cross-chart drill-down.
 - [ ] **Export enhancements**: CSV/JSON exists; add optional PDF summary.
 - [ ] **Timeline component**: replaces the horizontal day bar with a vertical
       row-per-day layout. Each day is a row containing interval bars showing
-      start/end times of focused sessions. Multi-day views stack rows
-      vertically in a scrollable container.
+      start/end times of focused sessions. Multi-day views stack rows vertically
+      in a scrollable container.
   - Dashboard zoomed day view: single row with all intervals for that day.
   - Reports multi-day view: one row per day in the selected date range,
     scrollable. Adaptive granularity (per-day for 7d, per-week for 30d,
@@ -456,15 +445,15 @@ and cross-chart drill-down.
 
 The following features from comparable tools are explicitly excluded:
 
-| Feature                        | Rationale                                                  |
-| ------------------------------ | ---------------------------------------------------------- |
-| Cross-device / cloud sync      | Device-local only. No cloud, no account.                   |
-| Mobile (iOS/Android)           | Linux desktop only.                                        |
-| Focus sounds / ambient audio   | Out of scope. Use a dedicated app.                         |
-| Session breaks / pause         | Locked mode is default — no bypass.                        |
-| MITM HTTPS proxy               | Unnecessary — browser extension handles domain blocking.   |
-| Social features / leaderboards | Privacy-respecting by design.                              |
-| Task / project management      | Digital wellbeing tool, not a planner.                     |
+| Feature                        | Rationale                                                |
+| ------------------------------ | -------------------------------------------------------- |
+| Cross-device / cloud sync      | Device-local only. No cloud, no account.                 |
+| Mobile (iOS/Android)           | Linux desktop only.                                      |
+| Focus sounds / ambient audio   | Out of scope. Use a dedicated app.                       |
+| Session breaks / pause         | Locked mode is default — no bypass.                      |
+| MITM HTTPS proxy               | Unnecessary — browser extension handles domain blocking. |
+| Social features / leaderboards | Privacy-respecting by design.                            |
+| Task / project management      | Digital wellbeing tool, not a planner.                   |
 
 ---
 

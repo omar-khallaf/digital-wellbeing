@@ -219,6 +219,41 @@ impl EventDao {
         Ok(results)
     }
 
+    pub(crate) async fn get_uids_with_open_intervals(conn: &DbConn) -> anyhow::Result<Vec<Uid>> {
+        // Discriminants derived from the enum (not hardcoded):
+        // Focus = 0 opens an interval; IGNORED_BY_MEASUREMENT = (Idle = 2, Resume = 3).
+        let focus: i32 = EventType::Focus.into();
+        let ignored: Vec<i32> = EventType::IGNORED_BY_MEASUREMENT
+            .iter()
+            .map(|&et| i32::from(et))
+            .collect();
+        let sql = format!(
+            "SELECT {} FROM (SELECT {}, {}, ROW_NUMBER() OVER (PARTITION BY {} ORDER BY {} DESC, {} DESC) AS rn FROM {} WHERE {} NOT IN ({})) WHERE rn = 1 AND {} = {}",
+            events::USER_ID,
+            events::USER_ID,
+            events::EVENT_TYPE,
+            events::USER_ID,
+            events::TIMESTAMP,
+            events::ID,
+            events::TABLE,
+            events::EVENT_TYPE,
+            ignored
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            events::EVENT_TYPE,
+            focus,
+        );
+        let mut result = conn.query(&sql, ()).await?;
+        let mut uids = Vec::new();
+        while let Some(row) = result.next().await? {
+            let user_id: i32 = row.get(0)?;
+            uids.push(Uid(user_id as u32));
+        }
+        Ok(uids)
+    }
+
     pub(crate) async fn get_event_range(
         conn: &DbConn,
         start: i64,

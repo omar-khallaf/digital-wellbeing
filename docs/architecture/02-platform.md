@@ -50,18 +50,18 @@ plugin reads the D-Bus property independently.
 Platform events are the sole input to the system state machine. No platform
 knowledge leaks beyond PlatformEvent.
 
-| Event                 | Fields                       | Source                                 | Consumer                                             |
-| --------------------- | ---------------------------- | -------------------------------------- | ---------------------------------------------------- |
-| Focus                 | {app_class, title, uid}      | Plugin Event signal (tag=0)            | EnforcerActor (policy evaluation, interval tracking) |
-| Block                 | {app_class, title, uid}      | Plugin Event signal (tag=2)            | EnforcerActor (close interval, blocked state)        |
-| Unfocus               | —                            | Plugin Event signal (Desktop variant)  | EnforcerActor (close interval)                       |
-| Idle                  | —                            | Plugin Event signal (EventTag::Idle)   | EnforcerActor (pause interval)                       |
-| Resume                | —                            | Plugin Event signal (EventTag::Resume) | EnforcerActor (resume interval)                      |
-| PowerEvent{Suspend}   | —                            | logind PrepareForSleep(TRUE)           | EnforcerActor (close interval)                       |
-| PowerEvent{Hibernate} | —                            | logind PrepareForSleep(TRUE)           | EnforcerActor (close interval)                       |
-| Locked                | —                            | logind Session Lock                    | EnforcerActor (close interval)                       |
-| LogOut                | —                            | logind Session removed / SIGTERM       | EnforcerActor (close interval)                       |
-| PowerEvent{Shutdown}  | —                            | logind PrepareForShutdown(TRUE)        | EnforcerActor (close interval)                       |
+| Event                 | Fields                  | Source                                 | Consumer                                             |
+| --------------------- | ----------------------- | -------------------------------------- | ---------------------------------------------------- |
+| Focus                 | {app_class, title, uid} | Plugin Event signal (tag=0)            | EnforcerActor (policy evaluation, interval tracking) |
+| Block                 | {app_class, title, uid} | Plugin Event signal (tag=2)            | EnforcerActor (close interval, blocked state)        |
+| Unfocus               | —                       | Plugin Event signal (Desktop variant)  | EnforcerActor (close interval)                       |
+| Idle                  | —                       | Plugin Event signal (EventTag::Idle)   | EnforcerActor (pause interval)                       |
+| Resume                | —                       | Plugin Event signal (EventTag::Resume) | EnforcerActor (resume interval)                      |
+| PowerEvent{Suspend}   | —                       | logind PrepareForSleep(TRUE)           | EnforcerActor (close interval)                       |
+| PowerEvent{Hibernate} | —                       | logind PrepareForSleep(TRUE)           | EnforcerActor (close interval)                       |
+| Locked                | —                       | logind Session Lock                    | EnforcerActor (close interval)                       |
+| LogOut                | —                       | logind Session removed / SIGTERM       | EnforcerActor (close interval)                       |
+| PowerEvent{Shutdown}  | —                       | logind PrepareForShutdown(TRUE)        | EnforcerActor (close interval)                       |
 
 Focus (tag=0) is emitted when the user focuses an unblocked window. Block
 (tag=2) is emitted when the focused window has an active overlay (the compositor

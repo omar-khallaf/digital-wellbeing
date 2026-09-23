@@ -1,0 +1,4 @@
+plugin=/usr/lib/hyprland-plugins/libwellbeing-hyprland-plugin.so
+# Built against Hyprland 0.55.2; rebuild for any other Hyprland version.
+# The plugin aborts load on ABI hash mismatch.
+# Runtime load without restart: hyprctl plugin load /usr/lib/hyprland-plugins/libwellbeing-hyprland-plugin.so

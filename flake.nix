@@ -198,6 +198,7 @@
               wayland
             ];
             doCheck = false;
+            dontStrip = false;
             postInstall = ''
               mkdir -p $out/lib/systemd/system
               cp deploy/systemd/digital-wellbeing-daemon.service $out/lib/systemd/system/digital-wellbeing-daemon.service
@@ -239,6 +240,7 @@
               expat
             ];
             doCheck = false;
+            dontStrip = false;
             postInstall = ''
               wrapProgram $out/bin/wellbeing-gui \
                 --prefix LD_LIBRARY_PATH : "${
@@ -307,6 +309,7 @@
                 systemd
               ];
               cmakeFlags = [ "-DBUILD_TESTING=OFF" ];
+              dontStrip = false;
               configurePhase = ''
                 cmake --preset ${preset} -DBUILD_TESTING=OFF
               '';
@@ -314,8 +317,9 @@
                 cmake --build --preset ${preset}
               '';
               installPhase = ''
-                mkdir -p $out/lib/hyprland-plugins
-                cp build/${preset}/app/wellbeing-lockdown.so $out/lib/hyprland-plugins/wellbeing-lockdown.so
+                mkdir -p $out/lib
+                cp build/${preset}/app/libwellbeing-hyprland-plugin.so $out/lib/libwellbeing-hyprland-plugin.so
+                strip --strip-unneeded $out/lib/libwellbeing-hyprland-plugin.so
               '';
               meta = with pkgs.lib; {
                 description = "Hyprland compositor plugin for Digital Wellbeing";

@@ -51,6 +51,13 @@ impl BlockingRepo {
         get_today_app_usage(&conn, app_id, uid, today).await
     }
 
+    /// UIDs whose latest non-ignored event is a Focus (open interval).
+    /// Returns empty vec on empty table; never errors on empty.
+    pub async fn uids_with_open_intervals(&self) -> anyhow::Result<Vec<Uid>> {
+        let conn = self.pool.client().await?;
+        EventDao::get_uids_with_open_intervals(&conn).await
+    }
+
     /// Flush buffered events with delta computation in a single transaction.
     ///
     /// 1. Fetches `last_events` for all registered UIDs (one round-trip).

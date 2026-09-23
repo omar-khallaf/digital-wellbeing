@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.27)
-project(wellbeing-lockdown-test LANGUAGES CXX)
+project(wellbeing-hyprland-plugin-test LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,4 +27,4 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 target_link_libraries(${PROJECT_NAME} PRIVATE GTest::gtest)
 
 # Register test with CTest.
-add_test(NAME wellbeing-lockdown-test COMMAND ${PROJECT_NAME})
+add_test(NAME wellbeing-hyprland-plugin-test COMMAND ${PROJECT_NAME})

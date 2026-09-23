@@ -54,8 +54,8 @@ responsible for syncing focus state after power-state changes. The plugin tracks
 screen lock state internally (`m_screenLocked` in `system_watcher.cpp`):
 
 - **Resume while screen unlocked** — `handlePrepareForSleep(false)` emits the
-  current focus state via `emitCurrentFocusEvent()` if the screen is already unlocked,
-  resuming the focus interval.
+  current focus state via `emitCurrentFocusEvent()` if the screen is already
+  unlocked, resuming the focus interval.
 - **Resume while screen locked** — plugin defers and waits for the unlock
   handler.
 - **Screen unlock** — `handleScreenSaverActive(false)` sets
@@ -69,12 +69,12 @@ involved on the daemon side.
 
 ## Compositor Support
 
-| Compositor  | Plugin                | D-Bus Implementation   | Status    |
-| ----------- | --------------------- | ---------------------- | --------- |
-| Hyprland    | wellbeing-lockdown.so | sdbus-cpp in C++       | v1 target |
-| KWin        | wellbeing-effect      | KWin::Effect + D-Bus   | Roadmap   |
-| Wayfire     | wellbeing-plugin      | Wayfire plugin + D-Bus | Roadmap   |
-| GNOME Shell | wellbeing-extension   | GJS + D-Bus            | Roadmap   |
+| Compositor  | Plugin                          | D-Bus Implementation   | Status    |
+| ----------- | ------------------------------- | ---------------------- | --------- |
+| Hyprland    | libwellbeing-hyprland-plugin.so | sdbus-cpp in C++       | v1 target |
+| KWin        | wellbeing-effect                | KWin::Effect + D-Bus   | Roadmap   |
+| Wayfire     | wellbeing-plugin                | Wayfire plugin + D-Bus | Roadmap   |
+| GNOME Shell | wellbeing-extension             | GJS + D-Bus            | Roadmap   |
 
 All compositors implement the same org.wellbeing.v1.Manager D-Bus interface at
 the same object path (/org/wellbeing/Manager), but each plugin instance connects
