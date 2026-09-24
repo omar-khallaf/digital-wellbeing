@@ -10,9 +10,7 @@ path = "src/main/mod.rs"
 [dependencies]
 wellbeing-core = { path = "../core" }
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
-thiserror.workspace = true
 anyhow.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
 tracing.workspace = true
@@ -21,7 +19,7 @@ nix = { version = "0.31", features = ["user"] }
 futures = "0.3"
 zbus.workspace = true
 gpui = { git = "https://github.com/zed-industries/zed", optional = true }
-gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", optional = true, features = ["wayland"] }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
 
 [features]

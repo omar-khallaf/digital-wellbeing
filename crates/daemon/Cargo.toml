@@ -9,7 +9,7 @@ path = "src/main/mod.rs"
 
 [dependencies]
 wellbeing-core = { path = "../core" }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time", "signal", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7" }
 thiserror.workspace = true
@@ -22,10 +22,9 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zbus.workspace = true
 zvariant.workspace = true
-nix = { version = "0.31", features = ["signal", "process", "user"] }
+nix = { version = "0.31", features = ["user"] }
 futures = "0.3"
-uuid = { version = "1", features = ["v4"] }
-turso = "0.7.1"
+turso = { version = "0.7.1", default-features = false, features = ["mimalloc"] }
 
 [dev-dependencies]
 tempfile = "3"
