@@ -51,11 +51,13 @@ impl DashboardViewModel {
 
         let now = Utc::now();
         let today = now.date_naive();
+        let seed = data.day_seed.clone();
         self.day_timeline = Some(build_day_timeline(
             &mut data.day_events, // sorted in-place — fine, this is VM state
             today,
             &app_names,
             now,
+            seed,
         ));
         self.date_range = DateRange {
             start: today,

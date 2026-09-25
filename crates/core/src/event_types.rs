@@ -79,8 +79,9 @@ impl TryFrom<u8> for EventType {
 
 impl EventType {
     /// Event types that *close* a focus interval.
-    pub const CLOSE: [EventType; 6] = [
+    pub const CLOSE: [EventType; 7] = [
         EventType::Unfocus,
+        EventType::Idle,
         EventType::Suspend,
         EventType::ShutDown,
         EventType::Locked,
@@ -88,9 +89,9 @@ impl EventType {
         EventType::Block,
     ];
 
-    /// Event types that are **ignored** by interval measurement (Idle/Resumed
-    /// do not open, close, or split an interval).
-    pub const IGNORED_BY_MEASUREMENT: [EventType; 2] = [EventType::Idle, EventType::Resume];
+    /// Event types that are **ignored** by interval measurement (Resume
+    /// does not open, close, or split an interval).
+    pub const IGNORED_BY_MEASUREMENT: [EventType; 1] = [EventType::Resume];
 
     /// Whether this event type closes a focus interval.
     pub fn is_close(self) -> bool {

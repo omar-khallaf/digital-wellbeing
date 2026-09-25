@@ -47,7 +47,7 @@ class IdleTracker {
     bool m_idle = false;
     TransitionCallback m_onTransition;
     InhibitCheck m_inhibitCheck;
-    static constexpr auto IDLE_THRESHOLD_MILLISECS = 30'000;
+    static constexpr auto IDLE_THRESHOLD_MILLISECS = 900'000;
 };
 
 } // namespace wellbeing

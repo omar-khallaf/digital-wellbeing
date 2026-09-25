@@ -52,6 +52,35 @@ impl DashboardRepo {
             .map_err(Into::into)
     }
 
+    /// Fetch the trailing pre-midnight seed: the last Focus strictly before
+    /// `day_start_ms` with no close/Idle after it, trusted regardless of age.
+    ///
+    /// Walks history backward over `[0, day_start_ms)`, skipping
+    /// measurement-ignored Resume rows. Returns `None` when history is empty
+    /// or the latest meaningful row already ended the interval (Idle/close).
+    pub async fn get_pre_midnight_seed(
+        &self,
+        day_start_ms: i64,
+    ) -> Result<Option<(i64, AppClass)>> {
+        let rows = self.get_day_events(0, day_start_ms).await?;
+        for row in rows.iter().rev() {
+            match row.event_type {
+                EventType::Resume => continue,
+                EventType::Focus => {
+                    return Ok(Some((row.timestamp, row.app_class.clone())));
+                }
+                EventType::Unfocus
+                | EventType::Idle
+                | EventType::Suspend
+                | EventType::ShutDown
+                | EventType::Locked
+                | EventType::LoggedOut
+                | EventType::Block => return Ok(None),
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn list_categories(&self) -> Result<Vec<Category>> {
         let proxy = self.proxy().await?;
         timeout(DBUS_TIMEOUT, proxy.list_categories())
@@ -107,9 +136,10 @@ impl DashboardRepo {
             .and_utc()
             .timestamp_millis();
 
-        let (blocks, day_events, cat_summary, cats, app_cats, app_sum, title_sum) = tokio::join!(
+        let (blocks, day_events, day_seed, cat_summary, cats, app_cats, app_sum, title_sum) = tokio::join!(
             self.get_blocked_apps(),
             self.get_day_events(day_start_ms, day_end_ms),
+            self.get_pre_midnight_seed(day_start_ms),
             self.get_category_usage_summary(&start, &end),
             self.list_categories(),
             self.get_app_categories(),
@@ -125,6 +155,10 @@ impl DashboardRepo {
             day_events: day_events.unwrap_or_else(|e| {
                 warn!("dashboard: get_day_events failed: {e}");
                 vec![]
+            }),
+            day_seed: day_seed.unwrap_or_else(|e| {
+                warn!("dashboard: get_pre_midnight_seed failed: {e}");
+                None
             }),
             category_summary: cat_summary.unwrap_or_else(|e| {
                 warn!("dashboard: get_category_usage_summary failed: {e}");
@@ -177,6 +211,9 @@ impl DashboardRepo {
 pub struct DashboardData {
     pub blocked: Vec<BlockedAppEntry>,
     pub day_events: Vec<DayEventRow>,
+    /// Trailing pre-midnight seed: last pre-midnight Focus `(timestamp, app)`
+    /// with no close/Idle after it, or `None` when the interval already ended.
+    pub day_seed: Option<(i64, AppClass)>,
     /// Pre-aggregated per-category totals, sorted by total_millis DESC from SQL.
     pub category_summary: Vec<CategoryUsageSummary>,
     pub categories: Vec<Category>,

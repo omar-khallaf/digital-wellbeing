@@ -3,9 +3,48 @@
 
 use std::collections::HashMap;
 
-use wellbeing_core::Uid;
+use wellbeing_core::clock::split_by_utc_day;
+use wellbeing_core::{AppClass, Uid, WindowTitle};
 
 use super::deltas::{AggKeyApp, AggKeyTitle, OpenFocus};
+
+struct IntervalTarget<'a> {
+    app_id: i32,
+    app_class: &'a AppClass,
+    title: &'a WindowTitle,
+    start_ms: i64,
+    end_ms: i64,
+    uid: Uid,
+}
+
+fn accumulate_range(
+    target: IntervalTarget<'_>,
+    agg: &mut HashMap<(Uid, AggKeyApp), i64>,
+    agg_title: &mut HashMap<(Uid, AggKeyTitle), i64>,
+) {
+    for (day_start_ms, dur) in split_by_utc_day(target.start_ms, target.end_ms) {
+        let date = daily_date_str(day_start_ms);
+        *agg.entry((
+            target.uid,
+            AggKeyApp {
+                date: date.clone(),
+                app_id: target.app_id,
+            },
+        ))
+        .or_insert(0) += dur;
+        *agg_title
+            .entry((
+                target.uid,
+                AggKeyTitle {
+                    date,
+                    app_class: target.app_class.to_string(),
+                    app_id: target.app_id,
+                    title: target.title.clone(),
+                },
+            ))
+            .or_insert(0) += dur;
+    }
+}
 
 /// Split `[prev.ts_ms, close_ts_ms]` across UTC day boundaries, compute
 /// per-date durations, and accumulate into the closed aggregates.
@@ -16,79 +55,18 @@ pub(crate) fn accumulate_closed(
     agg: &mut HashMap<(Uid, AggKeyApp), i64>,
     agg_title: &mut HashMap<(Uid, AggKeyTitle), i64>,
 ) {
-    let day_ms: i64 = 86_400_000;
-    let start_of_day_prev = prev.ts_ms - (prev.ts_ms % day_ms);
-    let start_of_day_close = close_ts_ms - (close_ts_ms % day_ms);
-
-    if start_of_day_prev == start_of_day_close {
-        let date = daily_date_str(prev.ts_ms);
-        let dur = close_ts_ms - prev.ts_ms;
-        *agg.entry((
+    accumulate_range(
+        IntervalTarget {
+            app_id: prev.app_id,
+            app_class: &prev.app_class,
+            title: &prev.title,
+            start_ms: prev.ts_ms,
+            end_ms: close_ts_ms,
             uid,
-            AggKeyApp {
-                date: date.clone(),
-                app_id: prev.app_id,
-            },
-        ))
-        .or_insert(0) += dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date,
-                    app_class: prev.app_class.to_string(),
-                    app_id: prev.app_id,
-                    title: prev.title.clone(),
-                },
-            ))
-            .or_insert(0) += dur;
-    } else {
-        let next_midnight = start_of_day_prev + day_ms;
-        let first_dur = next_midnight - prev.ts_ms;
-        let second_dur = close_ts_ms - next_midnight;
-
-        let date1 = daily_date_str(prev.ts_ms);
-        *agg.entry((
-            uid,
-            AggKeyApp {
-                date: date1.clone(),
-                app_id: prev.app_id,
-            },
-        ))
-        .or_insert(0) += first_dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date: date1,
-                    app_class: prev.app_class.to_string(),
-                    app_id: prev.app_id,
-                    title: prev.title.clone(),
-                },
-            ))
-            .or_insert(0) += first_dur;
-
-        let date2 = daily_date_str(next_midnight);
-        *agg.entry((
-            uid,
-            AggKeyApp {
-                date: date2.clone(),
-                app_id: prev.app_id,
-            },
-        ))
-        .or_insert(0) += second_dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date: date2,
-                    app_class: prev.app_class.to_string(),
-                    app_id: prev.app_id,
-                    title: prev.title.clone(),
-                },
-            ))
-            .or_insert(0) += second_dur;
-    }
+        },
+        agg,
+        agg_title,
+    );
 }
 
 /// Accumulate an open interval (no close event yet) up to `now_ms`, split at
@@ -100,79 +78,18 @@ pub(crate) fn accumulate_open(
     agg: &mut HashMap<(Uid, AggKeyApp), i64>,
     agg_title: &mut HashMap<(Uid, AggKeyTitle), i64>,
 ) {
-    let day_ms: i64 = 86_400_000;
-    let start_of_day_start = focus.ts_ms - (focus.ts_ms % day_ms);
-    let start_of_day_now = now_ms - (now_ms % day_ms);
-
-    if start_of_day_start == start_of_day_now {
-        let date = daily_date_str(focus.ts_ms);
-        let dur = now_ms - focus.ts_ms;
-        *agg.entry((
+    accumulate_range(
+        IntervalTarget {
+            app_id: focus.app_id,
+            app_class: &focus.app_class,
+            title: &focus.title,
+            start_ms: focus.ts_ms,
+            end_ms: now_ms,
             uid,
-            AggKeyApp {
-                date: date.clone(),
-                app_id: focus.app_id,
-            },
-        ))
-        .or_insert(0) += dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date,
-                    app_class: focus.app_class.to_string(),
-                    app_id: focus.app_id,
-                    title: focus.title.clone(),
-                },
-            ))
-            .or_insert(0) += dur;
-    } else {
-        let next_midnight = start_of_day_start + day_ms;
-        let first_dur = next_midnight - focus.ts_ms;
-        let second_dur = now_ms - next_midnight;
-
-        let date1 = daily_date_str(focus.ts_ms);
-        *agg.entry((
-            uid,
-            AggKeyApp {
-                date: date1.clone(),
-                app_id: focus.app_id,
-            },
-        ))
-        .or_insert(0) += first_dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date: date1,
-                    app_class: focus.app_class.to_string(),
-                    app_id: focus.app_id,
-                    title: focus.title.clone(),
-                },
-            ))
-            .or_insert(0) += first_dur;
-
-        let date2 = daily_date_str(next_midnight);
-        *agg.entry((
-            uid,
-            AggKeyApp {
-                date: date2.clone(),
-                app_id: focus.app_id,
-            },
-        ))
-        .or_insert(0) += second_dur;
-        *agg_title
-            .entry((
-                uid,
-                AggKeyTitle {
-                    date: date2,
-                    app_class: focus.app_class.to_string(),
-                    app_id: focus.app_id,
-                    title: focus.title.clone(),
-                },
-            ))
-            .or_insert(0) += second_dur;
-    }
+        },
+        agg,
+        agg_title,
+    );
 }
 
 /// Convert a unix-epoch-millis timestamp to a `YYYY-MM-DD` date string by
@@ -201,6 +118,20 @@ fn daily_date_str(ts_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wellbeing_core::{AppClass, WindowTitle};
+
+    fn test_focus(ts_ms: i64) -> OpenFocus {
+        OpenFocus {
+            ts_ms,
+            app_class: AppClass::new("test.App").unwrap(),
+            app_id: 7,
+            title: WindowTitle::new("win"),
+        }
+    }
+
+    fn app_total(agg: &HashMap<(Uid, AggKeyApp), i64>) -> i64 {
+        agg.values().sum()
+    }
 
     #[test]
     fn test_daily_date_str_known() {
@@ -219,5 +150,58 @@ mod tests {
     #[test]
     fn test_daily_date_str_epoch() {
         assert_eq!(daily_date_str(0), "1970-01-01");
+    }
+
+    #[test]
+    fn closed_three_day_span_splits_into_three_rows() {
+        let day_ms = 86_400_000i64;
+        let start = 2 * day_ms + 1_000;
+        let end = start + 2 * day_ms + 4_000;
+        let prev = test_focus(start);
+        let uid = Uid(1);
+        let mut agg = HashMap::new();
+        let mut agg_title = HashMap::new();
+        accumulate_closed(&prev, end, uid, &mut agg, &mut agg_title);
+        assert_eq!(agg.len(), 3);
+        assert_eq!(app_total(&agg), end - start);
+        let mut vals: Vec<i64> = agg.values().copied().collect();
+        vals.sort_unstable();
+        assert_eq!(vals[2], day_ms);
+        assert_eq!(agg_title.len(), 3);
+    }
+
+    #[test]
+    fn open_three_day_span_splits_into_three_rows() {
+        let day_ms = 86_400_000i64;
+        let start = 2 * day_ms + 1_000;
+        let now = start + 2 * day_ms + 4_000;
+        let focus = test_focus(start);
+        let uid = Uid(1);
+        let mut agg = HashMap::new();
+        let mut agg_title = HashMap::new();
+        accumulate_open(&focus, now, uid, &mut agg, &mut agg_title);
+        assert_eq!(agg.len(), 3);
+        assert_eq!(app_total(&agg), now - start);
+        let mut vals: Vec<i64> = agg.values().copied().collect();
+        vals.sort_unstable();
+        assert_eq!(vals[2], day_ms);
+        assert_eq!(agg_title.len(), 3);
+    }
+
+    #[test]
+    fn single_day_spans_unchanged() {
+        let start = 5 * 86_400_000i64 + 1_000;
+        let end = start + 9_000;
+        let uid = Uid(1);
+        let mut agg = HashMap::new();
+        let mut agg_title = HashMap::new();
+        accumulate_closed(&test_focus(start), end, uid, &mut agg, &mut agg_title);
+        assert_eq!(agg.len(), 1);
+        assert_eq!(app_total(&agg), 9_000);
+        let mut agg2 = HashMap::new();
+        let mut agg_title2 = HashMap::new();
+        accumulate_open(&test_focus(start), end, uid, &mut agg2, &mut agg_title2);
+        assert_eq!(agg2.len(), 1);
+        assert_eq!(app_total(&agg2), 9_000);
     }
 }
