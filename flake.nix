@@ -143,7 +143,7 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs { localSystem = { inherit system; }; };
           cargoLock = {
             lockFile = ./Cargo.lock;
             outputHashes = {
@@ -351,7 +351,7 @@
 
               package = mkOption {
                 type = types.package;
-                default = packages.${pkgs.system}.wellbeing-daemon;
+                default = packages.${pkgs.stdenv.hostPlatform.system}.wellbeing-daemon;
                 description = "Daemon package to install.";
               };
 
