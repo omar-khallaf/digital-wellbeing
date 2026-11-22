@@ -14,12 +14,16 @@
 
 #include <hyprland/src/Compositor.hpp>
 #include <hyprland/src/config/shared/actions/ConfigActions.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/render/Context.hpp>
 #include <hyprland/src/render/OpenGL.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/render/Texture.hpp>
+#include <hyprland/src/render/pass/RectPassElement.hpp>
+#include <hyprland/src/render/pass/TexPassElement.hpp>
 
 #include <sys/eventfd.h>
 
@@ -47,22 +51,22 @@ constexpr int BTN_H = 36;
 /// Draw a dark semi-transparent backdrop over the given window bounds,
 /// then a "Close Window" button at the centre, both via Hyprland's render
 /// pass API (CRectPassElement + CTexPassElement).
-void drawBlockedOverlay(const Desktop::View::CWindow &window) {
-    const auto PMONITOR = g_pHyprRenderer->m_renderData.pMonitor.lock();
+void drawBlockedOverlay(Render::CRenderContext &ctx, const Desktop::View::CWindow &window) {
+    const auto PMONITOR = ctx.m_data.pMonitor.lock();
     if (!PMONITOR) {
         return;
     }
 
     const auto gbox = window.getWindowMainSurfaceBox();
 
-    // Monitor-relative coordinates (render pass operates in monitor-local space).
+    // Monitor-relative coordinates (drawing operates in monitor-local space).
     const double rx = gbox.x - PMONITOR->m_position.x;
     const double ry = gbox.y - PMONITOR->m_position.y;
     const double rw = gbox.w;
     const double rh = gbox.h;
 
     // ── Dark backdrop ──
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRectPassElement>(CRectPassElement::SRectData{
         .box = CBox{rx, ry, rw, rh},
         .color = CHyprColor{0.0F, 0.0F, 0.0F, 0.65F},
     }));
@@ -71,7 +75,7 @@ void drawBlockedOverlay(const Desktop::View::CWindow &window) {
     const double btnX = rx + ((rw - BTN_W) / 2.0);
     const double btnY = ry + ((rh - BTN_H) / 2.0);
 
-    g_pHyprRenderer->m_renderPass.add(makeUnique<CRectPassElement>(CRectPassElement::SRectData{
+    Render::IHyprRenderer::addPassElement(ctx, makeUnique<CRectPassElement>(CRectPassElement::SRectData{
         .box = CBox{btnX, btnY, BTN_W, BTN_H},
         .color = CHyprColor{0.85F, 0.15F, 0.15F, 0.9F},
         .round = 6,
@@ -85,7 +89,7 @@ void drawBlockedOverlay(const Desktop::View::CWindow &window) {
         const double textX = btnX + ((BTN_W - texW) / 2.0);
         const double textY = btnY + ((BTN_H - texH) / 2.0);
 
-        g_pHyprRenderer->m_renderPass.add(makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
+        Render::IHyprRenderer::addPassElement(ctx, makeUnique<CTexPassElement>(CTexPassElement::SRenderData{
             .tex = textTex,
             .box = CBox{textX, textY, texW, texH},
         }));
@@ -95,10 +99,11 @@ void drawBlockedOverlay(const Desktop::View::CWindow &window) {
 // ── Render hook ──────────────────────────────────────────────────
 
 void registerRenderHook() {
-    static auto HOOK = Event::bus()->m_events.render.stage.listen([](eRenderStage stage) -> void {
+    static auto HOOK = Event::bus()->m_events.render.stage.listen([](const Event::SRenderStageEvent &e) -> void {
         try {
-            if (stage == eRenderStage::RENDER_POST_WINDOW) {
-                auto currentWindow = g_pHyprRenderer->m_renderData.currentWindow.lock();
+            if (e.stage == RENDER_POST_WINDOW) {
+                auto &ctx = e.context.has_value() ? e.context->get() : g_pHyprRenderer->context();
+                auto currentWindow = ctx.m_data.currentWindow.lock();
                 if (!currentWindow) {
                     return;
                 }
@@ -108,12 +113,12 @@ void registerRenderHook() {
                 // composited (current workspace), so this naturally limits the
                 // overlay to what's on screen.
                 if (wellbeing::g_ps && wellbeing::g_ps->lockManager &&
-                    wellbeing::g_ps->lockManager->isBlocked(currentWindow->m_initialClass)) {
-                    drawBlockedOverlay(*currentWindow);
+                    wellbeing::g_ps->lockManager->isBlocked(currentWindow->metadata().initialAppID())) {
+                    drawBlockedOverlay(ctx, *currentWindow);
                 }
             }
 
-            if (stage == eRenderStage::RENDER_POST) {
+            if (e.stage == RENDER_POST) {
                 if (wellbeing::g_ps && wellbeing::g_ps->idleTracker) {
                     wellbeing::g_ps->idleTracker->tick();
                 }
@@ -148,7 +153,7 @@ void registerInputHooks() {
                     return;
                 }
 
-                if (!wellbeing::g_ps->lockManager->isBlocked(focused->m_initialClass)) {
+                if (!wellbeing::g_ps->lockManager->isBlocked(focused->metadata().initialAppID())) {
                     return;
                 }
 
@@ -204,7 +209,7 @@ void registerInputHooks() {
                     return;
                 }
 
-                if (wellbeing::g_ps->lockManager->isBlocked(focused->m_initialClass)) {
+                if (wellbeing::g_ps->lockManager->isBlocked(focused->metadata().initialAppID())) {
                     g_pSeatManager->setKeyboardFocus(nullptr);
                 }
             } catch (const std::exception &e) {
@@ -402,29 +407,29 @@ void registerWindowHooks() {
                 // hidden windows, special workspaces with no meaningful class).
                 // Suppress if we were already unfocused — back-to-back
                 // empty-class transitions produce no signal change.
-                if (w->m_initialClass.empty()) {
-                    if (!prevFocus || prevFocus->m_initialClass.empty()) {
+                if (w->metadata().initialAppID().empty()) {
+                    if (!prevFocus || prevFocus->metadata().initialAppID().empty()) {
                         return;
                     }
                     pushToDbus(wellbeing::FocusUpdate{
                         .wclass = std::nullopt,
-                        .wTitle = w->m_title,
+                        .wTitle = w->metadata().title(),
                     });
                     return;
                 }
 
                 const bool blocked = wellbeing::g_ps && wellbeing::g_ps->lockManager &&
-                                     wellbeing::g_ps->lockManager->isBlocked(w->m_initialClass);
+                                     wellbeing::g_ps->lockManager->isBlocked(w->metadata().initialAppID());
 
                 if (blocked) {
                     pushToDbus(wellbeing::BlockedFocus{
-                        .wclass = w->m_initialClass,
-                        .wTitle = w->m_title,
+                        .wclass = w->metadata().initialAppID(),
+                        .wTitle = w->metadata().title(),
                     });
                 } else {
                     pushToDbus(wellbeing::FocusUpdate{
-                        .wclass = w->m_initialClass,
-                        .wTitle = w->m_title,
+                        .wclass = w->metadata().initialAppID(),
+                        .wTitle = w->metadata().title(),
                     });
                 }
             } catch (const std::exception &e) {
@@ -443,22 +448,22 @@ void registerWindowHooks() {
             }
 
             // Windows with empty class are treated as unfocused; skip title updates.
-            if (focused->m_initialClass.empty()) {
+            if (focused->metadata().initialAppID().empty()) {
                 return;
             }
 
             const bool blocked = wellbeing::g_ps && wellbeing::g_ps->lockManager &&
-                                 wellbeing::g_ps->lockManager->isBlocked(focused->m_initialClass);
+                                 wellbeing::g_ps->lockManager->isBlocked(focused->metadata().initialAppID());
 
             if (blocked) {
                 pushToDbus(wellbeing::BlockedFocus{
-                    .wclass = focused->m_initialClass,
-                    .wTitle = focused->m_title,
+                    .wclass = focused->metadata().initialAppID(),
+                    .wTitle = focused->metadata().title(),
                 });
             } else {
                 pushToDbus(wellbeing::FocusUpdate{
-                    .wclass = focused->m_initialClass,
-                    .wTitle = focused->m_title,
+                    .wclass = focused->metadata().initialAppID(),
+                    .wTitle = focused->metadata().title(),
                 });
             }
         } catch (const std::exception &e) {
@@ -500,7 +505,7 @@ auto focusedWindowClass() -> std::string {
     if (!focused) {
         return {};
     }
-    auto wc = WindowClass::from_raw(focused->m_initialClass);
+    auto wc = WindowClass::from_raw(focused->metadata().initialAppID());
     return wc.value_or(WindowClass{}).value();
 }
 
@@ -509,7 +514,7 @@ auto focusedWindowTitle() -> std::string {
     if (!focused) {
         return {};
     }
-    return focused->m_title;
+    return focused->metadata().title();
 }
 
 } // namespace wellbeing
